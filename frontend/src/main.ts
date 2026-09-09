@@ -30,8 +30,6 @@ type State = {
   view: View;
   asset: Asset;
   pickerOpen: boolean;
-  delivery: evm.Delivery;
-  noteId: string;
   evmSession?: evm.EvmSession;
   snSession?: sn.SnSession;
   token: { symbol: string; decimals: number };
@@ -50,8 +48,6 @@ const state: State = {
   view: 'transfer',
   asset: initial,
   pickerOpen: false,
-  delivery: 'wallet',
-  noteId: '',
   token: { symbol: initial.symbol, decimals: initial.decimals },
   amount: '',
   recipient: '',
@@ -61,14 +57,6 @@ const app = document.getElementById('app')!;
 const esc = (s: string): string =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 const tint = (a: Asset): string => `linear-gradient(150deg, ${a.tint[0]}, ${a.tint[1]})`;
-
-/// A note id must be a non-zero felt. Refusing an empty one here saves a
-/// message that would silently degrade to the wallet on the far side.
-function validNoteId(): boolean {
-  const raw = state.noteId.trim();
-  if (!raw) return false;
-  try { return BigInt(raw) !== 0n; } catch { return false; }
-}
 
 // --------------------------------------------------------------- eligibility
 
@@ -200,9 +188,6 @@ function ctaLabel(): { text: string; disabled: boolean; note: string } {
   if (s && !s.verified) return { text: 'Not eligible to bridge', disabled: true, note: 'Your address is not verified on the source registry.' };
   if (s && !s.lockboxRegistered) return { text: 'Bridge not approved by issuer', disabled: true, note: 'The lockbox must be a registered identity before any escrow can succeed.' };
   if (s && s.allowance < amount) return { text: `Approve ${state.token.symbol}`, disabled: false, note: 'One approval, then the transfer.' };
-  if (state.delivery === 'pool' && !validNoteId()) {
-    return { text: 'Enter an open note id', disabled: true, note: 'A pool delivery needs a note to fill.' };
-  }
 
   const fee = state.fee !== undefined ? `${units(state.fee, 18, 5)} ETH` : '…';
   return { text: 'Bridge', disabled: false, note: `Message fee ${fee}, paid to LayerZero.` };
@@ -243,24 +228,12 @@ function transferView(): string {
       <div class="chain"><span class="chain-mark sn">S</span>${esc(starknetLabel)}</div>
       <input id="recipient" class="recipient" placeholder="0x… recipient on ${esc(starknetLabel)}" value="${esc(state.recipient)}" />
       ${state.snSession ? '' : `<button id="connect-sn" class="max" style="margin-top:8px">Connect Starknet wallet to fill</button>`}
-
-      <div class="delivery">
-        <div class="seg" role="radiogroup" aria-label="Where it lands">
-          <button class="seg-btn${state.delivery === 'wallet' ? ' is-on' : ''}" data-delivery="wallet" role="radio" aria-checked="${state.delivery === 'wallet'}">Wallet</button>
-          <button class="seg-btn${state.delivery === 'pool' ? ' is-on' : ''}" data-delivery="pool" role="radio" aria-checked="${state.delivery === 'pool'}">Veil pool</button>
-        </div>
-        ${state.delivery === 'pool'
-          ? `<input id="note" class="recipient" placeholder="0x… open note id" value="${esc(state.noteId)}" />
-             <p class="delivery-note">Filled into your open note, so the position arrives confidential. If the note cannot be filled it lands in the wallet above — never lost.</p>`
-          : `<p class="delivery-note">Arrives as a public balance on ${esc(starknetLabel)}.</p>`}
-      </div>
     </div>
 
     ${eligibilityCard()}
 
     <dl class="details">
       <div class="detail"><dt>Asset</dt><dd>${esc(state.asset.name)}</dd></div>
-      <div class="detail"><dt>Lands as</dt><dd>${state.delivery === 'pool' ? 'Pool note' : 'Wallet balance'}</dd></div>
       <div class="detail"><dt>Route</dt><dd>${esc(evmLabel)} → ${esc(starknetLabel)}</dd></div>
       <div class="detail"><dt>Message fee</dt><dd>${state.fee !== undefined ? units(state.fee, 18, 6) + ' ETH' : '—'}</dd></div>
       <div class="detail"><dt>Bridge fee</dt><dd>0</dd></div>
@@ -334,16 +307,6 @@ function render(): void {
   document.querySelectorAll<HTMLButtonElement>('.asset-row').forEach((row) => {
     row.onclick = () => void selectAsset(row.dataset.asset!);
   });
-
-  document.querySelectorAll<HTMLButtonElement>('.seg-btn').forEach((b) => {
-    b.onclick = () => {
-      state.delivery = b.dataset.delivery as evm.Delivery;
-      if (state.delivery === 'wallet') state.noteId = '';
-      render();
-    };
-  });
-  const note = document.getElementById('note') as HTMLInputElement | null;
-  if (note) note.oninput = () => { state.noteId = note.value.trim(); paintCta(); };
 
   const connectSn = document.getElementById('connect-sn');
   if (connectSn) connectSn.onclick = () => void doConnectStarknet();
@@ -479,9 +442,7 @@ async function onCta(): Promise<void> {
 
     const fee = state.fee ?? (await evm.quote(asset, amount, state.recipient));
     state.busy = 'Confirm in wallet…'; paintCta();
-    const { hash, guid } = await evm.bridgeOut(
-      state.evmSession, asset, amount, state.recipient, fee, state.delivery, state.noteId
-    );
+    const { hash, guid } = await evm.bridgeOut(state.evmSession, asset, amount, state.recipient, fee);
 
     record({
       direction: 'toStarknet',
@@ -491,9 +452,7 @@ async function onCta(): Promise<void> {
       recipient: state.recipient,
       hash, guid, status: 'sent',
     });
-    state.notice = state.delivery === 'pool'
-      ? 'Sent. It will be filled into your note on arrival — a few minutes.'
-      : 'Sent. Delivery takes a few minutes — track it under History.';
+    state.notice = 'Sent. Delivery takes a few minutes — track it under History.';
     state.amount = '';
     state.evmStatus = await evm.evmStatus(asset, state.evmSession.address);
     void watchDelivery(asset, hash, state.recipient);

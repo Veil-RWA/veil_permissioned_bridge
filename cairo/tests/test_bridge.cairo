@@ -31,7 +31,6 @@ use veil_bridge::compliance::rules::{
     ComplianceSpec, IMirroredComplianceDispatcher, IMirroredComplianceDispatcherTrait,
 };
 use veil_bridge::msg_codec::{
-    DELIVERY_POOL, DELIVERY_WALLET, decode_mint,
     GlobalMessage, IdentitySnapshot, MintMessage, encode_global, encode_identity, encode_mint,
     encode_unlock,
 };
@@ -210,8 +209,6 @@ fn mint_msg(
             identity: IdentitySnapshot { evm_account, seq, verified, frozen, country },
             sn_recipient: recipient,
             amount,
-            delivery: DELIVERY_WALLET,
-            note_id: 0,
         },
     )
 }
@@ -228,7 +225,7 @@ fn identity_msg(
 #[test]
 fn mint_message_layout_is_pinned() {
     let message = mint_msg(evm_alice(), alice(), amt(1000), 7, true, false, 840);
-    assert(message.len() == 142, 'MINT_LEN');
+    assert(message.len() == 109, 'MINT_LEN');
     assert(message.at(0).unwrap() == 1, 'KIND');
     // evm_alice = 0x0A11CE, right-aligned in the 32-byte word at offset 1,
     // so its three bytes land in the word's last three slots.
@@ -245,33 +242,6 @@ fn mint_message_layout_is_pinned() {
     // country 840 = 0x0348.
     assert(message.at(107).unwrap() == 0x03, 'CTRY_HI');
     assert(message.at(108).unwrap() == 0x48, 'CTRY_LO');
-    // delivery + note_id: a wallet transfer carries a zero note.
-    assert(message.at(109).unwrap() == 0, 'DELIVERY');
-    assert(message.at(141).unwrap() == 0, 'NOTE_ID');
-}
-
-#[test]
-fn a_pool_delivery_message_carries_its_note_id() {
-    let message = encode_mint(
-        MintMessage {
-            identity: IdentitySnapshot {
-                evm_account: evm_alice(), seq: 1, verified: true, frozen: false, country: 840,
-            },
-            sn_recipient: alice(),
-            amount: amt(1000),
-            delivery: DELIVERY_POOL,
-            note_id: 0xBEEF,
-        },
-    );
-    assert(message.len() == 142, 'MINT_LEN');
-    assert(message.at(109).unwrap() == 1, 'DELIVERY_POOL');
-    // note_id 0xBEEF, right-aligned in the trailing 32-byte word.
-    assert(message.at(139).unwrap() == 0x00, 'NOTE_PAD');
-    assert(message.at(140).unwrap() == 0xbe, 'NOTE_HI');
-    assert(message.at(141).unwrap() == 0xef, 'NOTE_LO');
-    let decoded = decode_mint(@message);
-    assert(decoded.delivery == DELIVERY_POOL, 'DECODE_DELIVERY');
-    assert(decoded.note_id == 0xBEEF, 'DECODE_NOTE');
 }
 
 #[test]

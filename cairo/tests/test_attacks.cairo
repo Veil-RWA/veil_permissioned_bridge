@@ -38,8 +38,7 @@ use veil_bridge::lz::{
 use veil_bridge::mirrored_registry::{
     IVeilMirroredRegistryDispatcher, IVeilMirroredRegistryDispatcherTrait,
 };
-use veil_bridge::msg_codec::{
-    DELIVERY_WALLET,IdentitySnapshot, MintMessage, encode_identity, encode_mint};
+use veil_bridge::msg_codec::{IdentitySnapshot, MintMessage, encode_identity, encode_mint};
 
 const EVM_EID: u32 = 30101;
 const STALENESS: u64 = 3600;
@@ -178,8 +177,6 @@ fn mint_msg(
             },
             sn_recipient: to,
             amount,
-            delivery: DELIVERY_WALLET,
-            note_id: 0,
         },
     )
 }

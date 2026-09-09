@@ -60,10 +60,6 @@ pub trait IVeilBridgeGateway<TContractState> {
     fn set_delegate(ref self: TContractState, delegate: ContractAddress);
     fn set_dst_eid(ref self: TContractState, dst_eid: u32);
     fn set_token(ref self: TContractState, token: ContractAddress);
-    /// Contract that fills open notes in a Veil pool. Zero disables pool
-    /// delivery entirely, and every POOL message then lands in the wallet.
-    fn set_delivery_adapter(ref self: TContractState, adapter: ContractAddress);
-    fn delivery_adapter(self: @TContractState) -> ContractAddress;
     fn dst_eid(self: @TContractState) -> u32;
     fn token(self: @TContractState) -> ContractAddress;
     fn registry(self: @TContractState) -> ContractAddress;
@@ -92,12 +88,9 @@ pub mod VeilBridgeGateway {
     use super::super::mirrored_registry::{
         IVeilMirroredRegistryDispatcher, IVeilMirroredRegistryDispatcherTrait,
     };
-    use super::super::delivery::{
-        IVeilDeliveryAdapterDispatcher, IVeilDeliveryAdapterDispatcherTrait,
-    };
     use super::super::msg_codec::{
-        DELIVERY_POOL, KIND_GLOBAL, KIND_IDENTITY, KIND_MINT, decode_global, decode_identity,
-        decode_mint, encode_unlock, kind,
+        KIND_GLOBAL, KIND_IDENTITY, KIND_MINT, decode_global, decode_identity, decode_mint,
+        encode_unlock, kind,
     };
     use super::IVeilBridgeGateway;
 
@@ -118,26 +111,6 @@ pub mod VeilBridgeGateway {
         pub recipient: ContractAddress,
         #[key]
         pub evm_sender: felt252,
-        pub amount: u256,
-        pub reason: felt252,
-    }
-
-    /// A bridge-in was filled into a pool note rather than a public wallet.
-    #[derive(Drop, starknet::Event)]
-    pub struct DeliveredToPool {
-        #[key]
-        pub recipient: ContractAddress,
-        #[key]
-        pub note_id: felt252,
-        pub amount: u256,
-    }
-
-    /// Pool delivery was asked for but did not happen, so the amount went to
-    /// the recipient's wallet instead. Never a loss; always worth alerting on.
-    #[derive(Drop, starknet::Event)]
-    pub struct DeliveryFellBack {
-        #[key]
-        pub recipient: ContractAddress,
         pub amount: u256,
         pub reason: felt252,
     }
@@ -179,8 +152,6 @@ pub mod VeilBridgeGateway {
     enum Event {
         BridgeInMinted: BridgeInMinted,
         BridgeInQuarantined: BridgeInQuarantined,
-        DeliveredToPool: DeliveredToPool,
-        DeliveryFellBack: DeliveryFellBack,
         PendingClaimed: PendingClaimed,
         BridgeBackSent: BridgeBackSent,
         PeerSet: PeerSet,
@@ -196,7 +167,6 @@ pub mod VeilBridgeGateway {
         peers: Map<u32, Bytes32>,
         token: ContractAddress,
         registry: ContractAddress,
-        delivery_adapter: ContractAddress,
         /// Endpoint id of the chain holding the lockbox (Ethereum: 30101
         /// mainnet, 40161 Sepolia).
         dst_eid: u32,
@@ -377,15 +347,6 @@ pub mod VeilBridgeGateway {
             self.dst_eid.read()
         }
 
-        fn set_delivery_adapter(ref self: ContractState, adapter: ContractAddress) {
-            self.assert_owner();
-            self.delivery_adapter.write(adapter);
-        }
-
-        fn delivery_adapter(self: @ContractState) -> ContractAddress {
-            self.delivery_adapter.read()
-        }
-
         fn token(self: @ContractState) -> ContractAddress {
             self.token.read()
         }
@@ -468,11 +429,6 @@ pub mod VeilBridgeGateway {
                 return;
             }
 
-            if decoded.delivery == DELIVERY_POOL {
-                self.deliver_to_pool(decoded.sn_recipient, decoded.amount, decoded.note_id);
-                return;
-            }
-
             self.token_dispatcher().bridge_mint(decoded.sn_recipient, decoded.amount);
             self
                 .emit(
@@ -482,95 +438,6 @@ pub mod VeilBridgeGateway {
                         amount: decoded.amount,
                     },
                 );
-        }
-
-        /// Route a bridge-in into the recipient's pool note instead of their
-        /// wallet, degrading to the wallet on any failure.
-        ///
-        /// The tokens are minted into this contract's own custody, handed to
-        /// the adapter, and then whatever the adapter did not take is swept to
-        /// the recipient. That sweep is what makes a third-party adapter safe
-        /// to call from a path that must not revert: a reverting, declining or
-        /// silently no-op adapter all end with the recipient holding their
-        /// tokens, and none of them strand the escrow behind a failed message.
-        fn deliver_to_pool(
-            ref self: ContractState,
-            recipient: ContractAddress,
-            amount: u256,
-            note_id: felt252,
-        ) {
-            let adapter = self.delivery_adapter.read();
-            if adapter.is_zero() || note_id == 0 {
-                self.token_dispatcher().bridge_mint(recipient, amount);
-                self
-                    .emit(
-                        DeliveryFellBack {
-                            recipient,
-                            amount,
-                            reason: if adapter.is_zero() {
-                                'NO_ADAPTER'
-                            } else {
-                                'NO_NOTE_ID'
-                            },
-                        },
-                    );
-                return;
-            }
-
-            let token = self.token_dispatcher();
-            let this = get_contract_address();
-            // Mint into our own custody and let the adapter PULL. Handing it the
-            // tokens first would mean a reverting adapter keeps them; this way a
-            // failure leaves the balance here, where the sweep below catches it.
-            token.bridge_mint(this, amount);
-            token.approve(adapter, amount);
-
-            // A failing adapter must not take the message down with it. The
-            // inner call's writes are rolled back on error and execution
-            // continues here, which is the whole reason for the low-level call.
-            let mut call_data: Array<felt252> = array![];
-            Serde::serialize(@token.contract_address, ref call_data);
-            Serde::serialize(@recipient, ref call_data);
-            Serde::serialize(@amount, ref call_data);
-            Serde::serialize(@note_id, ref call_data);
-            let outcome = starknet::syscalls::call_contract_syscall(
-                adapter, selector!("deliver"), call_data.span(),
-            );
-
-            let accepted = match outcome {
-                Result::Ok(ret) => {
-                    let mut span = ret;
-                    let decoded: Option<bool> = Serde::deserialize(ref span);
-                    decoded.unwrap_or(false)
-                },
-                Result::Err(_) => false,
-            };
-
-            // Never leave a standing allowance behind: the adapter had exactly
-            // one transfer's worth of permission and its turn is over.
-            token.approve(adapter, 0);
-
-            // Whatever the call reported, the balance is the truth. Anything
-            // still here was not taken, and belongs to the recipient.
-            let retained = token.balance_of(this);
-            if retained != 0 {
-                token.transfer(recipient, retained);
-                self
-                    .emit(
-                        DeliveryFellBack {
-                            recipient,
-                            amount: retained,
-                            reason: if accepted {
-                                'ADAPTER_NO_PULL'
-                            } else {
-                                'ADAPTER_DECLINED'
-                            },
-                        },
-                    );
-                return;
-            }
-
-            self.emit(DeliveredToPool { recipient, note_id, amount });
         }
 
         fn quarantine(

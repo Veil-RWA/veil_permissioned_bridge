@@ -88,17 +88,15 @@ test('MINT encoding matches the layout pinned on the Cairo side', async () => {
     true,
     false,
     840,
-    0,
-    B32(0),
   ]);
   succeeds(res, 'encodeMint');
   const bytes = res.decoded[0];
   const expected = ethers.solidityPacked(
-    ['uint8', 'bytes32', 'bytes32', 'uint256', 'uint64', 'bool', 'bool', 'uint16', 'uint8', 'bytes32'],
-    [1, B32('0xa11ce'), B32(101), 1000n, 7n, true, false, 840, 0, B32(0)]
+    ['uint8', 'bytes32', 'bytes32', 'uint256', 'uint64', 'bool', 'bool', 'uint16'],
+    [1, B32('0xa11ce'), B32(101), 1000n, 7n, true, false, 840]
   );
   eq(bytes, expected, 'packed bytes');
-  eq((bytes.length - 2) / 2, 142, 'MINT length');
+  eq((bytes.length - 2) / 2, 109, 'MINT length');
 
   // The exact byte offsets the Cairo test reads.
   const b = ethers.getBytes(bytes);
@@ -202,44 +200,6 @@ test('bridgeOut escrows and ships the sender compliance snapshot', async () => {
   eq(decoded.decoded[4], true, 'verified');
   eq(decoded.decoded[5], false, 'frozen');
   eq(decoded.decoded[6], 840n, 'country');
-});
-
-test('bridgeOutToPool carries the delivery mode and the note id', async () => {
-  const { token, endpoint, lockbox, chain } = await setup();
-  const NOTE = B32('0xbeef');
-
-  succeeds(
-    await lockbox.call('bridgeOutToPool', [1000n, B32(101), NOTE, 200000n, addr(REFUND)], ALICE),
-    'bridgeOutToPool'
-  );
-  eq((await token.call('balanceOf', [lockbox.hex])).decoded[0], 1000n, 'escrowed');
-
-  const codec = await chain.deploy('CodecHarness');
-  const message = (await endpoint.call('lastMessage')).decoded[0];
-  const decoded = await codec.call('decodeMint', [message]);
-  succeeds(decoded, 'decodeMint');
-  eq(decoded.decoded[7], 1n, 'delivery = POOL');
-  eq(decoded.decoded[8], NOTE, 'note id');
-});
-
-test('a pool transfer without a note id is refused before spending a message', async () => {
-  const { endpoint, lockbox } = await setup();
-  // A pool delivery with no note has nothing to fill; it would silently
-  // degrade to the wallet on the far side, so refuse it here where it is free.
-  reverts(
-    await lockbox.call('bridgeOutToPool', [1000n, B32(101), B32(0), 200000n, addr(REFUND)], ALICE),
-    'ZeroNoteId'
-  );
-  eq((await endpoint.call('sendCount')).decoded[0], 0n, 'message sent');
-});
-
-test('a wallet transfer carries no note and mode zero', async () => {
-  const { endpoint, lockbox, chain } = await setup();
-  await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE);
-  const codec = await chain.deploy('CodecHarness');
-  const decoded = await codec.call('decodeMint', [(await endpoint.call('lastMessage')).decoded[0]]);
-  eq(decoded.decoded[7], 0n, 'delivery = WALLET');
-  eq(decoded.decoded[8], B32(0), 'no note id');
 });
 
 test('bridgeOut refuses an unverified sender before spending a message', async () => {
