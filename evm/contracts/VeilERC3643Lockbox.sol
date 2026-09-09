@@ -51,12 +51,13 @@ contract VeilERC3643Lockbox is OAppLite {
     /// `totalClaimable` is the amount still represented by live twin supply.
     uint256 public totalEscrowed;
 
-    event BridgedOut(
-        address indexed sender, bytes32 indexed snRecipient, uint256 amount, uint64 seq, bytes32 guid
-    );
-    event ComplianceSynced(
-        address indexed account, uint64 seq, bool verified, bool frozen, uint16 country
-    );
+    /// Carries no Starknet destination. `sender` is `msg.sender` and public
+    /// regardless, but an indexed pair would hand anyone a cross-chain linkage
+    /// query for free. The destination is in the message; `guid` identifies it.
+    event BridgedOut(address indexed sender, uint256 amount, uint64 seq, bytes32 guid);
+    /// No `country`. It is a KYC attribute that nothing reads back, and indexed
+    /// by account it becomes "every holder from country X" as a log filter.
+    event ComplianceSynced(address indexed account, uint64 seq, bool verified, bool frozen);
     event GlobalSynced(uint64 seq, bool paused);
     event Released(address indexed recipient, uint256 amount);
     event ReleaseHeld(address indexed recipient, uint256 amount, string reason);
@@ -122,7 +123,7 @@ contract VeilERC3643Lockbox is OAppLite {
         );
 
         guid = _lzSend(dstEid, message, _lzReceiveOptions(gasLimit), refundAddress).guid;
-        emit BridgedOut(msg.sender, snRecipient, amount, s, guid);
+        emit BridgedOut(msg.sender, amount, s, guid);
     }
 
     /// Push `account`'s current eligibility to the mirror. Permissionless by
@@ -143,7 +144,7 @@ contract VeilERC3643Lockbox is OAppLite {
         uint64 s = ++seq;
         bytes memory message = BridgeMsgCodec.encodeIdentity(account, s, verified, frozen, country);
         guid = _lzSend(dstEid, message, _lzReceiveOptions(gasLimit), refundAddress).guid;
-        emit ComplianceSynced(account, s, verified, frozen, country);
+        emit ComplianceSynced(account, s, verified, frozen);
     }
 
     /// Push token-level state. Only the pause flag: compliance RULE parameters

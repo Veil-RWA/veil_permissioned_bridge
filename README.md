@@ -133,6 +133,37 @@ Making it atomic would need a change on the pool side — a note owner readable
 on-chain, or a depositor binding on the fill — and that is a decision for the
 pool, not something a bridge should route around.
 
+## What the bridge publishes, and what it deliberately does not
+
+A permissioned bridge has to make eligibility checkable on-chain, so the mirror
+holds `sn_account -> evm_account` in readable storage and the twin reads it
+before every transfer. That much is the mechanism and cannot be hidden.
+
+What it does not have to do is **serve that pairing as an indexed log**. A Cairo
+`Map` cannot be enumerated — storage only answers about an address you already
+hold — whereas events can be scraped wholesale and `#[key]` makes them
+filterable. So no event carries a cross-chain pairing or a KYC attribute:
+
+| Removed | From | Why |
+|---|---|---|
+| `evm_sender` | `BridgeInMinted`, `BridgeInQuarantined` | free "every bridge-in from address X" filter; the `guid` already ties a mint to its origin |
+| `evm_recipient` | `BridgeBackSent` | same, outbound |
+| `snRecipient` | `BridgedOut` (EVM) | indexed pair on the source side |
+| `country` | `IdentityApplied`, `ComplianceSynced` | KYC attribute nothing reads back; indexed it becomes "every holder from country X" |
+| `bound_to`, `attempted` | `BindingConflict` | the operator knows `sn_account`; the rest is a storage read |
+| `evm_account` | `WalletBound` | the pairing itself |
+
+`evm_account` stays on `IdentityApplied` and `IdentityDropped`: without it an
+operator cannot tell which record moved and the event is useless.
+
+**Be clear about the limit.** This raises the cost of enumeration; it does not
+make bridged positions private. The pairing is still derivable — enumerate
+recipients from the twin's ERC-20 transfers, then call `identity_of` per
+address — and the LayerZero message payload carries `evm_sender` and
+`sn_recipient` in plaintext, since the gateway needs the recipient to mint. A
+bridged position is identified at arrival. The pool protects what happens after,
+not the entry.
+
 ## The three problems a naive mirror gets wrong
 
 **Address gap.** The EVM registry judges an EVM address; the holder on Starknet

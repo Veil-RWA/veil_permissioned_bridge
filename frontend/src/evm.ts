@@ -9,7 +9,7 @@ const LOCKBOX_ABI = [
   'function bridgeOut(uint256 amount, bytes32 snRecipient, uint128 gasLimit, address refundAddress) payable returns (bytes32)',
   'function totalEscrowed() view returns (uint256)',
   'function claimable(address) view returns (uint256)',
-  'event BridgedOut(address indexed sender, bytes32 indexed snRecipient, uint256 amount, uint64 seq, bytes32 guid)',
+  'event BridgedOut(address indexed sender, uint256 amount, uint64 seq, bytes32 guid)',
 ];
 
 const TOKEN_ABI = [

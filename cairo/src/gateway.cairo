@@ -94,12 +94,16 @@ pub mod VeilBridgeGateway {
     };
     use super::IVeilBridgeGateway;
 
+    /// Deliberately carries no source identity. A Map cannot be enumerated, so
+    /// storage only answers questions about an address you already have --
+    /// events are the one surface that can be scraped wholesale, and an indexed
+    /// `evm_sender` would hand anyone "every bridge-in from this EVM address"
+    /// for free. Nothing reads it; the message `guid` already ties a mint to
+    /// its origin for anyone debugging. Do not add it back.
     #[derive(Drop, starknet::Event)]
     pub struct BridgeInMinted {
         #[key]
         pub recipient: ContractAddress,
-        #[key]
-        pub evm_sender: felt252,
         pub amount: u256,
     }
 
@@ -109,8 +113,6 @@ pub mod VeilBridgeGateway {
     pub struct BridgeInQuarantined {
         #[key]
         pub recipient: ContractAddress,
-        #[key]
-        pub evm_sender: felt252,
         pub amount: u256,
         pub reason: felt252,
     }
@@ -123,11 +125,13 @@ pub mod VeilBridgeGateway {
     }
 
     #[derive(Drop, starknet::Event)]
+    /// No destination identity, for the same reason `BridgeInMinted` carries no
+    /// source: an indexed pair is a free cross-chain linkage query. `from` stays
+    /// because it is the transaction's own sender and public regardless. The
+    /// destination is in the outgoing message; it does not need a log filter too.
     pub struct BridgeBackSent {
         #[key]
         pub from: ContractAddress,
-        #[key]
-        pub evm_recipient: felt252,
         pub amount: u256,
         pub nonce: u64,
     }
@@ -271,12 +275,7 @@ pub mod VeilBridgeGateway {
             let options = build_lz_receive_options(gas_limit);
             let receipt = self.lz_send(caller, dst_eid, message, options, fee, refund_address);
 
-            self
-                .emit(
-                    BridgeBackSent {
-                        from: caller, evm_recipient, amount, nonce: receipt.nonce,
-                    },
-                );
+            self.emit(BridgeBackSent { from: caller, amount, nonce: receipt.nonce });
         }
 
         fn quote_bridge_back(
@@ -420,36 +419,25 @@ pub mod VeilBridgeGateway {
 
             let bound = registry.bind(decoded.sn_recipient, decoded.identity.evm_account);
             if !bound {
-                self.quarantine(decoded.sn_recipient, decoded.identity.evm_account, decoded.amount, 'BINDING_CONFLICT');
+                self.quarantine(decoded.sn_recipient, decoded.amount, 'BINDING_CONFLICT');
                 return;
             }
 
             if !self.token_dispatcher().can_bridge_mint(decoded.sn_recipient, decoded.amount) {
-                self.quarantine(decoded.sn_recipient, decoded.identity.evm_account, decoded.amount, 'NOT_ELIGIBLE');
+                self.quarantine(decoded.sn_recipient, decoded.amount, 'NOT_ELIGIBLE');
                 return;
             }
 
             self.token_dispatcher().bridge_mint(decoded.sn_recipient, decoded.amount);
-            self
-                .emit(
-                    BridgeInMinted {
-                        recipient: decoded.sn_recipient,
-                        evm_sender: decoded.identity.evm_account,
-                        amount: decoded.amount,
-                    },
-                );
+            self.emit(BridgeInMinted { recipient: decoded.sn_recipient, amount: decoded.amount });
         }
 
         fn quarantine(
-            ref self: ContractState,
-            recipient: ContractAddress,
-            evm_sender: felt252,
-            amount: u256,
-            reason: felt252,
+            ref self: ContractState, recipient: ContractAddress, amount: u256, reason: felt252,
         ) {
             self.pending.write(recipient, self.pending.read(recipient) + amount);
             self.total_pending.write(self.total_pending.read() + amount);
-            self.emit(BridgeInQuarantined { recipient, evm_sender, amount, reason });
+            self.emit(BridgeInQuarantined { recipient, amount, reason });
         }
 
         /// Mirrors `OAppCoreComponent::_lz_send`: collect the fee from the

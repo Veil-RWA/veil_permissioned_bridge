@@ -102,6 +102,12 @@ pub mod VeilMirroredRegistry {
     use starknet::{ContractAddress, get_block_timestamp, get_caller_address};
     use super::{IVeilMirroredRegistry, IdentityRecord};
 
+    /// `evm_account` stays: without it an operator cannot tell WHICH record
+    /// moved, and the event is useless. `country` does not -- it is a KYC
+    /// attribute that nothing reads, and emitting it indexed by identity would
+    /// hand anyone "every identity from country X" as a log filter. The
+    /// compliance module reads `investor_country()` from storage, which only
+    /// answers for an address you already hold. Do not add it back.
     #[derive(Drop, starknet::Event)]
     pub struct IdentityApplied {
         #[key]
@@ -109,7 +115,6 @@ pub mod VeilMirroredRegistry {
         pub seq: u64,
         pub verified: bool,
         pub frozen: bool,
-        pub country: u16,
     }
 
     /// Emitted instead of reverting when an update arrives out of order, so the
@@ -123,19 +128,19 @@ pub mod VeilMirroredRegistry {
     }
 
     #[derive(Drop, starknet::Event)]
+    /// The pairing itself is not published. It is derivable by anyone who
+    /// enumerates recipients from the twin's ERC-20 transfers and then calls
+    /// `identity_of` per address -- so this is a cost increase, not a secret --
+    /// but there is no reason to serve it up as an indexed log.
     pub struct WalletBound {
         #[key]
         pub sn_account: ContractAddress,
-        #[key]
-        pub evm_account: felt252,
     }
 
     #[derive(Drop, starknet::Event)]
     pub struct BindingConflict {
         #[key]
         pub sn_account: ContractAddress,
-        pub bound_to: felt252,
-        pub attempted: felt252,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -252,7 +257,7 @@ pub mod VeilMirroredRegistry {
                         seq, synced_at: get_block_timestamp(), verified, frozen, country,
                     },
                 );
-            self.emit(IdentityApplied { evm_account, seq, verified, frozen, country });
+            self.emit(IdentityApplied { evm_account, seq, verified, frozen });
             true
         }
 
@@ -270,17 +275,12 @@ pub mod VeilMirroredRegistry {
             if existing != 0 {
                 // Re-pointing a bound wallet is how a revoked holder would try
                 // to launder eligibility, so inbound messages never do it.
-                self
-                    .emit(
-                        BindingConflict {
-                            sn_account, bound_to: existing, attempted: evm_account,
-                        },
-                    );
+                self.emit(BindingConflict { sn_account });
                 return false;
             }
 
             self.bindings.write(sn_account, evm_account);
-            self.emit(WalletBound { sn_account, evm_account });
+            self.emit(WalletBound { sn_account });
             true
         }
 
@@ -352,7 +352,7 @@ pub mod VeilMirroredRegistry {
             self.assert_owner();
             assert(!sn_account.is_zero(), 'ZERO_SN_ACCOUNT');
             self.bindings.write(sn_account, evm_account);
-            self.emit(WalletBound { sn_account, evm_account });
+            self.emit(WalletBound { sn_account });
         }
 
         fn transfer_ownership(ref self: ContractState, new_owner: ContractAddress) {
