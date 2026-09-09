@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // Deploy the EVM half: the lockbox in front of an existing ERC-3643 token.
 //
-//   node deploy-evm.js --token 0x<erc3643> [--evm ethereum-sepolia]
+//   node deploy-evm.js --asset gold --token 0x<erc3643> [--evm ethereum-sepolia]
+//
+// --asset is a catalogue id (gold, silver, tbill, credit, estate). Each gets
+// its own lockbox: assets are never pooled.
 //
 // Also deploys ComplianceReader unless --skip-reader, since the export tool
 // wants it and it is a cheap, stateless view contract.
@@ -15,7 +18,9 @@ const path = require('path');
 const { ethers } = require('ethers');
 const { compile } = require('../evm/test/harness');
 const { network } = require('./config');
-const { parseArgs, loadDeployment, saveDeployment, requireEnv, step, done } = require('./lib');
+const {
+  parseArgs, loadDeployment, saveDeployment, requireEnv, assetSlot, step, done,
+} = require('./lib');
 
 async function main() {
   const args = parseArgs(process.argv);
@@ -33,9 +38,11 @@ async function main() {
   console.log(`deployer     ${wallet.address}`);
   console.log(`balance      ${ethers.formatEther(await provider.getBalance(wallet.address))} ETH`);
   console.log(`endpoint     ${net.endpoint}`);
+  console.log(`asset        ${args.asset}`);
   console.log(`token        ${args.token}`);
 
   const deployment = loadDeployment(args);
+  const slot = assetSlot(deployment, args.asset);
   const artifacts = compile();
   const total = args.skipReader ? 1 : 2;
 
@@ -48,9 +55,9 @@ async function main() {
     return await c.getAddress();
   }
 
-  step(1, total, 'VeilERC3643Lockbox');
-  if (deployment.evm.lockbox) {
-    done('already deployed', deployment.evm.lockbox);
+  step(1, total, `VeilERC3643Lockbox (${args.asset})`);
+  if (slot.evm.lockbox) {
+    done('already deployed', slot.evm.lockbox);
   } else {
     // dstEid is the STARKNET side: where this lockbox sends its messages.
     const address = await deploy('VeilERC3643Lockbox', [
@@ -59,20 +66,24 @@ async function main() {
       args.token,
       deployment.starknetEid,
     ]);
-    deployment.evm.lockbox = address;
-    deployment.evm.token = args.token;
-    deployment.evm.owner = wallet.address;
+    slot.evm.lockbox = address;
+    slot.evm.token = args.token;
+    slot.evm.owner = wallet.address;
     saveDeployment(args, deployment);
     done('deployed', address, `${net.explorer}/address/${address}`);
   }
 
   if (!args.skipReader) {
     step(2, total, 'ComplianceReader');
-    if (deployment.evm.complianceReader) {
-      done('already deployed', deployment.evm.complianceReader);
+    // Stateless and asset-agnostic: reuse one across every asset.
+    const existing = Object.values(deployment.assets)
+      .map((a) => a.evm && a.evm.complianceReader).find(Boolean);
+    if (existing) {
+      slot.evm.complianceReader = existing;
+      done('reusing', existing);
     } else {
       const address = await deploy('ComplianceReader', []);
-      deployment.evm.complianceReader = address;
+      slot.evm.complianceReader = address;
       saveDeployment(args, deployment);
       done('deployed', address, `${net.explorer}/address/${address}`);
     }
@@ -81,10 +92,10 @@ async function main() {
   const file = saveDeployment(args, deployment);
   console.log(`\nwritten to ${path.relative(process.cwd(), file)}`);
   console.log('\nnext:');
-  console.log('  node deploy-starknet.js');
+  console.log(`  node deploy-starknet.js --asset ${args.asset}`);
   console.log('\nREMINDER: the issuer must register the lockbox as a verified identity in');
   console.log(`the token's registry, or bridgeOut reverts inside the token:`);
-  console.log(`  identityRegistry.registerIdentity(${deployment.evm.lockbox}, ...)`);
+  console.log(`  identityRegistry.registerIdentity(${slot.evm.lockbox}, ...)`);
 }
 
 main().catch((e) => {

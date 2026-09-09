@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Deploy the Starknet half: mirror, gateway, compliance and the bridged twin.
 //
-//   node deploy-starknet.js [--starknet starknet-sepolia] [--staleness 86400]
-//                           [--name "Bridged AAPL"] [--symbol bAAPL]
+//   node deploy-starknet.js --asset gold [--staleness 86400]
+//                           [--name "Bridged Gold"] [--symbol bXAU]
 //
 // Declares each class if it is not already declared, then deploys. Resumable:
 // every address is written to the deployment file as soon as it exists, so a
@@ -15,7 +15,9 @@ const fs = require('fs');
 const path = require('path');
 const { Account, RpcProvider, CallData, hash, byteArray } = require('starknet');
 const { network } = require('./config');
-const { parseArgs, loadDeployment, saveDeployment, requireEnv, step, done } = require('./lib');
+const {
+  parseArgs, loadDeployment, saveDeployment, requireEnv, assetSlot, step, done,
+} = require('./lib');
 
 const TARGET = path.join(__dirname, '..', 'cairo', 'target', 'dev');
 
@@ -32,9 +34,9 @@ function artifact(contract) {
 }
 
 async function declareIfNeeded(account, contract, deployment) {
-  deployment.starknet.classes = deployment.starknet.classes || {};
-  if (deployment.starknet.classes[contract]) {
-    return deployment.starknet.classes[contract];
+  deployment.classes = deployment.classes || {};
+  if (deployment.classes[contract]) {
+    return deployment.classes[contract];
   }
   const { sierra, casm } = artifact(contract);
   const classHash = hash.computeContractClassHash(sierra);
@@ -47,7 +49,7 @@ async function declareIfNeeded(account, contract, deployment) {
     await account.waitForTransaction(res.transaction_hash);
     console.log(`      declared                ${classHash}`);
   }
-  deployment.starknet.classes[contract] = classHash;
+  deployment.classes[contract] = classHash;
   return classHash;
 }
 
@@ -69,34 +71,36 @@ async function main() {
   const account = new Account(provider, accountAddress, key);
 
   const deployment = loadDeployment(args);
+  const slot = assetSlot(deployment, args.asset);
   // Expiry in seconds. A day is a starting point, not a recommendation: it is
   // the maximum time a revocation on the source chain can go unenforced here.
   const staleness = Number(args.staleness || 86400);
-  const name = args.name || 'Bridged RWA';
-  const symbol = args.symbol || 'bRWA';
+  const name = args.name || `Bridged ${args.asset}`;
+  const symbol = args.symbol || `b${args.asset.toUpperCase()}`;
 
   console.log(`network      ${args.starknet} (eid ${net.eid})`);
   console.log(`account      ${accountAddress}`);
   console.log(`endpoint     ${net.endpoint}`);
   console.log(`fee token    ${net.nativeToken}`);
+  console.log(`asset        ${args.asset}`);
   console.log(`staleness    ${staleness}s`);
 
   step(1, 4, 'VeilMirroredRegistry');
-  if (deployment.starknet.registry) {
-    done('already deployed', deployment.starknet.registry);
+  if (slot.starknet.registry) {
+    done('already deployed', slot.starknet.registry);
   } else {
     const classHash = await declareIfNeeded(account, 'VeilMirroredRegistry', deployment);
     saveDeployment(args, deployment);
     const address = await deployContract(account, classHash, [accountAddress, staleness]);
-    deployment.starknet.registry = address;
-    deployment.starknet.stalenessWindow = staleness;
+    slot.starknet.registry = address;
+    slot.starknet.stalenessWindow = staleness;
     saveDeployment(args, deployment);
     done('deployed', address, `${net.explorer}/contract/${address}`);
   }
 
   step(2, 4, 'VeilBridgeGateway');
-  if (deployment.starknet.gateway) {
-    done('already deployed', deployment.starknet.gateway);
+  if (slot.starknet.gateway) {
+    done('already deployed', slot.starknet.gateway);
   } else {
     const classHash = await declareIfNeeded(account, 'VeilBridgeGateway', deployment);
     saveDeployment(args, deployment);
@@ -105,32 +109,32 @@ async function main() {
       accountAddress,
       net.endpoint,
       net.nativeToken,
-      deployment.starknet.registry,
+      slot.starknet.registry,
       deployment.evmEid,
     ]);
-    deployment.starknet.gateway = address;
+    slot.starknet.gateway = address;
     saveDeployment(args, deployment);
     done('deployed', address, `${net.explorer}/contract/${address}`);
   }
 
   step(3, 4, 'MirroredCompliance');
-  if (deployment.starknet.compliance) {
-    done('already deployed', deployment.starknet.compliance);
+  if (slot.starknet.compliance) {
+    done('already deployed', slot.starknet.compliance);
   } else {
     const classHash = await declareIfNeeded(account, 'MirroredCompliance', deployment);
     saveDeployment(args, deployment);
     const address = await deployContract(account, classHash, [
       accountAddress,
-      deployment.starknet.registry,
+      slot.starknet.registry,
     ]);
-    deployment.starknet.compliance = address;
+    slot.starknet.compliance = address;
     saveDeployment(args, deployment);
     done('deployed', address, `${net.explorer}/contract/${address}`);
   }
 
   step(4, 4, 'VeilBridgedERC3643');
-  if (deployment.starknet.token) {
-    done('already deployed', deployment.starknet.token);
+  if (slot.starknet.token) {
+    done('already deployed', slot.starknet.token);
   } else {
     const classHash = await declareIfNeeded(account, 'VeilBridgedERC3643', deployment);
     saveDeployment(args, deployment);
@@ -138,13 +142,13 @@ async function main() {
       byteArray.byteArrayFromString(name),
       byteArray.byteArrayFromString(symbol),
       accountAddress,
-      deployment.starknet.registry,
-      deployment.starknet.compliance,
+      slot.starknet.registry,
+      slot.starknet.compliance,
     ]);
     const address = await deployContract(account, classHash, calldata);
-    deployment.starknet.token = address;
-    deployment.starknet.name = name;
-    deployment.starknet.symbol = symbol;
+    slot.starknet.token = address;
+    slot.starknet.name = name;
+    slot.starknet.symbol = symbol;
     saveDeployment(args, deployment);
     done('deployed', address, `${net.explorer}/contract/${address}`);
   }
@@ -152,7 +156,7 @@ async function main() {
   const file = saveDeployment(args, deployment);
   console.log(`\nwritten to ${path.relative(process.cwd(), file)}`);
   console.log('\nnext:');
-  console.log('  node wire.js       # peers, gateway/token/compliance links, delegate');
+  console.log(`  node wire.js --asset ${args.asset}`);
 }
 
 main().catch((e) => {

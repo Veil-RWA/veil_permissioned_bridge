@@ -42,6 +42,10 @@ const NETWORKS = {
 const DEFAULT_EVM = 'ethereum-sepolia';
 const DEFAULT_STARKNET = 'starknet-sepolia';
 
+/// Catalogue ids, kept in step with frontend/src/assets.ts. One lockbox and one
+/// twin per asset -- assets are never pooled, so each id gets its own set.
+const ASSET_IDS = ['gold', 'silver', 'tbill', 'credit', 'estate'];
+
 const DEPLOYMENTS_DIR = path.join(__dirname, '..', 'deployments');
 
 /// Every script reads and writes this one file, so a half-finished deploy can
@@ -61,6 +65,7 @@ function network(name) {
 
 module.exports = {
   NETWORKS,
+  ASSET_IDS,
   DEFAULT_EVM,
   DEFAULT_STARKNET,
   DEPLOYMENTS_DIR,

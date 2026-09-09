@@ -10,6 +10,9 @@ export type Status = 'sent' | 'minted' | 'quarantined' | 'failed';
 export type Transfer = {
   id: string;
   direction: Direction;
+  /** Catalogue id, so a row still resolves after the selected asset changes. */
+  asset?: string;
+  symbol?: string;
   amount: string;
   recipient: string;
   hash: string;

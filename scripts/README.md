@@ -16,19 +16,29 @@ funded Starknet account (fees in STRK), and **an ERC-3643 token that already
 exists**. This bridge does not issue one — the whole premise is that the asset
 belongs to an issuer.
 
+## Assets
+
+Every step takes `--asset <id>`, one of `gold`, `silver`, `tbill`, `credit`,
+`estate` — the catalogue in `frontend/src/assets.ts`. **Each asset gets its own
+lockbox, gateway, registry, compliance and twin.** Assets are never pooled: a
+shared lockbox would let one issuer's pause or compromise reach another issuer's
+holders, and would blur the escrow invariant. So run the sequence below once per
+asset. Class declarations are cached across assets, so the second one is cheaper.
+
 ## 1. EVM side
 
 ```bash
-node deploy-evm.js --token 0x<erc3643>
+node deploy-evm.js --asset gold --token 0x<erc3643>
 ```
 
-Deploys `VeilERC3643Lockbox` and `ComplianceReader`.
+Deploys `VeilERC3643Lockbox` for that asset, and `ComplianceReader` once —
+it is stateless and asset-agnostic, so later assets reuse it.
 
 ## 2. Starknet side
 
 ```bash
 (cd ../cairo && scarb build)
-node deploy-starknet.js --name "Bridged AAPL" --symbol bAAPL --staleness 86400
+node deploy-starknet.js --asset gold --name "Bridged Gold" --symbol bXAU --staleness 86400
 ```
 
 Deploys the mirror, gateway, compliance and the twin. `--staleness` is the
@@ -38,7 +48,7 @@ maximum time a revocation on the source chain can go unenforced on the twin;
 ## 3. Wire
 
 ```bash
-node wire.js
+node wire.js --asset gold
 ```
 
 Sets the internal links and the peers **on both sides**. Idempotent: it reads
@@ -76,7 +86,7 @@ confirm against.
 
 ```bash
 cd ../scripts
-node bridge.js --amount 1000000000000000000 --to 0x<starknet address>
+node bridge.js --asset gold --amount 1000000000000000000 --to 0x<starknet address>
 ```
 
 Checks the preconditions, quotes the fee from the real endpoint, escrows, sends,

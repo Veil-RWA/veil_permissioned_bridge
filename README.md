@@ -243,8 +243,16 @@ bridging entirely. See `binding_capture_is_griefing_only_and_the_owner_can_undo_
 Transfer/History nav, one centred card, a vertical From → To stack, quote
 details inline above the action button.
 
-What a permissioned bridge needs that a bearer one does not is the **eligibility
-panel**. On an ERC-3643 asset a transfer can be perfectly funded and still be
+It carries **multiple assets** — gold, silver, treasuries, private credit and
+real estate in the shipped catalogue (`frontend/src/assets.ts`). Picking one
+switches the entire contract set, not just a ticker, because there is one
+lockbox and one twin per asset and they are never pooled. Assets the current
+deployment does not carry stay visible and greyed rather than hidden, so the
+question "does this bridge support my instrument" always has an answer on
+screen.
+
+The other thing a permissioned bridge needs that a bearer one does not is the
+**eligibility panel**. On an ERC-3643 asset a transfer can be perfectly funded and still be
 refused, so the card shows the gates in the order they fail — you are verified,
 you are not frozen, the token is not paused, the bridge is an approved holder,
 the recipient is eligible on the far side — before any gas is spent. The

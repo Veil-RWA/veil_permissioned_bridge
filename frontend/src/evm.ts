@@ -1,7 +1,8 @@
 // The EVM leg: wallet connection, reads, and the two writes (approve, bridgeOut).
 
 import { BrowserProvider, Contract, JsonRpcProvider, zeroPadValue, type Eip1193Provider } from 'ethers';
-import { deployment, evmChain, EVM_RPC, DEFAULT_GAS_LIMIT } from './config';
+import { evmChain, EVM_RPC, DEFAULT_GAS_LIMIT } from './config';
+import type { Asset } from './assets';
 
 const LOCKBOX_ABI = [
   'function quoteBridgeOut(uint256 amount, bytes32 snRecipient, uint128 gasLimit) view returns (tuple(uint256 nativeFee, uint256 lzTokenFee))',
@@ -59,16 +60,16 @@ export async function connectEvm(): Promise<EvmSession> {
 
 export type TokenInfo = { symbol: string; decimals: number };
 
-export async function tokenInfo(): Promise<TokenInfo> {
-  const token = new Contract(deployment.evm!.token!, TOKEN_ABI, readProvider);
-  // Fall back to the deployment's own symbol rather than a placeholder: if the
-  // RPC is unreachable the twin's configured name is still the right answer.
-  const fallbackSymbol = deployment.starknet?.symbol ?? 'RWA';
+export async function tokenInfo(asset: Asset): Promise<TokenInfo> {
+  if (!asset.available) return { symbol: asset.symbol, decimals: asset.decimals };
+  const token = new Contract(asset.addresses.evm!.token!, TOKEN_ABI, readProvider);
+  // Fall back to the catalogue rather than a placeholder: if the RPC is
+  // unreachable, the asset's own ticker is still the right answer.
   const [symbol, decimals] = await Promise.all([
-    token.symbol().catch(() => fallbackSymbol),
-    token.decimals().catch(() => 18),
+    token.symbol().catch(() => asset.symbol),
+    token.decimals().catch(() => asset.decimals),
   ]);
-  return { symbol: symbol || fallbackSymbol, decimals: Number(decimals) };
+  return { symbol: symbol || asset.symbol, decimals: Number(decimals) };
 }
 
 export type EvmStatus = {
@@ -85,9 +86,9 @@ export type EvmStatus = {
 /// transfer will actually work. The lockbox registration check is the one people
 /// trip over: T-REX verifies the RECIPIENT of a transfer, and on a bridge-out
 /// that is the lockbox.
-export async function evmStatus(account: string): Promise<EvmStatus> {
-  const lockbox = deployment.evm!.lockbox!;
-  const token = new Contract(deployment.evm!.token!, TOKEN_ABI, readProvider);
+export async function evmStatus(asset: Asset, account: string): Promise<EvmStatus> {
+  const lockbox = asset.addresses.evm!.lockbox!;
+  const token = new Contract(asset.addresses.evm!.token!, TOKEN_ABI, readProvider);
   const registryAddress: string = await token.identityRegistry();
   const registry = new Contract(registryAddress, REGISTRY_ABI, readProvider);
 
@@ -108,16 +109,16 @@ export async function evmStatus(account: string): Promise<EvmStatus> {
 export const snRecipientWord = (starknetAddress: string): string =>
   zeroPadValue('0x' + BigInt(starknetAddress).toString(16).padStart(64, '0'), 32);
 
-export async function quote(amount: bigint, recipient: string): Promise<bigint> {
-  const lockbox = new Contract(deployment.evm!.lockbox!, LOCKBOX_ABI, readProvider);
+export async function quote(asset: Asset, amount: bigint, recipient: string): Promise<bigint> {
+  const lockbox = new Contract(asset.addresses.evm!.lockbox!, LOCKBOX_ABI, readProvider);
   const fee = await lockbox.quoteBridgeOut(amount, snRecipientWord(recipient), DEFAULT_GAS_LIMIT);
   return fee.nativeFee ?? fee[0];
 }
 
-export async function approve(session: EvmSession, amount: bigint): Promise<string> {
+export async function approve(session: EvmSession, asset: Asset, amount: bigint): Promise<string> {
   const signer = await session.provider.getSigner();
-  const token = new Contract(deployment.evm!.token!, TOKEN_ABI, signer);
-  const tx = await token.approve(deployment.evm!.lockbox!, amount);
+  const token = new Contract(asset.addresses.evm!.token!, TOKEN_ABI, signer);
+  const tx = await token.approve(asset.addresses.evm!.lockbox!, amount);
   await tx.wait();
   return tx.hash;
 }
@@ -126,12 +127,13 @@ export type BridgeResult = { hash: string; guid?: string };
 
 export async function bridgeOut(
   session: EvmSession,
+  asset: Asset,
   amount: bigint,
   recipient: string,
   fee: bigint
 ): Promise<BridgeResult> {
   const signer = await session.provider.getSigner();
-  const lockbox = new Contract(deployment.evm!.lockbox!, LOCKBOX_ABI, signer);
+  const lockbox = new Contract(asset.addresses.evm!.lockbox!, LOCKBOX_ABI, signer);
   const tx = await lockbox.bridgeOut(
     amount, snRecipientWord(recipient), DEFAULT_GAS_LIMIT, session.address, { value: fee }
   );

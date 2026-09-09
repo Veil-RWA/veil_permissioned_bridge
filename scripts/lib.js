@@ -2,10 +2,12 @@
 
 const fs = require('fs');
 const path = require('path');
-const { DEPLOYMENTS_DIR, deploymentPath, network, DEFAULT_EVM, DEFAULT_STARKNET } = require('./config');
+const {
+  DEPLOYMENTS_DIR, deploymentPath, network, DEFAULT_EVM, DEFAULT_STARKNET, ASSET_IDS,
+} = require('./config');
 
 function parseArgs(argv) {
-  const out = { evm: DEFAULT_EVM, starknet: DEFAULT_STARKNET };
+  const out = { evm: DEFAULT_EVM, starknet: DEFAULT_STARKNET, asset: 'gold' };
   for (let i = 2; i < argv.length; i++) {
     const key = argv[i].replace(/^--/, '');
     if (key === 'yes' || key === 'y') {
@@ -25,12 +27,12 @@ function loadDeployment(args) {
       starknetNetwork: args.starknet,
       evmEid: network(args.evm).eid,
       starknetEid: network(args.starknet).eid,
-      evm: {},
-      starknet: {},
-      wired: {},
+      assets: {},
     };
   }
-  return JSON.parse(fs.readFileSync(file, 'utf8'));
+  const loaded = JSON.parse(fs.readFileSync(file, 'utf8'));
+  loaded.assets = loaded.assets || {};
+  return loaded;
 }
 
 function saveDeployment(args, data) {
@@ -38,6 +40,21 @@ function saveDeployment(args, data) {
   const file = deploymentPath(args.evm, args.starknet);
   fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
   return file;
+}
+
+/// The contract set for one asset, created on first use. Every script writes
+/// here rather than at the top level, so a deployment can carry gold without
+/// silver and the app can say which.
+function assetSlot(deployment, id) {
+  if (!ASSET_IDS.includes(id)) {
+    throw new Error(`unknown --asset "${id}". known: ${ASSET_IDS.join(', ')}`);
+  }
+  deployment.assets = deployment.assets || {};
+  const slot = deployment.assets[id] || (deployment.assets[id] = {});
+  slot.evm = slot.evm || {};
+  slot.starknet = slot.starknet || {};
+  slot.wired = slot.wired || {};
+  return slot;
 }
 
 function requireEnv(...names) {
@@ -74,6 +91,7 @@ function done(label, value, explorer) {
 
 module.exports = {
   parseArgs,
+  assetSlot,
   loadDeployment,
   saveDeployment,
   requireEnv,

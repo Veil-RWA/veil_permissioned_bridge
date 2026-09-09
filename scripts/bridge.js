@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Bridge one amount across for real, then watch the far side until it lands.
 //
-//   node bridge.js --amount 1000000000000000000 --to 0x<starknet address>
+//   node bridge.js --asset gold --amount 1000000000000000000 --to 0x<starknet address>
 //                  [--gas-limit 400000] [--watch 900]
 //
 // This is the script that proves the LayerZero pathway actually works. It:
@@ -19,7 +19,7 @@ const { ethers } = require('ethers');
 const { RpcProvider } = require('starknet');
 const { compile } = require('../evm/test/harness');
 const { network } = require('./config');
-const { parseArgs, loadDeployment, requireEnv, step, done } = require('./lib');
+const { parseArgs, loadDeployment, requireEnv, assetSlot, step, done } = require('./lib');
 
 const ERC3643_ABI = [
   'function identityRegistry() view returns (address)',
@@ -41,8 +41,13 @@ async function main() {
   const evmNet = network(args.evm);
   const snNet = network(args.starknet);
   const d = loadDeployment(args);
-  if (!d.evm.lockbox || !d.starknet.gateway) throw new Error('not deployed -- run the deploy scripts first');
-  if (!d.wired || !d.wired.peers) throw new Error('peers not set -- run wire.js first');
+  const slot = assetSlot(d, args.asset);
+  if (!slot.evm.lockbox || !slot.starknet.gateway) {
+    throw new Error(`${args.asset} is not deployed -- run the deploy scripts with --asset ${args.asset}`);
+  }
+  if (!slot.wired || !slot.wired.peers) {
+    throw new Error(`${args.asset} peers not set -- run: node wire.js --asset ${args.asset}`);
+  }
 
   const [evmRpc, evmKey] = requireEnv('EVM_RPC_URL', 'EVM_PRIVATE_KEY');
   const [snRpc] = requireEnv('STARKNET_RPC_URL');
@@ -50,8 +55,8 @@ async function main() {
   const provider = new ethers.JsonRpcProvider(evmRpc);
   const wallet = new ethers.Wallet(evmKey, provider);
   const artifacts = compile();
-  const lockbox = new ethers.Contract(d.evm.lockbox, artifacts['VeilERC3643Lockbox'].abi, wallet);
-  const token = new ethers.Contract(d.evm.token, ERC3643_ABI, wallet);
+  const lockbox = new ethers.Contract(slot.evm.lockbox, artifacts['VeilERC3643Lockbox'].abi, wallet);
+  const token = new ethers.Contract(slot.evm.token, ERC3643_ABI, wallet);
 
   const amount = BigInt(args.amount);
   const gasLimit = BigInt(args.gasLimit || 400000);
@@ -61,11 +66,12 @@ async function main() {
 
   let symbol = '';
   try { symbol = await token.symbol(); } catch (_) {}
+  console.log(`asset        ${args.asset}`);
   console.log(`from         ${wallet.address}`);
   console.log(`to           ${args.to} (starknet)`);
   console.log(`amount       ${amount} ${symbol}`);
-  console.log(`lockbox      ${d.evm.lockbox}`);
-  console.log(`gateway      ${d.starknet.gateway}`);
+  console.log(`lockbox      ${slot.evm.lockbox}`);
+  console.log(`gateway      ${slot.starknet.gateway}`);
 
   // ---- preconditions ------------------------------------------------------
   step(1, 5, 'preconditions');
@@ -73,7 +79,7 @@ async function main() {
   const registry = new ethers.Contract(registryAddr, REGISTRY_ABI, provider);
 
   const senderVerified = await registry.isVerified(wallet.address);
-  const lockboxVerified = await registry.isVerified(d.evm.lockbox);
+  const lockboxVerified = await registry.isVerified(slot.evm.lockbox);
   const balance = await token.balanceOf(wallet.address);
   done('sender verified', String(senderVerified));
   done('lockbox verified', String(lockboxVerified));
@@ -85,7 +91,7 @@ async function main() {
       `the lockbox is NOT a registered identity in ${registryAddr}.\n` +
       `  T-REX verifies the RECIPIENT of every transfer, and on a bridge-out that is\n` +
       `  the lockbox, so the escrow will revert inside the token. The issuer must call\n` +
-      `  registerIdentity(${d.evm.lockbox}, ...) first.`
+      `  registerIdentity(${slot.evm.lockbox}, ...) first.`
     );
   }
   if (balance < amount) throw new Error(`balance ${balance} < amount ${amount}`);
@@ -102,18 +108,18 @@ async function main() {
 
   // ---- approve ------------------------------------------------------------
   step(3, 5, 'approve the lockbox');
-  const allowance = await token.allowance(wallet.address, d.evm.lockbox);
+  const allowance = await token.allowance(wallet.address, slot.evm.lockbox);
   if (allowance >= amount) {
     done('already approved', String(allowance));
   } else {
-    const tx = await token.approve(d.evm.lockbox, amount);
+    const tx = await token.approve(slot.evm.lockbox, amount);
     await tx.wait();
     done('tx', tx.hash, `${evmNet.explorer}/tx/${tx.hash}`);
   }
 
   // ---- send ---------------------------------------------------------------
   step(4, 5, 'escrow + send');
-  const supplyBefore = await starknetSupply(snRpc, d.starknet.token);
+  const supplyBefore = await starknetSupply(snRpc, slot.starknet.token);
   const tx = await lockbox.bridgeOut(amount, recipient, gasLimit, wallet.address, { value: nativeFee });
   const receipt = await tx.wait();
   done('tx', tx.hash, `${evmNet.explorer}/tx/${tx.hash}`);
@@ -135,13 +141,13 @@ async function main() {
   const deadline = Date.now() + watchSeconds * 1000;
   while (Date.now() < deadline) {
     await sleep(15000);
-    const supply = await starknetSupply(snRpc, d.starknet.token);
-    const pending = await starknetPending(snRpc, d.starknet.gateway, args.to);
+    const supply = await starknetSupply(snRpc, slot.starknet.token);
+    const pending = await starknetPending(snRpc, slot.starknet.gateway, args.to);
     const elapsed = Math.round((watchSeconds * 1000 - (deadline - Date.now())) / 1000);
 
     if (supply > supplyBefore) {
       console.log(`\n      MINTED after ~${elapsed}s. twin supply ${supplyBefore} -> ${supply}`);
-      console.log(`      ${snNet.explorer}/contract/${d.starknet.token}`);
+      console.log(`      ${snNet.explorer}/contract/${slot.starknet.token}`);
       return;
     }
     if (pending > 0n) {

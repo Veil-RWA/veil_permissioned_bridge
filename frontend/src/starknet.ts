@@ -2,7 +2,8 @@
 
 import { connect as starknetConnect } from 'get-starknet';
 import { RpcProvider, Contract, CallData, uint256 } from 'starknet';
-import { deployment, STARKNET_RPC, DEFAULT_GAS_LIMIT } from './config';
+import { STARKNET_RPC, DEFAULT_GAS_LIMIT } from './config';
+import type { Asset } from './assets';
 
 export const snProvider = new RpcProvider({ nodeUrl: STARKNET_RPC });
 
@@ -37,8 +38,8 @@ export type MirrorStatus = {
 /// What the mirror currently says about a Starknet wallet. `verified` is the
 /// number that matters: it already folds in the binding, the record, the freeze
 /// flag, the global pause and the staleness window.
-export async function mirrorStatus(address: string): Promise<MirrorStatus> {
-  const sn = deployment.starknet!;
+export async function mirrorStatus(asset: Asset, address: string): Promise<MirrorStatus> {
+  const sn = asset.addresses.starknet!;
   const [identityF, verifiedF, balanceF, pendingF, windowF] = await Promise.all([
     callFelts(sn.registry!, 'identity_of', [address]).catch(() => ['0']),
     callFelts(sn.registry!, 'is_verified', [address]).catch(() => ['0']),
@@ -71,14 +72,18 @@ export async function mirrorStatus(address: string): Promise<MirrorStatus> {
   };
 }
 
-export async function twinSupply(): Promise<bigint> {
-  return u256(await callFelts(deployment.starknet!.token!, 'total_supply', []).catch(() => ['0', '0']));
+export async function twinSupply(asset: Asset): Promise<bigint> {
+  return u256(
+    await callFelts(asset.addresses.starknet!.token!, 'total_supply', []).catch(() => ['0', '0'])
+  );
 }
 
 /// Quote the return trip. The gateway asks the real endpoint, so this is the
 /// actual STRK the wallet must approve.
-export async function quoteBridgeBack(amount: bigint, evmRecipient: string): Promise<bigint> {
-  const felts = await callFelts(deployment.starknet!.gateway!, 'quote_bridge_back', [
+export async function quoteBridgeBack(
+  asset: Asset, amount: bigint, evmRecipient: string
+): Promise<bigint> {
+  const felts = await callFelts(asset.addresses.starknet!.gateway!, 'quote_bridge_back', [
     ...CallData.compile([uint256.bnToUint256(amount)]),
     BigInt(evmRecipient).toString(),
     DEFAULT_GAS_LIMIT.toString(),
@@ -91,12 +96,13 @@ export async function quoteBridgeBack(amount: bigint, evmRecipient: string): Pro
 /// gateway pays the endpoint, which is why the approval goes to the gateway.
 export async function bridgeBack(
   session: SnSession,
+  asset: Asset,
   amount: bigint,
   evmRecipient: string,
   fee: bigint,
   feeToken: string
 ): Promise<string> {
-  const sn = deployment.starknet!;
+  const sn = asset.addresses.starknet!;
   const calls = [
     {
       contractAddress: feeToken,
@@ -120,9 +126,11 @@ export async function bridgeBack(
   return res.transaction_hash;
 }
 
-export async function claimPending(session: SnSession, recipient: string): Promise<string> {
+export async function claimPending(
+  session: SnSession, asset: Asset, recipient: string
+): Promise<string> {
   const res = await session.account.execute({
-    contractAddress: deployment.starknet!.gateway!,
+    contractAddress: asset.addresses.starknet!.gateway!,
     entrypoint: 'claim_pending',
     calldata: CallData.compile([recipient]),
   });

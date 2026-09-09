@@ -6,13 +6,8 @@
 
 import raw from './deployment.json';
 
-export type Deployment = {
-  missing?: boolean;
-  evmNetwork?: string;
-  starknetNetwork?: string;
-  evmEid?: number;
-  starknetEid?: number;
-  evm?: { lockbox?: string; token?: string; complianceReader?: string; owner?: string };
+export type AssetDeployment = {
+  evm?: { lockbox?: string; token?: string; complianceReader?: string };
   starknet?: {
     registry?: string;
     gateway?: string;
@@ -25,10 +20,30 @@ export type Deployment = {
   wired?: { peers?: boolean; links?: boolean };
 };
 
+export type Deployment = {
+  missing?: boolean;
+  evmNetwork?: string;
+  starknetNetwork?: string;
+  evmEid?: number;
+  starknetEid?: number;
+  /// Per-asset contract sets, keyed by catalogue id. One lockbox and one twin
+  /// each: assets are never pooled.
+  assets?: Record<string, AssetDeployment>;
+  /// Pre-catalogue single-asset deployments. Read by assets.ts as a fallback.
+  evm?: AssetDeployment['evm'];
+  starknet?: AssetDeployment['starknet'];
+  wired?: { peers?: boolean; links?: boolean };
+};
+
 export const deployment = raw as Deployment;
 
+/// True when at least one asset in the catalogue is fully deployed. The card
+/// checks the SELECTED asset separately -- a deployment can carry gold and not
+/// silver, and the UI has to say which.
 export const isDeployed = Boolean(
-  !deployment.missing && deployment.evm?.lockbox && deployment.starknet?.gateway
+  !deployment.missing &&
+  ((deployment.assets && Object.keys(deployment.assets).length > 0) ||
+    (deployment.evm?.lockbox && deployment.starknet?.gateway))
 );
 
 /// Chain ids the EVM wallet must be on for each supported deployment.
