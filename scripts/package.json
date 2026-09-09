@@ -1,0 +1,14 @@
+{
+  "name": "veil-bridge-scripts",
+  "private": true,
+  "scripts": {
+    "deploy:evm": "node deploy-evm.js",
+    "deploy:starknet": "node deploy-starknet.js",
+    "wire": "node wire.js",
+    "bridge": "node bridge.js"
+  },
+  "dependencies": {
+    "ethers": "^6",
+    "starknet": "^6.11.0"
+  }
+}

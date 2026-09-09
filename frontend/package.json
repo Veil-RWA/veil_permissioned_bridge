@@ -1,0 +1,22 @@
+{
+  "name": "veil-bridge-app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Bridge permissioned ERC-3643 assets between EVM chains and Starknet.",
+  "scripts": {
+    "dev": "node scripts/pull-deployment.mjs && vite",
+    "build": "node scripts/pull-deployment.mjs && node scripts/typecheck.mjs && vite build",
+    "preview": "vite preview",
+    "typecheck": "node scripts/typecheck.mjs"
+  },
+  "dependencies": {
+    "ethers": "^6.13.0",
+    "get-starknet": "^3.3.0",
+    "starknet": "^6.11.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vite": "^5.4.0"
+  }
+}

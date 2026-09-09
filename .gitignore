@@ -1,3 +1,11 @@
 target/
 .snfoundry_cache/
 node_modules
+
+# script/frontend deps and local env
+scripts/node_modules
+scripts/.env
+frontend/node_modules
+frontend/dist
+frontend/src/deployment.json
+frontend/.env

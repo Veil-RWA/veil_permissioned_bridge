@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Veil Bridge — permissioned RWA across chains</title>
+    <meta name="description" content="Bridge permissioned ERC-3643 assets between EVM chains and Starknet, with compliance state carried across." />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <header class="nav">
+      <div class="nav-inner">
+        <a class="brand" href="/">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span class="brand-name">Veil Bridge</span>
+        </a>
+        <nav class="tabs" role="tablist">
+          <button class="tab is-active" data-view="transfer" role="tab">Transfer</button>
+          <button class="tab" data-view="history" role="tab">History</button>
+        </nav>
+        <div class="nav-right">
+          <a class="nav-link" href="https://github.com/Veil-RWA/veil_permissioned_bridge" target="_blank" rel="noreferrer">Docs</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="hero">
+        <h1>Move permissioned assets, keep the permissions</h1>
+        <p>
+          Escrow an ERC-3643 asset on Ethereum, mint a permissioned twin on Starknet.
+          Eligibility travels with the tokens — and expires if it goes stale.
+        </p>
+      </section>
+
+      <div id="app"></div>
+
+      <section class="assurances">
+        <div class="assurance">
+          <h3>Compliance crosses too</h3>
+          <p>The twin runs the full ERC-3643 gate against a mirror of the source registry, not a copy made once at launch.</p>
+        </div>
+        <div class="assurance">
+          <h3>Fails closed</h3>
+          <p>If the mirror goes stale, transfers stop until someone refreshes it. Anyone can — it only forwards what the source already says.</p>
+        </div>
+        <div class="assurance">
+          <h3>Nothing is stranded</h3>
+          <p>A transfer that arrives for an ineligible holder is quarantined and claimable later, never rejected back into the void.</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <span>Veil Bridge</span>
+      <span class="dot">·</span>
+      <span id="foot-route">—</span>
+      <span class="dot">·</span>
+      <a href="https://testnet.layerzeroscan.com" target="_blank" rel="noreferrer">LayerZero Scan</a>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

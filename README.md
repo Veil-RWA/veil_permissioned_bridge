@@ -23,6 +23,8 @@ bridge/
     contracts/    VeilERC3643Lockbox, ComplianceReader, BridgeMsgCodec, lz/
     test/         41 tests (incl. 15 attack tests) + a JSON-RPC test node
   tools/          export/apply the compliance rule set — 7 unit + 11 e2e
+  scripts/        testnet deployment: deploy, wire, bridge one for real
+  frontend/       the bridge app (Vite + TypeScript)
 ```
 
 ## Contracts
@@ -234,6 +236,38 @@ to the attacker and misdirects nothing (the victim's own bridge-in quarantines
 rather than paying the attacker), and `admin_rebind` undoes it. Preventing it
 outright would mean pre-registering every recipient, which breaks first-time
 bridging entirely. See `binding_capture_is_griefing_only_and_the_owner_can_undo_it`.
+
+## The app
+
+`frontend/` is a Vite + TypeScript app in the shape of a bridge UI: sticky
+Transfer/History nav, one centred card, a vertical From → To stack, quote
+details inline above the action button.
+
+What a permissioned bridge needs that a bearer one does not is the **eligibility
+panel**. On an ERC-3643 asset a transfer can be perfectly funded and still be
+refused, so the card shows the gates in the order they fail — you are verified,
+you are not frozen, the token is not paused, the bridge is an approved holder,
+the recipient is eligible on the far side — before any gas is spent. The
+lockbox-registration check is the one people trip over, and it gets its own line
+with the reason.
+
+It also distinguishes *blocked* from *will arrive held*: a recipient the mirror
+has never seen is a warning, not an error, because the transfer succeeds and
+lands claimable.
+
+```bash
+cd frontend && npm run dev      # reads ../deployments/<pair>.json
+```
+
+With no deployment present it renders a "not deployed" state rather than failing
+to build, so the UI can be worked on before anything is on chain.
+
+## Deploying
+
+See [scripts/README.md](scripts/README.md) for the testnet runbook: deploy both
+sides, wire the peers, have the issuer register the lockbox, replicate the
+compliance rules, then `bridge.js` sends one transfer for real and polls the far
+side until it lands.
 
 ## Running it
 
