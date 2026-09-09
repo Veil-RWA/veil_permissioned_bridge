@@ -1,0 +1,27 @@
+[package]
+name = "veil_bridge"
+version = "0.1.0"
+edition = "2024_07"
+
+# Standalone: the bridge shares no Cairo code with the `veil` pool package. The
+# twin plugs into a Veil ERC-3643 pool by exposing the same entrypoint NAMES
+# (`transfer`, `identity_registry`, `is_verified`, ...), not by linking against
+# it, so there is deliberately no path dependency in either direction.
+[lib]
+
+[dependencies]
+starknet = "2.17.0"
+openzeppelin_security = "2.0.0"
+openzeppelin_token = "2.0.0"
+
+[cairo]
+sierra-replace-ids = false
+inlining-strategy = 2
+
+[dev-dependencies]
+snforge_std = "0.58.1"
+assert_macros = "2.17.0"
+
+[[target.starknet-contract]]
+casm = true
+casm-add-pythonic-hints = true

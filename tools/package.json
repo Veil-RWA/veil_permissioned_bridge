@@ -1,0 +1,11 @@
+{
+  "name": "veil-bridge-tools",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "node spec.test.js && node e2e.test.js"
+  },
+  "dependencies": {
+    "ethers": "^6"
+  }
+}
