@@ -2,7 +2,14 @@
 // Bridge one amount across for real, then watch the far side until it lands.
 //
 //   node bridge.js --asset gold --amount 1000000000000000000 --to 0x<starknet address>
-//                  [--gas-limit 400000] [--watch 900]
+//                  [--note 0x<open note id>] [--gas-limit 400000] [--watch 900]
+//
+// With --note the amount is filled into that open note in a Veil pool, so the
+// position arrives confidential instead of as a public balance. Delivery is
+// best-effort by design: if the far side has no adapter, or it declines, the
+// amount lands in the recipient's wallet. It is never lost -- the escrow here
+// is already spent by the time the message arrives, so the far side may not
+// reject it.
 //
 // This is the script that proves the LayerZero pathway actually works. It:
 //   1. checks the preconditions that otherwise fail deep inside a revert,
@@ -70,6 +77,7 @@ async function main() {
   console.log(`from         ${wallet.address}`);
   console.log(`to           ${args.to} (starknet)`);
   console.log(`amount       ${amount} ${symbol}`);
+  console.log(`lands as     ${args.note ? `pool note ${args.note}` : 'wallet balance'}`);
   console.log(`lockbox      ${slot.evm.lockbox}`);
   console.log(`gateway      ${slot.starknet.gateway}`);
 
@@ -120,7 +128,13 @@ async function main() {
   // ---- send ---------------------------------------------------------------
   step(4, 5, 'escrow + send');
   const supplyBefore = await starknetSupply(snRpc, slot.starknet.token);
-  const tx = await lockbox.bridgeOut(amount, recipient, gasLimit, wallet.address, { value: nativeFee });
+  const tx = args.note
+    ? await lockbox.bridgeOutToPool(
+        amount, recipient,
+        ethers.zeroPadValue('0x' + BigInt(args.note).toString(16).padStart(64, '0'), 32),
+        gasLimit, wallet.address, { value: nativeFee }
+      )
+    : await lockbox.bridgeOut(amount, recipient, gasLimit, wallet.address, { value: nativeFee });
   const receipt = await tx.wait();
   done('tx', tx.hash, `${evmNet.explorer}/tx/${tx.hash}`);
 

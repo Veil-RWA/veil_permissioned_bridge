@@ -3,7 +3,12 @@
 // state first and skips what is already correct, so re-running after a failure
 // costs nothing but RPC calls.
 //
-//   node wire.js --asset gold [--evm ethereum-sepolia] [--starknet starknet-sepolia]
+//   node wire.js --asset gold [--adapter 0x<delivery adapter>]
+//                [--evm ethereum-sepolia] [--starknet starknet-sepolia]
+//
+// --adapter points the gateway at the contract that fills open notes in a Veil
+// pool, so pool-bound transfers arrive confidential. Optional: with none set,
+// every transfer lands in the recipient's wallet.
 //
 // Wires ONE asset's contract set. Each asset has its own lockbox, gateway and
 // twin, so each needs its own wiring pass.
@@ -115,7 +120,17 @@ async function main() {
       [String(d.evmEid), ...peerCalldata(slot.evm.lockbox)]);
   }
 
-  step(6, 6, `lockbox.setPeer(${d.starknetEid} -> gateway)`);
+  if (args.adapter) {
+    step(6, 7, 'gateway.set_delivery_adapter');
+    if (asFelt(await call(slot.starknet.gateway, 'delivery_adapter')) === BigInt(args.adapter)) {
+      done('already set', args.adapter);
+    } else {
+      await invoke('tx', slot.starknet.gateway, 'set_delivery_adapter', [args.adapter]);
+      slot.starknet.deliveryAdapter = args.adapter;
+    }
+  }
+
+  step(args.adapter ? 7 : 6, args.adapter ? 7 : 6, `lockbox.setPeer(${d.starknetEid} -> gateway)`);
   const want = starknetPeer(slot.starknet.gateway);
   const have = await lockbox.peers(d.starknetEid);
   if (have.toLowerCase() === want.toLowerCase()) {

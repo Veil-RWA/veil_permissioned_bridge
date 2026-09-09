@@ -48,7 +48,7 @@ maximum time a revocation on the source chain can go unenforced on the twin;
 ## 3. Wire
 
 ```bash
-node wire.js --asset gold
+node wire.js --asset gold [--adapter 0x<delivery adapter>]
 ```
 
 Sets the internal links and the peers **on both sides**. Idempotent: it reads
@@ -87,6 +87,10 @@ confirm against.
 ```bash
 cd ../scripts
 node bridge.js --asset gold --amount 1000000000000000000 --to 0x<starknet address>
+
+# or, to arrive inside a Veil pool note rather than a public wallet:
+node bridge.js --asset gold --amount 1000000000000000000 \
+  --to 0x<starknet address> --note 0x<open note id>
 ```
 
 Checks the preconditions, quotes the fee from the real endpoint, escrows, sends,

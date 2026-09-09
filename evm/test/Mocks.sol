@@ -186,10 +186,13 @@ contract CodecHarness {
         uint64 seq,
         bool verified,
         bool frozen,
-        uint16 country
+        uint16 country,
+        uint8 delivery,
+        bytes32 noteId
     ) external pure returns (bytes memory) {
-        return
-            BridgeMsgCodec.encodeMint(evmSender, snRecipient, amount, seq, verified, frozen, country);
+        return BridgeMsgCodec.encodeMint(
+            evmSender, snRecipient, amount, seq, verified, frozen, country, delivery, noteId
+        );
     }
 
     function encodeIdentity(
@@ -217,7 +220,7 @@ contract CodecHarness {
     function decodeMint(bytes calldata message)
         external
         pure
-        returns (address, bytes32, uint256, uint64, bool, bool, uint16)
+        returns (address, bytes32, uint256, uint64, bool, bool, uint16, uint8, bytes32)
     {
         return BridgeMsgCodec.decodeMint(message);
     }

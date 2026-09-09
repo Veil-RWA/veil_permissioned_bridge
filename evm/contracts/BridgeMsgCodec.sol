@@ -14,7 +14,11 @@ library BridgeMsgCodec {
     uint8 internal constant KIND_GLOBAL = 3;
     uint8 internal constant KIND_UNLOCK = 4;
 
-    uint256 internal constant MINT_LEN = 109;
+    /// Where a bridge-in should land on Starknet.
+    uint8 internal constant DELIVERY_WALLET = 0;
+    uint8 internal constant DELIVERY_POOL = 1;
+
+    uint256 internal constant MINT_LEN = 142;
     uint256 internal constant IDENTITY_LEN = 45;
     uint256 internal constant GLOBAL_LEN = 10;
     uint256 internal constant UNLOCK_LEN = 65;
@@ -37,7 +41,9 @@ library BridgeMsgCodec {
         uint64 seq,
         bool verified,
         bool frozen,
-        uint16 country
+        uint16 country,
+        uint8 delivery,
+        bytes32 noteId
     ) internal pure returns (bytes memory) {
         return abi.encodePacked(
             KIND_MINT,
@@ -47,7 +53,9 @@ library BridgeMsgCodec {
             seq,
             verified,
             frozen,
-            country
+            country,
+            delivery,
+            noteId
         );
     }
 
@@ -107,7 +115,9 @@ library BridgeMsgCodec {
             uint64 seq,
             bool verified,
             bool frozen,
-            uint16 country
+            uint16 country,
+            uint8 delivery,
+            bytes32 noteId
         )
     {
         if (message.length != MINT_LEN) revert BadLength(message.length);
@@ -119,6 +129,8 @@ library BridgeMsgCodec {
         verified = uint8(message[105]) != 0;
         frozen = uint8(message[106]) != 0;
         country = uint16(bytes2(message[107:109]));
+        delivery = uint8(message[109]);
+        noteId = bytes32(message[110:142]);
     }
 
     function decodeIdentity(bytes calldata message)

@@ -151,3 +151,82 @@ pub mod MockNativeToken {
         }
     }
 }
+
+/// TEST ONLY. A delivery adapter that can misbehave in every way the gateway
+/// has to survive: pull and succeed, decline without pulling, revert outright,
+/// or claim success while taking nothing.
+#[starknet::interface]
+pub trait IMockAdapterExt<TContractState> {
+    /// 0 pull+true, 1 decline, 2 revert, 3 true but no pull.
+    fn set_mode(ref self: TContractState, mode: u8);
+    fn pulled(self: @TContractState) -> u256;
+    fn last_recipient(self: @TContractState) -> ContractAddress;
+    fn last_note(self: @TContractState) -> felt252;
+    fn calls(self: @TContractState) -> u32;
+}
+
+#[starknet::contract]
+pub mod MockPoolAdapter {
+    use openzeppelin_token::erc20::interface::{IERC20Dispatcher, IERC20DispatcherTrait};
+    use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess};
+    use starknet::{ContractAddress, get_caller_address, get_contract_address};
+    use veil_bridge::delivery::IVeilDeliveryAdapter;
+    use super::IMockAdapterExt;
+
+    #[storage]
+    struct Storage {
+        mode: u8,
+        pulled: u256,
+        last_recipient: ContractAddress,
+        last_note: felt252,
+        calls: u32,
+    }
+
+    #[abi(embed_v0)]
+    impl AdapterImpl of IVeilDeliveryAdapter<ContractState> {
+        fn deliver(
+            ref self: ContractState,
+            token: ContractAddress,
+            recipient: ContractAddress,
+            amount: u256,
+            note_id: felt252,
+        ) -> bool {
+            self.calls.write(self.calls.read() + 1);
+            self.last_recipient.write(recipient);
+            self.last_note.write(note_id);
+
+            let mode = self.mode.read();
+            assert(mode != 2, 'ADAPTER_BOOM');
+            if mode == 1 {
+                return false;
+            }
+            if mode == 3 {
+                return true; // claims success, takes nothing
+            }
+
+            IERC20Dispatcher { contract_address: token }
+                .transfer_from(get_caller_address(), get_contract_address(), amount);
+            self.pulled.write(self.pulled.read() + amount);
+            true
+        }
+    }
+
+    #[abi(embed_v0)]
+    impl ExtImpl of IMockAdapterExt<ContractState> {
+        fn set_mode(ref self: ContractState, mode: u8) {
+            self.mode.write(mode);
+        }
+        fn pulled(self: @ContractState) -> u256 {
+            self.pulled.read()
+        }
+        fn last_recipient(self: @ContractState) -> ContractAddress {
+            self.last_recipient.read()
+        }
+        fn last_note(self: @ContractState) -> felt252 {
+            self.last_note.read()
+        }
+        fn calls(self: @ContractState) -> u32 {
+            self.calls.read()
+        }
+    }
+}

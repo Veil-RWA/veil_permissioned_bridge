@@ -17,11 +17,11 @@ linking against it.
 ```
 bridge/
   cairo/          Starknet side — own Scarb package (veil_bridge)
-    src/          mirrored_registry, bridged_token, gateway, compliance/rules
-    tests/        74 tests (incl. 26 attack tests)
+    src/          mirrored_registry, bridged_token, gateway, compliance/rules, delivery
+    tests/        86 tests (incl. 26 attack, 11 delivery)
   evm/            EVM side — own solc build + harness
     contracts/    VeilERC3643Lockbox, ComplianceReader, BridgeMsgCodec, lz/
-    test/         41 tests (incl. 15 attack tests) + a JSON-RPC test node
+    test/         44 tests (incl. 15 attack tests) + a JSON-RPC test node
   tools/          export/apply the compliance rule set — 7 unit + 11 e2e
   scripts/        testnet deployment: deploy, wire, bridge one for real
   frontend/       the bridge app (Vite + TypeScript)
@@ -104,6 +104,37 @@ safe direction:
 - **An unbound wallet has no identity**, so every identity-keyed rule fails
   closed for it.
 
+## Where a bridge-in lands
+
+Minting to the recipient's wallet is the default. It is simple and always
+available, but it is a **public balance** — the wrong destination for an asset
+whose point is confidential settlement.
+
+So a transfer may instead be addressed to an **open note** in a Veil pool, and
+arrives already private. The sender chooses per transfer; the mode and the note
+id ride in the MINT message.
+
+The pool is reached through a one-entrypoint `IVeilDeliveryAdapter`, declared in
+`cairo/src/delivery.cairo` and implemented elsewhere. That is deliberately all
+this repo knows about the pool: no dependency on its internals, nothing to break
+when they change, and it works unchanged with no adapter configured.
+
+**Delivery is best-effort, and that is a safety property, not a shortcut.** By
+the time a MINT arrives the tokens are already escrowed on the source chain, so
+`lz_receive` may not reject it — and an adapter is third-party code called from
+inside that path. The gateway therefore mints into its own custody and
+**approves the adapter to pull**, rather than pushing tokens at it. An adapter
+that reverts, declines, or claims success while taking nothing never receives
+anything, and the sweep hands the balance to the recipient's wallet. Each of
+those four cases has a test.
+
+Two things delivery does **not** change: it never widens who may hold — an
+ineligible recipient quarantines exactly as before, and the adapter is not even
+called — and the gateway's standing as an eligible holder is narrow. It may take
+custody mid-delivery because it is already the only address that can mint, so a
+transient balance is strictly less power than it has; it holds nothing after,
+and no allowance is left behind.
+
 ## The three problems a naive mirror gets wrong
 
 **Address gap.** The EVM registry judges an EVM address; the holder on Starknet
@@ -142,7 +173,7 @@ a one-sided change fails a test rather than a testnet.
 
 | Kind | Direction | Bytes | Payload |
 |---|---|---|---|
-| 1 `MINT` | EVM → SN | 109 | evm_sender, sn_recipient, amount, seq, verified, frozen, country |
+| 1 `MINT` | EVM → SN | 142 | evm_sender, sn_recipient, amount, seq, verified, frozen, country, delivery, note_id |
 | 2 `IDENTITY` | EVM → SN | 45 | evm_account, seq, verified, frozen, country |
 | 3 `GLOBAL` | EVM → SN | 10 | seq, paused |
 | 4 `UNLOCK` | SN → EVM | 65 | evm_recipient, amount |
@@ -286,9 +317,9 @@ supported` hint error rather than anything that points at the cause.
 
 ```bash
 bash setup.sh                       # npm install + link node_modules
-bash test.sh                        # everything, 133 tests
-(cd cairo && snforge test)          # 74
-(cd evm/script && bash test.sh)     # 41
+bash test.sh                        # everything, 148 tests
+(cd cairo && snforge test)          # 86
+(cd evm/script && bash test.sh)     # 44
 (cd tools && node spec.test.js)     # 7
 (cd tools && node e2e.test.js)      # 11
 ```
@@ -300,6 +331,13 @@ quarantine; a snapshot overtaken by a revocation; quarantine and claim on both
 sides; fee collection; the supply/escrow invariant across a round trip; the
 exact semantics of all five mirrored T-REX modules including per-identity
 balance; `apply_spec` replace-not-merge and `export_spec` round-trip.
+
+**Delivery** (`cairo/tests/test_delivery.cairo`): a pool transfer landing in the
+note and not the wallet; the gateway retaining nothing and leaving no allowance;
+and every way an adapter can fail — reverting, declining, and claiming success
+without pulling — each degrading to the wallet. Plus: no adapter configured, no
+note id, a pool transfer for an ineligible recipient still quarantining without
+the adapter being called, and the wallet path unaffected by a configured adapter.
 
 **Attacks** (`cairo/tests/test_attacks.cairo`, `evm/test/attack.test.js`):
 forged and spoofed inbound messages; releases larger than the escrow; redirected

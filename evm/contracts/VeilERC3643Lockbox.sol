@@ -52,7 +52,13 @@ contract VeilERC3643Lockbox is OAppLite {
     uint256 public totalEscrowed;
 
     event BridgedOut(
-        address indexed sender, bytes32 indexed snRecipient, uint256 amount, uint64 seq, bytes32 guid
+        address indexed sender,
+        bytes32 indexed snRecipient,
+        uint256 amount,
+        uint64 seq,
+        bytes32 guid,
+        uint8 delivery,
+        bytes32 noteId
     );
     event ComplianceSynced(
         address indexed account, uint64 seq, bool verified, bool frozen, uint16 country
@@ -64,6 +70,7 @@ contract VeilERC3643Lockbox is OAppLite {
     event DstEidSet(uint32 dstEid);
 
     error ZeroAmount();
+    error ZeroNoteId();
     error NotVerified(address account);
     error EscrowFailed();
     error NothingClaimable();
@@ -86,16 +93,50 @@ contract VeilERC3643Lockbox is OAppLite {
 
     // ------------------------------------------------------------- outbound
 
-    /// Escrow `amount` and mint the twin to `snRecipient` on Starknet.
+    /// Escrow `amount` and mint the twin to `snRecipient`'s WALLET on Starknet.
     ///
     /// `snRecipient` is a Starknet address as a 32-byte word. The sender's
     /// current registry state rides along in the same message, so a first-time
     /// bridger arrives on the far side already eligible.
+    ///
+    /// This lands as a public balance. To arrive inside a Veil pool instead,
+    /// use `bridgeOutToPool`.
     function bridgeOut(uint256 amount, bytes32 snRecipient, uint128 gasLimit, address refundAddress)
         external
         payable
         returns (bytes32 guid)
     {
+        return _bridge(amount, snRecipient, BridgeMsgCodec.DELIVERY_WALLET, bytes32(0), gasLimit, refundAddress);
+    }
+
+    /// Escrow `amount` and have it filled into `noteId`, an open note the
+    /// recipient holds in a Veil pool on Starknet, so the position arrives
+    /// confidential rather than as a public balance.
+    ///
+    /// Delivery is best-effort by design. If the far side has no adapter
+    /// configured, or the adapter refuses, or the note cannot be filled, the
+    /// amount lands in `snRecipient`'s wallet instead. It is never lost and
+    /// never stranded -- the escrow here is already spent by the time the
+    /// message arrives, so the far side may not reject it.
+    function bridgeOutToPool(
+        uint256 amount,
+        bytes32 snRecipient,
+        bytes32 noteId,
+        uint128 gasLimit,
+        address refundAddress
+    ) external payable returns (bytes32 guid) {
+        if (noteId == bytes32(0)) revert ZeroNoteId();
+        return _bridge(amount, snRecipient, BridgeMsgCodec.DELIVERY_POOL, noteId, gasLimit, refundAddress);
+    }
+
+    function _bridge(
+        uint256 amount,
+        bytes32 snRecipient,
+        uint8 delivery,
+        bytes32 noteId,
+        uint128 gasLimit,
+        address refundAddress
+    ) private returns (bytes32 guid) {
         if (amount == 0) revert ZeroAmount();
 
         IIdentityRegistry registry = IIdentityRegistry(token.identityRegistry());
@@ -118,11 +159,13 @@ contract VeilERC3643Lockbox is OAppLite {
             s,
             true,
             _isFrozen(msg.sender),
-            registry.investorCountry(msg.sender)
+            registry.investorCountry(msg.sender),
+            delivery,
+            noteId
         );
 
         guid = _lzSend(dstEid, message, _lzReceiveOptions(gasLimit), refundAddress).guid;
-        emit BridgedOut(msg.sender, snRecipient, amount, s, guid);
+        emit BridgedOut(msg.sender, snRecipient, amount, s, guid, delivery, noteId);
     }
 
     /// Push `account`'s current eligibility to the mirror. Permissionless by
@@ -164,13 +207,17 @@ contract VeilERC3643Lockbox is OAppLite {
         emit GlobalSynced(s, paused);
     }
 
+    /// Message size does not vary with the delivery mode -- MINT is fixed
+    /// width -- so one quote covers both entrypoints.
     function quoteBridgeOut(uint256 amount, bytes32 snRecipient, uint128 gasLimit)
         external
         view
         returns (MessagingFee memory)
     {
-        bytes memory message =
-            BridgeMsgCodec.encodeMint(msg.sender, snRecipient, amount, seq + 1, true, false, 0);
+        bytes memory message = BridgeMsgCodec.encodeMint(
+            msg.sender, snRecipient, amount, seq + 1, true, false, 0,
+            BridgeMsgCodec.DELIVERY_WALLET, bytes32(0)
+        );
         return _quote(dstEid, message, _lzReceiveOptions(gasLimit));
     }
 
