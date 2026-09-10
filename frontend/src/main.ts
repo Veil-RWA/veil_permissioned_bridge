@@ -26,7 +26,7 @@ import * as sn from './starknet';
 import { load as loadHistory, record, update, type Transfer } from './history';
 import {
   deriveNoteContext, findFillableNote, nextEmptySlot, forgetViewingKey,
-  type NoteContext, type NoteSlot,
+  hasCachedViewingKey, type NoteContext, type NoteSlot,
 } from './notes';
 import {
   checkPool, mainPool, poolFactory, normalisePoolAddress, POOL_PROBLEMS, type PoolCheck,
@@ -319,12 +319,13 @@ function selectedPool(): string | undefined {
 /// somebody else's note.
 function noteSection(claimed: string | undefined, mine: boolean, unclaimed: boolean): string {
   if (!state.snSession) {
-    // Connecting is what derives the key and finds the note -- one step.
-    return `<p class="delivery-note">Connect your ${esc(starknetLabel)} wallet. You sign one message, which derives your viewing key and locates your note. No transaction.</p>`;
+    return `<p class="delivery-note">Connect your ${esc(starknetLabel)} wallet to find your open note.</p>`;
   }
   if (!state.noteCtx) {
-    return `<p class="delivery-note">Your note is derived from your viewing key, which never leaves this device. One signature, no transaction.</p>
-      <button id="derive-note" class="max" style="margin-top:8px">Find my open note</button>`;
+    // The one signature in the app, and it happens here because the holder
+    // asked -- never as a side effect of connecting.
+    return `<p class="delivery-note">Your note is derived from your viewing key, which never leaves this device. This asks your wallet to <strong>sign one message</strong> — it is not a transaction and costs nothing.</p>
+      <button id="derive-note" class="max" style="margin-top:8px">Sign to find my open note</button>`;
   }
   if (!state.noteId) {
     const empty = state.noteEmptySlot;
@@ -933,12 +934,30 @@ async function doConnectStarknet(): Promise<void> {
   state.busy = undefined;
   await refreshAll();
 
-  // Now the note. A cached key needs no signature, so a reload is silent.
-  if (toStarknet() && state.asset.poolReady) await doFindNote();
+  // The note, but only if it costs no signature. Connecting must not sign.
+  await findNoteIfFree();
 }
 
 /// Derive the viewing key, find this holder's fillable note, and read who has
 /// claimed it. One signature; no transaction and nothing stored.
+/// Find the note only if that costs NO signature.
+///
+/// Connecting a wallet must not sign anything. Deriving the viewing key does
+/// sign -- it is what produces the key -- so it happens when the holder asks
+/// for it, not as a side effect of pressing Connect. Once derived it is cached,
+/// so every later connect and every reload finds the note silently.
+async function findNoteIfFree(): Promise<void> {
+  if (!state.snSession || !toStarknet() || !state.asset.poolReady) return;
+  let chainId: string;
+  try { chainId = (await sn.snProvider.getChainId()) as unknown as string; }
+  catch { return; }
+  if (!hasCachedViewingKey(state.snSession.address, chainId)) {
+    render();   // leaves the "Find my open note" button for the holder to press
+    return;
+  }
+  await doFindNote();
+}
+
 async function doFindNote(): Promise<void> {
   if (!state.snSession) return doConnectStarknet();
   state.busy = 'Check your wallet…'; paintCta();
@@ -1153,8 +1172,7 @@ async function boot(): Promise<void> {
   if (!snSession && !evmSession) return;
 
   await refreshAll();
-  // A cached viewing key needs no signature, so the note comes back silently.
-  if (snSession && toStarknet() && state.asset.poolReady) await doFindNote();
+  await findNoteIfFree();
 }
 
 async function doDisconnect(which: 'sn' | 'evm'): Promise<void> {
