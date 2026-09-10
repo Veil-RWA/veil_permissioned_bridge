@@ -40,6 +40,24 @@
 
 use starknet::ContractAddress;
 
+/// An address registered HERE rather than mirrored from the source chain.
+///
+/// Every mirrored record describes an investor with an EVM counterpart. A
+/// Starknet CONTRACT -- a Veil pool, an AMM, a lending market -- has none, so it
+/// can never satisfy the binding and could never receive the twin. That would
+/// make the asset unusable in any protocol, which defeats the point of bridging
+/// it. Infrastructure is therefore registered directly, exactly as a T-REX agent
+/// registers a pool in an identity registry on its own chain.
+///
+/// Deliberately NOT subject to the staleness window: there is no source record
+/// to go stale. Borrowing an investor's binding instead (via `admin_rebind`)
+/// would look like it works and then start failing when that record expired.
+#[derive(Copy, Drop, Serde, PartialEq, Debug, starknet::Store)]
+pub struct LocalIdentity {
+    pub allowed: bool,
+    pub country: u16,
+}
+
 #[derive(Copy, Drop, Serde, PartialEq, Debug, starknet::Store)]
 pub struct IdentityRecord {
     /// Source-assigned sequence number. 0 means "never synced".
@@ -89,6 +107,15 @@ pub trait IVeilMirroredRegistry<TContractState> {
     /// Recovery lever for a wallet bound to the wrong identity. Mirrors the
     /// agent recovery powers ERC-3643 already defines.
     fn admin_rebind(ref self: TContractState, sn_account: ContractAddress, evm_account: felt252);
+    /// Register (or revoke) a Starknet address that holds the twin as
+    /// infrastructure rather than as an investor. Owner-gated, and the owner
+    /// already controls this deployment, so it grants no new authority -- but
+    /// it IS a declaration that an address may hold, so register contracts you
+    /// have reason to trust, not arbitrary addresses.
+    fn set_local_identity(
+        ref self: TContractState, sn_account: ContractAddress, allowed: bool, country: u16,
+    );
+    fn local_identity(self: @TContractState, sn_account: ContractAddress) -> LocalIdentity;
     fn transfer_ownership(ref self: TContractState, new_owner: ContractAddress);
 }
 
@@ -100,7 +127,7 @@ pub mod VeilMirroredRegistry {
         StoragePointerWriteAccess,
     };
     use starknet::{ContractAddress, get_block_timestamp, get_caller_address};
-    use super::{IVeilMirroredRegistry, IdentityRecord};
+    use super::{IVeilMirroredRegistry, IdentityRecord, LocalIdentity};
 
     /// `evm_account` stays: without it an operator cannot tell WHICH record
     /// moved, and the event is useless. `country` does not -- it is a KYC
@@ -143,6 +170,15 @@ pub mod VeilMirroredRegistry {
         pub sn_account: ContractAddress,
     }
 
+    /// Carries no country: it is a KYC-shaped attribute and nothing reads it
+    /// back from the log, same rule as everywhere else here.
+    #[derive(Drop, starknet::Event)]
+    pub struct LocalIdentitySet {
+        #[key]
+        pub sn_account: ContractAddress,
+        pub allowed: bool,
+    }
+
     #[derive(Drop, starknet::Event)]
     pub struct GlobalApplied {
         pub seq: u64,
@@ -175,6 +211,7 @@ pub mod VeilMirroredRegistry {
         IdentityDropped: IdentityDropped,
         WalletBound: WalletBound,
         BindingConflict: BindingConflict,
+        LocalIdentitySet: LocalIdentitySet,
         GlobalApplied: GlobalApplied,
         StalenessWindowSet: StalenessWindowSet,
         GatewaySet: GatewaySet,
@@ -189,6 +226,9 @@ pub mod VeilMirroredRegistry {
         identities: Map<felt252, IdentityRecord>,
         /// Starknet wallet -> the EVM identity that backs it. 0 = unbound.
         bindings: Map<ContractAddress, felt252>,
+        /// Contracts registered here rather than mirrored. Checked before the
+        /// binding, so infrastructure never depends on an investor's record.
+        local_identities: Map<ContractAddress, LocalIdentity>,
         /// Seconds a record stays usable. 0 disables expiry, which is only
         /// appropriate on a devnet: on a live deployment an unbounded window
         /// means an unbounded revocation lag.
@@ -207,8 +247,14 @@ pub mod VeilMirroredRegistry {
     #[abi(embed_v0)]
     impl VeilMirroredRegistryImpl of IVeilMirroredRegistry<ContractState> {
         fn is_verified(self: @ContractState, account: ContractAddress) -> bool {
+            // A global pause stops everything, infrastructure included.
             if self.global_paused.read() {
                 return false;
+            }
+            // Locally registered infrastructure short-circuits the binding: it
+            // has no source record, so there is nothing to look up or expire.
+            if self.local_identities.read(account).allowed {
+                return true;
             }
             let evm_account = self.bindings.read(account);
             if evm_account == 0 {
@@ -222,6 +268,10 @@ pub mod VeilMirroredRegistry {
         }
 
         fn investor_country(self: @ContractState, account: ContractAddress) -> u16 {
+            let local = self.local_identities.read(account);
+            if local.allowed {
+                return local.country;
+            }
             let evm_account = self.bindings.read(account);
             if evm_account == 0 {
                 return 0;
@@ -353,6 +403,19 @@ pub mod VeilMirroredRegistry {
             assert(!sn_account.is_zero(), 'ZERO_SN_ACCOUNT');
             self.bindings.write(sn_account, evm_account);
             self.emit(WalletBound { sn_account });
+        }
+
+        fn set_local_identity(
+            ref self: ContractState, sn_account: ContractAddress, allowed: bool, country: u16,
+        ) {
+            self.assert_owner();
+            assert(!sn_account.is_zero(), 'ZERO_SN_ACCOUNT');
+            self.local_identities.write(sn_account, LocalIdentity { allowed, country });
+            self.emit(LocalIdentitySet { sn_account, allowed });
+        }
+
+        fn local_identity(self: @ContractState, sn_account: ContractAddress) -> LocalIdentity {
+            self.local_identities.read(sn_account)
         }
 
         fn transfer_ownership(ref self: ContractState, new_owner: ContractAddress) {

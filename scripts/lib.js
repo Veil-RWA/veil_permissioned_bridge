@@ -14,7 +14,13 @@ function parseArgs(argv) {
       out.yes = true;
       continue;
     }
-    out[key] = argv[++i];
+    const value = argv[++i];
+    // Repeating a flag collects it, so --holder can be given several times.
+    if (key in out && key !== 'evm' && key !== 'starknet' && key !== 'asset') {
+      out[key] = [].concat(out[key], value);
+    } else {
+      out[key] = value;
+    }
   }
   return out;
 }

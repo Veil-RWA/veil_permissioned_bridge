@@ -18,7 +18,7 @@ linking against it.
 bridge/
   cairo/          Starknet side — own Scarb package (veil_bridge)
     src/          mirrored_registry, bridged_token, gateway, compliance/rules
-    tests/        74 tests (incl. 26 attack tests)
+    tests/        82 tests (incl. 26 attack, 8 contract-holder)
   evm/            EVM side — own solc build + harness
     contracts/    VeilERC3643Lockbox, ComplianceReader, BridgeMsgCodec, lz/
     test/         41 tests (incl. 15 attack tests) + a JSON-RPC test node
@@ -163,6 +163,28 @@ address — and the LayerZero message payload carries `evm_sender` and
 `sn_recipient` in plaintext, since the gateway needs the recipient to mint. A
 bridged position is identified at arrival. The pool protects what happens after,
 not the entry.
+
+## Contracts holding the twin
+
+Eligibility is derived from an EVM binding, and a Starknet **contract** — a Veil
+pool, an AMM, a lending market — has no EVM counterpart. Left there, the twin
+could only ever move between bridged wallets, which makes it useless in any
+protocol.
+
+So infrastructure is registered directly with `set_local_identity`, exactly as a
+T-REX agent registers a pool in an identity registry on its own chain:
+
+```bash
+node wire.js --asset gold --holder 0x<pool> --holder 0x<router>
+```
+
+It is deliberately **not** subject to the staleness window: there is no source
+record to expire. Borrowing an investor's binding via `admin_rebind` instead
+would appear to work and then start failing when that record aged out — a trap,
+not a workaround.
+
+It remains subject to everything else: a global pause stops it, the token's own
+freeze stops it, and only the owner can grant it. Each of those is tested.
 
 ## The three problems a naive mirror gets wrong
 
@@ -379,8 +401,8 @@ supported` hint error rather than anything that points at the cause.
 
 ```bash
 bash setup.sh                       # npm install + link node_modules
-bash test.sh                        # everything, 133 tests
-(cd cairo && snforge test)          # 74
+bash test.sh                        # everything, 141 tests
+(cd cairo && snforge test)          # 82
 (cd evm/script && bash test.sh)     # 41
 (cd tools && node spec.test.js)     # 7
 (cd tools && node e2e.test.js)      # 11
