@@ -33,6 +33,9 @@ type State = {
   direction: Direction;
   asset: Asset;
   pickerOpen: boolean;
+  delivery: evm.Delivery;
+  noteId: string;
+  noteClaimedBy?: string;
   evmSession?: evm.EvmSession;
   snSession?: sn.SnSession;
   token: { symbol: string; decimals: number };
@@ -54,6 +57,8 @@ const state: State = {
   direction: 'toStarknet',
   asset: initial,
   pickerOpen: false,
+  delivery: 'wallet',
+  noteId: '',
   token: { symbol: initial.symbol, decimals: initial.decimals },
   amount: '',
   recipient: '',
@@ -211,6 +216,52 @@ function claimsCard(): string {
   </div>`;
 }
 
+// ------------------------------------------------------------------ delivery
+
+/// Where a bridge-in lands. Only offered when bridging IN and the asset's
+/// gateway has a pool configured -- there is nothing to choose otherwise.
+function deliveryControls(): string {
+  if (!toStarknet() || !state.asset.poolReady) return '';
+  const pool = state.delivery === 'pool';
+  const claimed = state.noteClaimedBy;
+  const mine = claimed && state.snSession &&
+    BigInt(claimed) === BigInt(state.snSession.address);
+  const unclaimed = claimed !== undefined && BigInt(claimed) === 0n;
+
+  let noteState = '';
+  if (pool && state.noteId) {
+    if (claimed === undefined) noteState = '';
+    else if (mine) noteState = `<p class="delivery-note is-ok">Claimed by you. Ready to fill.</p>`;
+    else if (unclaimed) {
+      noteState = `<p class="delivery-note is-warn">Not claimed yet. Claim it, or the transfer lands in the wallet above.</p>
+        <button id="claim-note" class="max" style="margin-top:8px" ${state.snSession ? '' : 'disabled'}>
+          ${state.snSession ? 'Claim this note' : 'Connect Starknet wallet'}</button>`;
+    } else {
+      noteState = `<p class="delivery-note is-warn">Claimed by another address, so it cannot be filled for you. The transfer would land in the wallet above.</p>`;
+    }
+  }
+
+  return `<div class="delivery">
+    <div class="seg" role="radiogroup" aria-label="Where it lands">
+      <button class="seg-btn${pool ? '' : ' is-on'}" data-delivery="wallet" role="radio" aria-checked="${!pool}">Wallet</button>
+      <button class="seg-btn${pool ? ' is-on' : ''}" data-delivery="pool" role="radio" aria-checked="${pool}">Veil pool</button>
+    </div>
+    ${pool
+      ? `<input id="note" class="recipient" placeholder="0x… open note id" value="${esc(state.noteId)}" />
+         ${noteState}
+         <p class="delivery-note">Filled into your open note, so the position arrives in the pool rather than as a public balance. If it cannot be filled it lands in the wallet above — never lost.</p>`
+      : `<p class="delivery-note">Arrives as a public balance on ${esc(starknetLabel)}.</p>`}
+  </div>`;
+}
+
+/// A note id must be a non-zero felt. Refusing an empty one saves a message
+/// that would silently degrade on the far side.
+function validNoteId(): boolean {
+  const raw = state.noteId.trim();
+  if (!raw) return false;
+  try { return BigInt(raw) !== 0n; } catch { return false; }
+}
+
 // ------------------------------------------------------------- asset picker
 
 function assetPill(): string {
@@ -263,6 +314,14 @@ function ctaLabel(): { text: string; disabled: boolean; note: string } {
     if (s && !s.verified) return { text: 'Not eligible to bridge', disabled: true, note: 'Your address is not verified on the source registry.' };
     if (s && !s.lockboxRegistered) return { text: 'Bridge not approved by issuer', disabled: true, note: 'The lockbox must be a registered identity before any escrow can succeed.' };
     if (s && s.allowance < amount) return { text: `Approve ${state.token.symbol}`, disabled: false, note: 'One approval, then the transfer.' };
+    if (state.delivery === 'pool') {
+      if (!validNoteId()) {
+        return { text: 'Enter an open note id', disabled: true, note: 'A pool delivery needs a note to fill.' };
+      }
+      if (amount >= (1n << 128n)) {
+        return { text: 'Amount too large for a note', disabled: true, note: 'A note holds at most 2^128 - 1 base units.' };
+      }
+    }
     const fee = state.fee !== undefined ? `${units(state.fee, 18, 5)} ETH` : '…';
     return { text: 'Bridge', disabled: false, note: `Message fee ${fee}, paid to LayerZero.` };
   }
@@ -313,6 +372,7 @@ function transferView(): string {
       <div class="chain"><span class="chain-mark ${destMark()}">${toStarknet() ? 'S' : 'E'}</span>${esc(destLabel())}</div>
       <input id="recipient" class="recipient" placeholder="0x… recipient on ${esc(destLabel())}" value="${esc(state.recipient)}" />
       ${connectDest}
+      ${deliveryControls()}
     </div>
 
     ${eligibilityCard()}
@@ -321,6 +381,8 @@ function transferView(): string {
     <dl class="details">
       <div class="detail"><dt>Asset</dt><dd>${esc(state.asset.name)}</dd></div>
       <div class="detail"><dt>Route</dt><dd>${esc(sourceLabel())} → ${esc(destLabel())}</dd></div>
+      ${toStarknet() && state.asset.poolReady
+        ? `<div class="detail"><dt>Lands as</dt><dd>${state.delivery === 'pool' ? 'Pool note' : 'Wallet balance'}</dd></div>` : ''}
       <div class="detail"><dt>Message fee</dt><dd>${state.fee !== undefined ? units(state.fee, 18, 6) + (toStarknet() ? ' ETH' : ' STRK') : '—'}</dd></div>
       <div class="detail"><dt>Bridge fee</dt><dd>0</dd></div>
       <div class="detail"><dt>Estimated time</dt><dd>~3–10 min</dd></div>
@@ -392,6 +454,21 @@ function render(): void {
   document.querySelectorAll<HTMLButtonElement>('.asset-row').forEach((row) => {
     row.onclick = () => void selectAsset(row.dataset.asset!);
   });
+
+  document.querySelectorAll<HTMLButtonElement>('.seg-btn').forEach((b) => {
+    b.onclick = () => {
+      state.delivery = b.dataset.delivery as evm.Delivery;
+      if (state.delivery === 'wallet') { state.noteId = ''; state.noteClaimedBy = undefined; }
+      render();
+    };
+  });
+  const note = document.getElementById('note') as HTMLInputElement | null;
+  if (note) {
+    note.oninput = () => { state.noteId = note.value.trim(); state.noteClaimedBy = undefined; paintCta(); };
+    note.onchange = () => void refreshNoteOwner();
+  }
+  const claimNote = document.getElementById('claim-note');
+  if (claimNote) claimNote.onclick = () => void doClaimNote();
 
   const connectDest = document.getElementById('connect-dest');
   if (connectDest) connectDest.onclick = () => void (toStarknet() ? doConnectStarknet(true) : doConnectEvm(true));
@@ -537,6 +614,30 @@ async function doConnectStarknet(destOnly = false): Promise<void> {
   await refreshAll();
 }
 
+async function refreshNoteOwner(): Promise<void> {
+  if (!validNoteId() || !state.asset.poolReady) { state.noteClaimedBy = undefined; render(); return; }
+  try {
+    state.noteClaimedBy = await sn.noteOwner(state.asset, state.noteId);
+  } catch {
+    state.noteClaimedBy = undefined;
+  }
+  render();
+}
+
+async function doClaimNote(): Promise<void> {
+  if (!state.snSession) return doConnectStarknet();
+  state.busy = 'Claiming note…'; paintCta();
+  try {
+    await sn.registerNote(state.snSession, state.asset, state.noteId);
+    state.notice = 'Note claimed. Only a transfer addressed to you can fill it.';
+  } catch (e: any) {
+    state.error = e?.message ?? String(e);
+  } finally {
+    state.busy = undefined;
+    await refreshNoteOwner();
+  }
+}
+
 async function doClaimStarknet(): Promise<void> {
   if (!state.snSession) return doConnectStarknet();
   const owner = state.recipient || state.snSession.address;
@@ -588,7 +689,9 @@ async function onCta(): Promise<void> {
       }
       const fee = state.fee ?? (await evm.quote(asset, amount, state.recipient));
       state.busy = 'Confirm in wallet…'; paintCta();
-      const { hash, guid } = await evm.bridgeOut(state.evmSession!, asset, amount, state.recipient, fee);
+      const { hash, guid } = await evm.bridgeOut(
+        state.evmSession!, asset, amount, state.recipient, fee, state.delivery, state.noteId
+      );
       record({
         direction: 'toStarknet', asset: asset.id, symbol: state.token.symbol,
         amount: units(amount, state.token.decimals), recipient: state.recipient,

@@ -151,3 +151,64 @@ pub mod MockNativeToken {
         }
     }
 }
+
+/// TEST ONLY. A Veil pool stand-in that can misbehave in every way the gateway
+/// has to survive: pull and fill, revert, or accept the call and take nothing.
+#[starknet::interface]
+pub trait IMockPoolExt<TContractState> {
+    /// 0 pull+fill, 1 revert, 2 accept but take nothing.
+    fn set_mode(ref self: TContractState, mode: u8);
+    fn filled(self: @TContractState, note_id: felt252) -> u128;
+    fn calls(self: @TContractState) -> u32;
+}
+
+#[starknet::contract]
+pub mod MockVeilPool {
+    use openzeppelin_token::erc20::interface::{IERC20Dispatcher, IERC20DispatcherTrait};
+    use starknet::storage::{
+        Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
+        StoragePointerWriteAccess,
+    };
+    use starknet::{ContractAddress, get_caller_address, get_contract_address};
+    use veil_bridge::pool::IVeilPool;
+    use super::IMockPoolExt;
+
+    #[storage]
+    struct Storage {
+        mode: u8,
+        calls: u32,
+        notes: Map<felt252, u128>,
+    }
+
+    #[abi(embed_v0)]
+    impl PoolImpl of IVeilPool<ContractState> {
+        fn fill_open_note(
+            ref self: ContractState, note_id: felt252, token: ContractAddress, amount: u128,
+        ) {
+            self.calls.write(self.calls.read() + 1);
+            let mode = self.mode.read();
+            assert(mode != 1, 'POOL_BOOM');
+            if mode == 2 {
+                return; // accepts the call, pulls nothing
+            }
+            // One-shot, as upstream.
+            assert(self.notes.read(note_id) == 0, 'OPEN_NOTE_NOT_FILLABLE');
+            self.notes.write(note_id, amount);
+            IERC20Dispatcher { contract_address: token }
+                .transfer_from(get_caller_address(), get_contract_address(), amount.into());
+        }
+    }
+
+    #[abi(embed_v0)]
+    impl ExtImpl of IMockPoolExt<ContractState> {
+        fn set_mode(ref self: ContractState, mode: u8) {
+            self.mode.write(mode);
+        }
+        fn filled(self: @ContractState, note_id: felt252) -> u128 {
+            self.notes.read(note_id)
+        }
+        fn calls(self: @ContractState) -> u32 {
+            self.calls.read()
+        }
+    }
+}

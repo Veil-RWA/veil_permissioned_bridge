@@ -54,7 +54,9 @@ contract VeilERC3643Lockbox is OAppLite {
     /// Carries no Starknet destination. `sender` is `msg.sender` and public
     /// regardless, but an indexed pair would hand anyone a cross-chain linkage
     /// query for free. The destination is in the message; `guid` identifies it.
-    event BridgedOut(address indexed sender, uint256 amount, uint64 seq, bytes32 guid);
+    event BridgedOut(
+        address indexed sender, uint256 amount, uint64 seq, bytes32 guid, uint8 delivery
+    );
     /// No `country`. It is a KYC attribute that nothing reads back, and indexed
     /// by account it becomes "every holder from country X" as a log filter.
     event ComplianceSynced(address indexed account, uint64 seq, bool verified, bool frozen);
@@ -65,6 +67,8 @@ contract VeilERC3643Lockbox is OAppLite {
     event DstEidSet(uint32 dstEid);
 
     error ZeroAmount();
+    error ZeroNoteId();
+    error AmountTooLargeForNote();
     error NotVerified(address account);
     error EscrowFailed();
     error NothingClaimable();
@@ -97,6 +101,45 @@ contract VeilERC3643Lockbox is OAppLite {
         payable
         returns (bytes32 guid)
     {
+        return _bridge(
+            amount, snRecipient, BridgeMsgCodec.DELIVERY_WALLET, bytes32(0), gasLimit, refundAddress
+        );
+    }
+
+    /// Escrow `amount` and have it filled into `noteId`, an open note the
+    /// recipient holds in a Veil pool on Starknet, so the position arrives in
+    /// the pool rather than as a public balance.
+    ///
+    /// The recipient must have claimed that note on the gateway first, or the
+    /// far side declines it and the amount lands in their wallet. Delivery is
+    /// best-effort throughout: the escrow here is already spent by the time the
+    /// message arrives, so the far side may not reject it.
+    ///
+    /// A note packs its amount into 128 bits, so anything at or above 2**128
+    /// could never be delivered. Refused here, where it is free, rather than
+    /// silently degrading on the far side.
+    function bridgeOutToPool(
+        uint256 amount,
+        bytes32 snRecipient,
+        bytes32 noteId,
+        uint128 gasLimit,
+        address refundAddress
+    ) external payable returns (bytes32 guid) {
+        if (noteId == bytes32(0)) revert ZeroNoteId();
+        if (amount >= (1 << 128)) revert AmountTooLargeForNote();
+        return _bridge(
+            amount, snRecipient, BridgeMsgCodec.DELIVERY_POOL, noteId, gasLimit, refundAddress
+        );
+    }
+
+    function _bridge(
+        uint256 amount,
+        bytes32 snRecipient,
+        uint8 delivery,
+        bytes32 noteId,
+        uint128 gasLimit,
+        address refundAddress
+    ) private returns (bytes32 guid) {
         if (amount == 0) revert ZeroAmount();
 
         IIdentityRegistry registry = IIdentityRegistry(token.identityRegistry());
@@ -119,11 +162,13 @@ contract VeilERC3643Lockbox is OAppLite {
             s,
             true,
             _isFrozen(msg.sender),
-            registry.investorCountry(msg.sender)
+            registry.investorCountry(msg.sender),
+            delivery,
+            noteId
         );
 
         guid = _lzSend(dstEid, message, _lzReceiveOptions(gasLimit), refundAddress).guid;
-        emit BridgedOut(msg.sender, amount, s, guid);
+        emit BridgedOut(msg.sender, amount, s, guid, delivery);
     }
 
     /// Push `account`'s current eligibility to the mirror. Permissionless by
@@ -170,8 +215,11 @@ contract VeilERC3643Lockbox is OAppLite {
         view
         returns (MessagingFee memory)
     {
-        bytes memory message =
-            BridgeMsgCodec.encodeMint(msg.sender, snRecipient, amount, seq + 1, true, false, 0);
+        // MINT is fixed width, so one quote covers both entrypoints.
+        bytes memory message = BridgeMsgCodec.encodeMint(
+            msg.sender, snRecipient, amount, seq + 1, true, false, 0,
+            BridgeMsgCodec.DELIVERY_WALLET, bytes32(0)
+        );
         return _quote(dstEid, message, _lzReceiveOptions(gasLimit));
     }
 

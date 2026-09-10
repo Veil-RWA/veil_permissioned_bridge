@@ -9,6 +9,7 @@ pub mod msg_codec;
 pub mod mirrored_registry;
 pub mod bridged_token;
 pub mod gateway;
+pub mod pool;
 
 // T-REX compliance modules, restated as Cairo rules so an EVM token's rule set
 // can be reproduced on its twin. See compliance/README or ../README.md.

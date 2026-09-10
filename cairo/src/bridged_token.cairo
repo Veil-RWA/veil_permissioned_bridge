@@ -274,9 +274,11 @@ pub mod VeilBridgedERC3643 {
             self.assert_gateway();
             assert(!self.pausable.is_paused(), 'PAUSED');
             assert(!self.frozen.read(to), 'RECIPIENT_FROZEN');
-            assert(self.is_verified(to), 'RECIPIENT_NOT_VERIFIED');
+            assert(self.is_eligible_holder(to), 'RECIPIENT_NOT_VERIFIED');
             let compliance = self.compliance.read();
-            if !compliance.is_zero() {
+            // A mint into the gateway's own custody is a routing step, not a
+            // holding: compliance applies to whoever ends up with it.
+            if !compliance.is_zero() && to != self.gateway.read() {
                 assert(
                     IBridgeComplianceDispatcher { contract_address: compliance }
                         .can_transfer(Zero::zero(), to, amount),
@@ -294,8 +296,11 @@ pub mod VeilBridgedERC3643 {
             if self.pausable.is_paused() || self.frozen.read(to) {
                 return false;
             }
-            if !self.is_verified(to) {
+            if !self.is_eligible_holder(to) {
                 return false;
+            }
+            if to == self.gateway.read() {
+                return true;
             }
             let compliance = self.compliance.read();
             compliance.is_zero()
@@ -440,6 +445,15 @@ pub mod VeilBridgedERC3643 {
                 .is_verified(account)
         }
 
+        /// The gateway may hold a balance for the length of one pool delivery,
+        /// so it can let the pool pull rather than minting to a public wallet.
+        /// This grants it nothing new: it is already the only address that can
+        /// mint, so a transient balance is strictly less power than it has.
+        /// Every other holder still needs a live record or a local registration.
+        fn is_eligible_holder(self: @ContractState, account: ContractAddress) -> bool {
+            account == self.gateway.read() || self.is_verified(account)
+        }
+
         /// Tell the compliance module a transfer happened. MaxBalance keeps a
         /// per-identity ledger that only stays correct if every movement is
         /// reported, so this fires on ordinary transfers AND on the forced
@@ -460,7 +474,7 @@ pub mod VeilBridgedERC3643 {
             assert(!self.pausable.is_paused(), 'PAUSED');
             assert(!self.frozen.read(from), 'SENDER_FROZEN');
             assert(!self.frozen.read(to), 'RECIPIENT_FROZEN');
-            assert(self.is_verified(from), 'SENDER_NOT_VERIFIED');
+            assert(self.is_eligible_holder(from), 'SENDER_NOT_VERIFIED');
             assert(self.is_verified(to), 'RECIPIENT_NOT_VERIFIED');
             let compliance = self.compliance.read();
             if !compliance.is_zero() {

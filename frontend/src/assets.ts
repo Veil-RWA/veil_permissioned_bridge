@@ -31,13 +31,17 @@ export type AssetMeta = {
 
 export type AssetAddresses = {
   evm?: { lockbox?: string; token?: string; complianceReader?: string };
-  starknet?: { token?: string; gateway?: string; registry?: string; compliance?: string };
+  starknet?: {
+    token?: string; gateway?: string; registry?: string; compliance?: string; pool?: string;
+  };
 };
 
 export type Asset = AssetMeta & {
   addresses: AssetAddresses;
   /** Every contract this asset needs is deployed and wired. */
   available: boolean;
+  /** A Veil pool is configured, so a transfer may be addressed to a note. */
+  poolReady: boolean;
 };
 
 /// Instrument types, not products: an ERC-3643 asset belongs to its issuer, and
@@ -109,7 +113,7 @@ function resolve(meta: AssetMeta): Asset {
     addresses.starknet?.registry
   );
 
-  return { ...meta, addresses, available };
+  return { ...meta, addresses, available, poolReady: Boolean(addresses.starknet?.pool) };
 }
 
 export const assets: Asset[] = CATALOGUE.map(resolve);

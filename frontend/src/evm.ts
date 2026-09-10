@@ -7,10 +7,11 @@ import type { Asset } from './assets';
 const LOCKBOX_ABI = [
   'function quoteBridgeOut(uint256 amount, bytes32 snRecipient, uint128 gasLimit) view returns (tuple(uint256 nativeFee, uint256 lzTokenFee))',
   'function bridgeOut(uint256 amount, bytes32 snRecipient, uint128 gasLimit, address refundAddress) payable returns (bytes32)',
+  'function bridgeOutToPool(uint256 amount, bytes32 snRecipient, bytes32 noteId, uint128 gasLimit, address refundAddress) payable returns (bytes32)',
   'function totalEscrowed() view returns (uint256)',
   'function claimable(address) view returns (uint256)',
   'function claim(address recipient) returns (uint256)',
-  'event BridgedOut(address indexed sender, uint256 amount, uint64 seq, bytes32 guid)',
+  'event BridgedOut(address indexed sender, uint256 amount, uint64 seq, bytes32 guid, uint8 delivery)',
 ];
 
 const TOKEN_ABI = [
@@ -145,19 +146,29 @@ export async function approve(session: EvmSession, asset: Asset, amount: bigint)
 }
 
 export type BridgeResult = { hash: string; guid?: string };
+export type Delivery = 'wallet' | 'pool';
 
 export async function bridgeOut(
   session: EvmSession,
   asset: Asset,
   amount: bigint,
   recipient: string,
-  fee: bigint
+  fee: bigint,
+  delivery: Delivery = 'wallet',
+  noteId = ''
 ): Promise<BridgeResult> {
   const signer = await session.provider.getSigner();
   const lockbox = new Contract(asset.addresses.evm!.lockbox!, LOCKBOX_ABI, signer);
-  const tx = await lockbox.bridgeOut(
-    amount, snRecipientWord(recipient), DEFAULT_GAS_LIMIT, session.address, { value: fee }
-  );
+  const word = (v: string) => zeroPadValue('0x' + BigInt(v).toString(16).padStart(64, '0'), 32);
+  // Same message width either way, so the quote holds for both.
+  const tx = delivery === 'pool'
+    ? await lockbox.bridgeOutToPool(
+        amount, snRecipientWord(recipient), word(noteId),
+        DEFAULT_GAS_LIMIT, session.address, { value: fee }
+      )
+    : await lockbox.bridgeOut(
+        amount, snRecipientWord(recipient), DEFAULT_GAS_LIMIT, session.address, { value: fee }
+      );
   const receipt = await tx.wait();
 
   let guid: string | undefined;

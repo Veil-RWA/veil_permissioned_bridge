@@ -20,7 +20,10 @@ const { network } = require('./config');
 const { parseArgs, loadDeployment, saveDeployment, assetSlot } = require('./lib');
 
 const EVM_FIELDS = { lockbox: 'evm', token: 'evm', reader: 'evm' };
-const SN_FIELDS = { registry: 'starknet', gateway: 'starknet', compliance: 'starknet', twin: 'starknet' };
+const SN_FIELDS = {
+  registry: 'starknet', gateway: 'starknet', compliance: 'starknet', twin: 'starknet',
+  pool: 'starknet',
+};
 
 function assertEvm(name, value) {
   if (!/^0x[0-9a-fA-F]{40}$/.test(value)) {
@@ -65,6 +68,7 @@ function main() {
   if (args.gateway) slot.starknet.gateway = args.gateway;
   if (args.compliance) slot.starknet.compliance = args.compliance;
   if (args.twin) slot.starknet.token = args.twin;
+  if (args.pool) slot.starknet.pool = args.pool;
   if (args.symbol) slot.starknet.symbol = args.symbol;
   if (args.wired) slot.wired = { peers: true, links: true };
 
@@ -85,6 +89,7 @@ function main() {
   console.log('  starknet.gateway   ' + (slot.starknet.gateway || '(missing)'));
   console.log('  starknet.compliance ' + (slot.starknet.compliance || '(missing)'));
   console.log('  starknet.twin      ' + (slot.starknet.token || '(missing)'));
+  console.log('  starknet.pool      ' + (slot.starknet.pool || '(none - wallet delivery only)'));
   console.log('');
   console.log(`written to ${path.relative(process.cwd(), file)}`);
 

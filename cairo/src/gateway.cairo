@@ -60,6 +60,14 @@ pub trait IVeilBridgeGateway<TContractState> {
     fn set_delegate(ref self: TContractState, delegate: ContractAddress);
     fn set_dst_eid(ref self: TContractState, dst_eid: u32);
     fn set_token(ref self: TContractState, token: ContractAddress);
+    /// The Veil pool this gateway fills notes in. Zero disables pool delivery,
+    /// and every POOL message then lands in the recipient's wallet.
+    fn set_pool(ref self: TContractState, pool: ContractAddress);
+    fn pool(self: @TContractState) -> ContractAddress;
+    /// Claim an open note for pool delivery. The caller becomes its owner here,
+    /// and only a transfer addressed to that same owner may fill it.
+    fn register_note(ref self: TContractState, note_id: felt252);
+    fn note_owner(self: @TContractState, note_id: felt252) -> ContractAddress;
     fn dst_eid(self: @TContractState) -> u32;
     fn token(self: @TContractState) -> ContractAddress;
     fn registry(self: @TContractState) -> ContractAddress;
@@ -89,9 +97,10 @@ pub mod VeilBridgeGateway {
         IVeilMirroredRegistryDispatcher, IVeilMirroredRegistryDispatcherTrait,
     };
     use super::super::msg_codec::{
-        KIND_GLOBAL, KIND_IDENTITY, KIND_MINT, decode_global, decode_identity, decode_mint,
-        encode_unlock, kind,
+        DELIVERY_POOL, KIND_GLOBAL, KIND_IDENTITY, KIND_MINT, decode_global, decode_identity,
+        decode_mint, encode_unlock, kind,
     };
+    use super::super::pool::{IVeilPoolDispatcher, IVeilPoolDispatcherTrait};
     use super::IVeilBridgeGateway;
 
     /// Deliberately carries no source identity. A Map cannot be enumerated, so
@@ -115,6 +124,34 @@ pub mod VeilBridgeGateway {
         pub recipient: ContractAddress,
         pub amount: u256,
         pub reason: felt252,
+    }
+
+    /// Filled into a pool note rather than a public wallet.
+    #[derive(Drop, starknet::Event)]
+    pub struct DeliveredToPool {
+        #[key]
+        pub recipient: ContractAddress,
+        #[key]
+        pub note_id: felt252,
+        pub amount: u256,
+    }
+
+    /// Pool delivery was asked for and did not happen, so the amount went to
+    /// the recipient's wallet. Never a loss; always worth alerting on.
+    #[derive(Drop, starknet::Event)]
+    pub struct DeliveryFellBack {
+        #[key]
+        pub recipient: ContractAddress,
+        pub amount: u256,
+        pub reason: felt252,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct NoteRegistered {
+        #[key]
+        pub note_id: felt252,
+        #[key]
+        pub owner: ContractAddress,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -156,6 +193,9 @@ pub mod VeilBridgeGateway {
     enum Event {
         BridgeInMinted: BridgeInMinted,
         BridgeInQuarantined: BridgeInQuarantined,
+        DeliveredToPool: DeliveredToPool,
+        DeliveryFellBack: DeliveryFellBack,
+        NoteRegistered: NoteRegistered,
         PendingClaimed: PendingClaimed,
         BridgeBackSent: BridgeBackSent,
         PeerSet: PeerSet,
@@ -171,6 +211,10 @@ pub mod VeilBridgeGateway {
         peers: Map<u32, Bytes32>,
         token: ContractAddress,
         registry: ContractAddress,
+        pool: ContractAddress,
+        /// note_id -> the address allowed to have it filled. Claimed by the
+        /// holder, write-once, so a claim cannot be taken over later.
+        note_owners: Map<felt252, ContractAddress>,
         /// Endpoint id of the chain holding the lockbox (Ethereum: 30101
         /// mainnet, 40161 Sepolia).
         dst_eid: u32,
@@ -346,6 +390,39 @@ pub mod VeilBridgeGateway {
             self.dst_eid.read()
         }
 
+        fn set_pool(ref self: ContractState, pool: ContractAddress) {
+            self.assert_owner();
+            self.pool.write(pool);
+        }
+
+        fn pool(self: @ContractState) -> ContractAddress {
+            self.pool.read()
+        }
+
+        /// Claim a note before bridging into it.
+        ///
+        /// The pool cannot tell the gateway who owns a note -- `get_open_note`
+        /// returns only its token -- and note ids are public. Without a claim,
+        /// any sender could name any note in a message and have it filled with
+        /// dust; the fill is one-shot, so that note could never receive its real
+        /// proceeds. Requiring the recipient to claim it first means an attacker
+        /// must both win the race to claim and address the transfer to himself.
+        ///
+        /// Write-once: a claim cannot be reassigned, so nobody can take over a
+        /// note someone else already holds.
+        fn register_note(ref self: ContractState, note_id: felt252) {
+            assert(note_id != 0, 'ZERO_NOTE_ID');
+            let caller = get_caller_address();
+            let existing = self.note_owners.read(note_id);
+            assert(existing.is_zero() || existing == caller, 'NOTE_ALREADY_CLAIMED');
+            self.note_owners.write(note_id, caller);
+            self.emit(NoteRegistered { note_id, owner: caller });
+        }
+
+        fn note_owner(self: @ContractState, note_id: felt252) -> ContractAddress {
+            self.note_owners.read(note_id)
+        }
+
         fn token(self: @ContractState) -> ContractAddress {
             self.token.read()
         }
@@ -428,8 +505,95 @@ pub mod VeilBridgeGateway {
                 return;
             }
 
+            // Pool delivery mints into this contract's own custody instead, so
+            // it must branch BEFORE the wallet mint or the amount is created
+            // twice.
+            if decoded.delivery == DELIVERY_POOL {
+                self.deliver_to_pool(decoded.sn_recipient, decoded.amount, decoded.note_id);
+                return;
+            }
+
             self.token_dispatcher().bridge_mint(decoded.sn_recipient, decoded.amount);
             self.emit(BridgeInMinted { recipient: decoded.sn_recipient, amount: decoded.amount });
+        }
+
+        /// Fill the recipient's open note instead of minting to their wallet,
+        /// degrading to the wallet on anything that stops it.
+        ///
+        /// The tokens are minted into this contract's own custody and the pool
+        /// PULLS them via `transfer_from`. Nothing is pushed anywhere first, so
+        /// a pool that reverts, is paused, or has not allow-listed this gateway
+        /// simply never receives them, and the sweep hands the balance to the
+        /// recipient. That is what makes calling a third-party contract safe
+        /// from a path that must not revert: by the time this runs the tokens
+        /// are already escrowed on the source chain.
+        fn deliver_to_pool(
+            ref self: ContractState,
+            recipient: ContractAddress,
+            amount: u256,
+            note_id: felt252,
+        ) {
+            let pool = self.pool.read();
+            let reason = if pool.is_zero() {
+                'NO_POOL'
+            } else if note_id == 0 {
+                'NO_NOTE_ID'
+            } else if self.note_owners.read(note_id) != recipient {
+                // Either unclaimed, or claimed by someone else. Filling it would
+                // burn a one-shot note that is not this recipient's.
+                'NOTE_NOT_CLAIMED'
+            } else if amount.high != 0 {
+                // `fill_open_note` takes a u128 and the note packs the amount
+                // into its low 128 bits, so this cannot be represented.
+                'AMOUNT_TOO_LARGE'
+            } else {
+                0
+            };
+
+            if reason != 0 {
+                self.token_dispatcher().bridge_mint(recipient, amount);
+                self.emit(DeliveryFellBack { recipient, amount, reason });
+                return;
+            }
+
+            let token = self.token_dispatcher();
+            let this = get_contract_address();
+            token.bridge_mint(this, amount);
+            token.approve(pool, amount);
+
+            // A failing pool must not take the message down with it: the inner
+            // call's writes roll back on error and execution continues here.
+            let mut call_data: Array<felt252> = array![];
+            Serde::serialize(@note_id, ref call_data);
+            Serde::serialize(@token.contract_address, ref call_data);
+            Serde::serialize(@amount.low, ref call_data);
+            let outcome = starknet::syscalls::call_contract_syscall(
+                pool, selector!("fill_open_note"), call_data.span(),
+            );
+
+            // Never leave a standing allowance behind.
+            token.approve(pool, 0);
+
+            // Whatever the call reported, the balance is the truth. Anything
+            // still here was not taken and belongs to the recipient.
+            let retained = token.balance_of(this);
+            if retained != 0 {
+                token.transfer(recipient, retained);
+                self
+                    .emit(
+                        DeliveryFellBack {
+                            recipient,
+                            amount: retained,
+                            reason: match outcome {
+                                Result::Ok(_) => 'POOL_TOOK_NOTHING',
+                                Result::Err(_) => 'POOL_REVERTED',
+                            },
+                        },
+                    );
+                return;
+            }
+
+            self.emit(DeliveredToPool { recipient, note_id, amount });
         }
 
         fn quarantine(

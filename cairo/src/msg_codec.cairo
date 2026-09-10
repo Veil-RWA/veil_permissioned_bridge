@@ -6,7 +6,7 @@
 // layout with fixed vectors so a one-sided edit fails loudly instead of
 // silently misreading amounts.
 //
-//   MINT (EVM -> Starknet), 109 bytes
+//   MINT (EVM -> Starknet), 142 bytes
 //     0    u8    kind = 1
 //     1    b32   evm_sender          20-byte address, left-padded
 //     33   b32   sn_recipient        Starknet address as a felt
@@ -15,6 +15,13 @@
 //     105  u8    verified
 //     106  u8    frozen
 //     107  u16   country             ISO-3166 numeric
+//     109  u8    delivery            0 = wallet, 1 = Veil pool open note
+//     110  b32   note_id             0 unless delivery = 1
+//
+//   WALLET mints to the recipient's Starknet address. POOL fills the
+//   recipient's open note so the position arrives in the pool rather than as a
+//   public balance. POOL degrades to WALLET rather than failing -- see the
+//   gateway.
 //
 //   IDENTITY (EVM -> Starknet), 45 bytes
 //     0    u8    kind = 2
@@ -52,6 +59,10 @@ pub const KIND_IDENTITY: u8 = 2;
 pub const KIND_GLOBAL: u8 = 3;
 pub const KIND_UNLOCK: u8 = 4;
 
+/// Where a bridge-in should land.
+pub const DELIVERY_WALLET: u8 = 0;
+pub const DELIVERY_POOL: u8 = 1;
+
 /// 2^160: one past the largest EVM address.
 pub const EVM_ADDRESS_BOUND: u256 = 0x10000000000000000000000000000000000000000;
 
@@ -71,6 +82,8 @@ pub struct MintMessage {
     pub identity: IdentitySnapshot,
     pub sn_recipient: starknet::ContractAddress,
     pub amount: u256,
+    pub delivery: u8,
+    pub note_id: felt252,
 }
 
 #[derive(Copy, Drop, Serde, PartialEq, Debug)]
@@ -108,6 +121,8 @@ pub fn decode_mint(message: @ByteArray) -> MintMessage {
         },
         sn_recipient: word_to_starknet_address(read_u256(message, 33)),
         amount: read_u256(message, 65),
+        delivery: read_u8(message, 109),
+        note_id: read_u256(message, 110).try_into().expect('BRIDGE_BAD_NOTE_ID'),
     }
 }
 
@@ -155,6 +170,8 @@ pub fn encode_mint(msg: MintMessage) -> ByteArray {
     append_bool(ref out, msg.identity.verified);
     append_bool(ref out, msg.identity.frozen);
     append_u16(ref out, msg.identity.country);
+    append_u8(ref out, msg.delivery);
+    append_u256(ref out, msg.note_id.into());
     out
 }
 

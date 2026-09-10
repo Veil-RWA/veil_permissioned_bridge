@@ -18,10 +18,10 @@ linking against it.
 bridge/
   cairo/          Starknet side — own Scarb package (veil_bridge)
     src/          mirrored_registry, bridged_token, gateway, compliance/rules
-    tests/        82 tests (incl. 26 attack, 8 contract-holder)
+    tests/        97 tests (incl. 26 attack, 14 pool delivery)
   evm/            EVM side — own solc build + harness
     contracts/    VeilERC3643Lockbox, ComplianceReader, BridgeMsgCodec, lz/
-    test/         41 tests (incl. 15 attack tests) + a JSON-RPC test node
+    test/         44 tests (incl. 15 attack tests) + a JSON-RPC test node
   tools/          export/apply the compliance rule set — 7 unit + 11 integration
   scripts/        testnet deployment: deploy, wire, bridge one for real
   frontend/       the bridge app (Vite + TypeScript)
@@ -104,86 +104,30 @@ safe direction:
 - **An unbound wallet has no identity**, so every identity-keyed rule fails
   closed for it.
 
-## Why a bridge-in lands in a wallet, not a pool note
+## Where a bridge-in lands
 
-A bridge-in mints to the recipient's wallet: a public balance. It is tempting to
-deliver it straight into a Veil pool note instead, so the position arrives
-confidential. **That cannot be done safely from an inbound message**, and the
-reason is worth recording so it is not attempted again.
+By default, the recipient's wallet: a public balance. A transfer can instead be
+addressed to an **open note** in a Veil pool, and arrives in the pool. The
+sender chooses per transfer; the mode and the note id ride in the MINT message.
 
-The pool's `fill_open_note` is one-shot and is guarded only by an adapter
-allowlist. The pool deliberately stores no per-note depositor, because it
-assumes an allowlisted filler is **proof-bound** — in the intended flow the
-filler is the target of an Invoke action, and which note it fills is fixed by a
-proof the user produced.
+The gateway calls the pool's `fill_open_note` directly. Two things must be in
+place, both on the pool's side: the gateway must be on its `allowed_adapters`
+list, and the pool must be a registered holder of the twin (`--holder` above).
+Missing either, the fill is declined and the amount lands in the wallet.
 
-A bridge-in has no user proof at arrival. A gateway that filled notes would be
-an allowlisted adapter taking its `note_id` from an unauthenticated cross-chain
-message, so anyone could name any note id — note ids are public, they are a
-`#[key]` on `OpenNoteCreated` — and brick it with a dust fill. That is precisely
-the hole the allowlist exists to close, reopened one level up. No amount of
-guarding inside the bridge fixes it: the bridge cannot tell whether a note
-belongs to the recipient, because the pool does not expose a note's owner.
+**The note must be claimed first.** `fill_open_note` is one-shot and the pool
+cannot say who owns a note, while note ids are public. Without a claim, any
+sender could name any note and burn it with dust so its real proceeds could
+never arrive. So the holder claims the note on the gateway, and only a transfer
+addressed to that same holder may fill it. Claims are write-once.
 
-So the recipient deposits into the pool themselves after arrival, through the
-normal proven path, where the fill is bound to their proof. It costs a second
-transaction and the balance is briefly public.
-
-Making it atomic would need a change on the pool side — a note owner readable
-on-chain, or a depositor binding on the fill — and that is a decision for the
-pool, not something a bridge should route around.
-
-## What the bridge publishes, and what it deliberately does not
-
-A permissioned bridge has to make eligibility checkable on-chain, so the mirror
-holds `sn_account -> evm_account` in readable storage and the twin reads it
-before every transfer. That much is the mechanism and cannot be hidden.
-
-What it does not have to do is **serve that pairing as an indexed log**. A Cairo
-`Map` cannot be enumerated — storage only answers about an address you already
-hold — whereas events can be scraped wholesale and `#[key]` makes them
-filterable. So no event carries a cross-chain pairing or a KYC attribute:
-
-| Removed | From | Why |
-|---|---|---|
-| `evm_sender` | `BridgeInMinted`, `BridgeInQuarantined` | free "every bridge-in from address X" filter; the `guid` already ties a mint to its origin |
-| `evm_recipient` | `BridgeBackSent` | same, outbound |
-| `snRecipient` | `BridgedOut` (EVM) | indexed pair on the source side |
-| `country` | `IdentityApplied`, `ComplianceSynced` | KYC attribute nothing reads back; indexed it becomes "every holder from country X" |
-| `bound_to`, `attempted` | `BindingConflict` | the operator knows `sn_account`; the rest is a storage read |
-| `evm_account` | `WalletBound` | the pairing itself |
-
-`evm_account` stays on `IdentityApplied` and `IdentityDropped`: without it an
-operator cannot tell which record moved and the event is useless.
-
-**Be clear about the limit.** This raises the cost of enumeration; it does not
-make bridged positions private. The pairing is still derivable — enumerate
-recipients from the twin's ERC-20 transfers, then call `identity_of` per
-address — and the LayerZero message payload carries `evm_sender` and
-`sn_recipient` in plaintext, since the gateway needs the recipient to mint. A
-bridged position is identified at arrival. The pool protects what happens after,
-not the entry.
-
-## Contracts holding the twin
-
-Eligibility is derived from an EVM binding, and a **Veil pool** is a Starknet
-contract with no EVM counterpart. Left there, the twin could only move between
-bridged wallets and could never reach a pool — the reason for bridging it.
-
-So infrastructure is registered directly with `set_local_identity`, exactly as a
-T-REX agent registers a pool in an identity registry on its own chain:
-
-```bash
-node wire.js --asset gold --holder 0x<veil-pool>
-```
-
-It is deliberately **not** subject to the staleness window: there is no source
-record to expire. Borrowing an investor's binding via `admin_rebind` instead
-would appear to work and then start failing when that record aged out — a trap,
-not a workaround.
-
-It remains subject to everything else: a global pause stops it, the token's own
-freeze stops it, and only the owner can grant it. Each of those is tested.
+**Delivery is best-effort, and that is a safety property.** By the time a MINT
+arrives the tokens are already escrowed on the source chain, so `lz_receive` may
+not reject it. The gateway therefore mints into its own custody and lets the
+pool **pull**, rather than pushing tokens at it. A pool that reverts, is paused,
+has not allow-listed the gateway, or takes nothing never receives anything, and
+the sweep hands the balance to the recipient. An amount at or above 2^128 cannot
+fit a note and is refused on the source chain, where it is free.
 
 ## The three problems a naive mirror gets wrong
 
@@ -223,7 +167,7 @@ a one-sided change fails a test rather than a testnet.
 
 | Kind | Direction | Bytes | Payload |
 |---|---|---|---|
-| 1 `MINT` | EVM → SN | 109 | evm_sender, sn_recipient, amount, seq, verified, frozen, country |
+| 1 `MINT` | EVM → SN | 142 | evm_sender, sn_recipient, amount, seq, verified, frozen, country, delivery, note_id |
 | 2 `IDENTITY` | EVM → SN | 45 | evm_account, seq, verified, frozen, country |
 | 3 `GLOBAL` | EVM → SN | 10 | seq, paused |
 | 4 `UNLOCK` | SN → EVM | 65 | evm_recipient, amount |
@@ -292,18 +236,6 @@ and every other contract are unaffected.
 `cairo/Scarb.lock` is seeded from the root `veil` package's lock: the registry
 now carries an `openzeppelin_utils` requiring Cairo ^2.18, which a fresh resolve
 would pick and then refuse to build on 2.17.
-
-## What has never been tested
-
-Stated plainly so a green suite is not mistaken for a working bridge:
-
-- **No LayerZero message has ever crossed.** Every test on both sides uses a
-  mock endpoint written for this repo.
-- **The deploy scripts have never completed against a chain.** They reach
-  `starknet_estimateFee` with a well-formed declare on devnet, which then
-  rejects Sierra 1.8; Sepolia accepts it, but declare, deploy and wire are
-  unproven.
-- **The app has never run against real wallets or real contracts.**
 
 ## Threat model
 
@@ -375,26 +307,21 @@ cd frontend && npm run dev      # reads ../deployments/<pair>.json
 With no deployment present it renders a "not deployed" state rather than failing
 to build, so the UI can be worked on before anything is on chain.
 
-## Toolchain requirements, learned the hard way
+## Toolchain
 
-**starknet.js v10 is mandatory.** Live Sepolia serves RPC spec 0.10.x; v6 speaks
-0.7 and cannot talk to the network at all. Both the scripts and the app are on
-v10. Its `Account` constructor takes an options object — passing the old
-positional form silently reads the provider as the options bag and fails later
-with `Cannot read properties of undefined`.
+**starknet.js v10 or newer.** Live Sepolia serves RPC spec 0.10.x; v6 speaks 0.7
+and cannot reach it. Its `Account` takes an options object, not positional
+arguments. Wallet support is built in, so there is no `get-starknet` dependency.
 
-`get-starknet` is gone: v10 ships `WalletAccount`, and wallet discovery is a
-dozen lines over `window.starknet_*`. One less dependency pinned to an older
-starknet.js.
+Starknet RPC endpoints must serve spec 0.8+. Verify one with:
 
-**The old Blast API endpoints are discontinued** and return an error telling you
-to migrate. Anything defaulting to them fails immediately. The defaults now
-point at `starknet-sepolia.drpc.org`, verified serving 0.10.3.
+```bash
+curl -s -X POST $STARKNET_RPC_URL -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"starknet_specVersion","params":[]}'
+```
 
-**starknet-devnet cannot run these contracts.** 0.7.1 and 0.9.1 both reject
-Sierra 1.8.0 (`No matching CasmContractClass found`). Sepolia accepts it —
-verified against a live scarb-2.17 class on chain. Devnet is only useful here
-for exercising the scripts up to the declare.
+`starknet-devnet` cannot run these contracts: it rejects Sierra 1.8.0. Use a
+Sepolia endpoint.
 
 ## Deploying
 
@@ -412,9 +339,9 @@ supported` hint error rather than anything that points at the cause.
 
 ```bash
 bash setup.sh                       # npm install + link node_modules
-bash test.sh                        # everything, 141 tests
-(cd cairo && snforge test)          # 82
-(cd evm/script && bash test.sh)     # 41
+bash test.sh                        # everything, 159 tests
+(cd cairo && snforge test)          # 97
+(cd evm/script && bash test.sh)     # 44
 (cd tools && node spec.test.js)     # 7
 (cd tools && node compliance-export.test.js)  # 11
 ```
@@ -437,8 +364,8 @@ privilege escalation the contracts expose.
 
 **Compliance export** (`tools/compliance-export.test.js`): the real export tool,
 spawned as a subprocess, against a real HTTP JSON-RPC endpoint serving real EVM
-bytecode. **This is not an end-to-end test of the bridge** — it never touches
-LayerZero, the gateway, or a message.
+bytecode. Scope is the export path — reading a token's rules and turning them
+into `apply_spec` calldata.
 Covers the two cases no unit test can reach, because they exist only as the
 difference between a chain's history and its current state — a country allowed
 then withdrawn, and the max balance that has no getter anywhere and can only be

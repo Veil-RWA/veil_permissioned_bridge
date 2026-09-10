@@ -13,6 +13,9 @@ export type AssetDeployment = {
     gateway?: string;
     compliance?: string;
     token?: string;
+    /// The Veil pool this asset's gateway fills notes in. Absent means pool
+    /// delivery is not configured and every transfer lands in a wallet.
+    pool?: string;
     name?: string;
     symbol?: string;
     stalenessWindow?: number;

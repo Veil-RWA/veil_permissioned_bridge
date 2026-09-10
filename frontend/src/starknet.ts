@@ -104,6 +104,30 @@ export async function mirrorStatus(asset: Asset, address: string): Promise<Mirro
   };
 }
 
+/// Who, if anyone, has claimed a note for pool delivery. A transfer is only
+/// filled into a note whose claimed owner is the recipient, because the fill is
+/// one-shot and note ids are public.
+export async function noteOwner(asset: Asset, noteId: string): Promise<string> {
+  const felts = await callFelts(asset.addresses.starknet!.gateway!, 'note_owner', [
+    BigInt(noteId).toString(),
+  ]).catch(() => ['0']);
+  return felts[0] ?? '0';
+}
+
+/// Claim a note before bridging into it. Must be sent by the address the
+/// transfer will name as recipient.
+export async function registerNote(
+  session: SnSession, asset: Asset, noteId: string
+): Promise<string> {
+  const res = await session.account.execute({
+    contractAddress: asset.addresses.starknet!.gateway!,
+    entrypoint: 'register_note',
+    calldata: CallData.compile([BigInt(noteId).toString()]),
+  });
+  await snProvider.waitForTransaction(res.transaction_hash);
+  return res.transaction_hash;
+}
+
 export async function twinSupply(asset: Asset): Promise<bigint> {
   return u256(await callFelts(asset.addresses.starknet!.token!, 'total_supply', []).catch(() => ['0', '0']));
 }
