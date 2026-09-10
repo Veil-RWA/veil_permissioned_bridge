@@ -598,6 +598,8 @@ function render(): void {
     tab.onclick = () => { state.view = tab.dataset.view as View; state.pickerOpen = false; render(); };
   });
 
+  paintNavWallets();
+
   const foot = document.getElementById('foot-route');
   if (foot) foot.textContent = isDeployed ? `${sourceLabel()} → ${destLabel()}` : 'not deployed';
   if (state.view !== 'transfer') return;
@@ -705,6 +707,34 @@ async function doCheckPool(): Promise<void> {
   state.poolChecking = false;
   state.poolCheck = result;
   render();
+}
+
+/// Both wallets, in the header, connect-or-address -- the shape VeilX uses in
+/// its topbar. A bridge touches two chains, so a single "Connect wallet" would
+/// never say which one it meant.
+function paintNavWallets(): void {
+  const host = document.getElementById('nav-wallets');
+  if (!host) return;
+
+  const chip = (
+    chain: 'evm' | 'sn', label: string, address: string | undefined
+  ): string => address
+    ? `<button class="nav-chip is-on" data-nav-wallet="${chain}" title="${esc(label)} — click to disconnect">
+         <span class="nav-dot"></span><span class="mono">${esc(short(address, 6, 4))}</span>
+       </button>`
+    : `<button class="nav-chip" data-nav-wallet="${chain}">Connect ${esc(label)}</button>`;
+
+  host.innerHTML =
+    chip('evm', evmLabel, state.evmSession?.address) +
+    chip('sn', starknetLabel, state.snSession?.address);
+
+  host.querySelectorAll<HTMLButtonElement>('[data-nav-wallet]').forEach((b) => {
+    const chain = b.dataset.navWallet as 'evm' | 'sn';
+    const connected = chain === 'evm' ? state.evmSession : state.snSession;
+    b.onclick = () => void (connected
+      ? doDisconnect(chain === 'evm' ? 'evm' : 'sn')
+      : chain === 'evm' ? doConnectEvm() : doConnectStarknet());
+  });
 }
 
 function paintCta(): void {

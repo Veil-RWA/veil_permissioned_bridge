@@ -113,7 +113,11 @@ async function ensureChain(provider: BrowserProvider): Promise<void> {
   try {
     await provider.send('wallet_switchEthereumChain', [{ chainId: evmChain.hex }]);
   } catch (e: any) {
-    const code = e?.code ?? e?.data?.originalError?.code;
+    const code = e?.code ?? e?.error?.code ?? e?.data?.originalError?.code;
+    if (code === 4001) throw new Error(`Staying on the wrong network. Switch to ${evmChain.label} to bridge.`);
+    if (code === -32002) {
+      throw new Error('Your wallet already has a network request open. Check the wallet window.');
+    }
     if (code !== 4902) {
       throw new Error(`Switch your wallet to ${evmChain.label} and try again.`);
     }
@@ -134,9 +138,24 @@ async function sessionFor(rdns: string, prompt: boolean): Promise<EvmSession | u
 
   // `eth_accounts` never prompts: it answers only for an already-authorised
   // wallet, which is what a silent restore needs.
-  const accounts: string[] = prompt
-    ? await provider.send('eth_requestAccounts', [])
-    : await provider.send('eth_accounts', []);
+  let accounts: string[];
+  try {
+    accounts = prompt
+      ? await provider.send('eth_requestAccounts', [])
+      : await provider.send('eth_accounts', []);
+  } catch (e: any) {
+    const code = e?.code ?? e?.error?.code ?? e?.data?.originalError?.code;
+    // -32002: a request is ALREADY open. This is the usual reason a connect
+    // button looks dead -- the wallet popup is behind the browser window, and
+    // asking again does nothing but queue another one.
+    if (code === -32002) {
+      throw new Error('Your wallet already has a connection request open. Check the wallet window.');
+    }
+    // 4001: the user dismissed it. Not an error worth a red banner, but it must
+    // not look like the button did nothing either.
+    if (code === 4001) throw new Error('Connection request was rejected.');
+    throw e;
+  }
   if (!accounts?.length) return undefined;
 
   await ensureChain(provider);

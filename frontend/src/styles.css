@@ -447,6 +447,21 @@ a { color: inherit; }
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--good); flex: none;
 }
+/* Both wallets in the header. */
+.nav-wallets { display: flex; align-items: center; gap: 8px; }
+.nav-chip {
+  border: 1px solid var(--rule); background: var(--panel-2); cursor: pointer;
+  font: inherit; font-size: 12px; font-weight: 600; color: var(--muted);
+  padding: 7px 12px; border-radius: 999px; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 7px;
+}
+.nav-chip:hover { color: var(--ink); border-color: var(--warn-line); }
+.nav-chip.is-on { color: var(--ink); }
+.nav-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--good); flex: none; }
+@media (max-width: 720px) {
+  .nav-chip { padding: 6px 9px; font-size: 11px; }
+}
+
 .dest-disconnect {
   margin-left: auto; border: 0; background: transparent; cursor: pointer;
   font: inherit; font-size: 11px; color: var(--faint); padding: 2px 4px;

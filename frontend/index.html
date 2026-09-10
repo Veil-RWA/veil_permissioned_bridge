@@ -21,6 +21,9 @@
           <button class="tab" data-view="history" role="tab">History</button>
         </nav>
         <div class="nav-right">
+          <!-- Both wallets live here, filled by render(). A bridge has two
+               chains, so one "Connect wallet" would always be ambiguous. -->
+          <div class="nav-wallets" id="nav-wallets"></div>
           <a class="nav-link" href="https://github.com/Veil-RWA/veil_permissioned_bridge" target="_blank" rel="noreferrer">Docs</a>
         </div>
       </div>
