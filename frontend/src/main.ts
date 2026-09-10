@@ -24,7 +24,10 @@ import { short, units, parseUnits, duration, ago } from './format';
 import * as evm from './evm';
 import * as sn from './starknet';
 import { load as loadHistory, record, update, type Transfer } from './history';
-import { deriveNoteContext, findFillableNote, nextEmptySlot, type NoteContext, type NoteSlot } from './notes';
+import {
+  deriveNoteContext, findFillableNote, nextEmptySlot, forgetViewingKey,
+  type NoteContext, type NoteSlot,
+} from './notes';
 import {
   checkPool, mainPool, poolFactory, normalisePoolAddress, POOL_PROBLEMS, type PoolCheck,
 } from './pools';
@@ -305,8 +308,8 @@ function selectedPool(): string | undefined {
 /// somebody else's note.
 function noteSection(claimed: string | undefined, mine: boolean, unclaimed: boolean): string {
   if (!state.snSession) {
-    return `<p class="delivery-note">Connect your ${esc(starknetLabel)} wallet to find your open note.</p>
-      <button id="derive-note" class="max" style="margin-top:8px" disabled>Connect wallet first</button>`;
+    // Connecting is what derives the key and finds the note -- one step.
+    return `<p class="delivery-note">Connect your ${esc(starknetLabel)} wallet. You sign one message, which derives your viewing key and locates your note. No transaction.</p>`;
   }
   if (!state.noteCtx) {
     return `<p class="delivery-note">Your note is derived from your viewing key, which never leaves this device. One signature, no transaction.</p>
@@ -383,7 +386,11 @@ function ctaLabel(): { text: string; disabled: boolean; note: string } {
   if (toStarknet() && !state.evmSession) return { text: `Connect ${evmLabel} wallet`, disabled: false, note: '' };
   if (!toStarknet() && !state.snSession) return { text: `Connect ${starknetLabel} wallet`, disabled: false, note: '' };
   if (!state.recipient) {
-    return { text: 'Enter a recipient', disabled: true, note: `Paste a ${destLabel()} address, or connect that wallet to fill it.` };
+    return {
+      text: `Connect your ${destLabel()} wallet`,
+      disabled: true,
+      note: 'The destination is your own wallet — it is never typed in.',
+    };
   }
 
   let amount = 0n;
@@ -450,9 +457,19 @@ function transferView(): string {
     : state.error ? `<div class="banner is-bad">${esc(state.error)}</div>`
     : state.notice ? `<div class="banner">${esc(state.notice)}</div>` : '';
 
-  const connectDest = toStarknet()
-    ? (state.snSession ? '' : `<button id="connect-dest" class="max" style="margin-top:8px">Connect ${esc(starknetLabel)} wallet to fill</button>`)
-    : (state.evmSession ? '' : `<button id="connect-dest" class="max" style="margin-top:8px">Connect ${esc(evmLabel)} wallet to fill</button>`);
+  // The destination is WHOEVER IS CONNECTED, never something typed.
+  //
+  // On the way in, the amount lands in an open note whose id is derived from
+  // the recipient's PRIVATE viewing key. Only they can produce that, by signing
+  // -- so a typed address could never receive into a pool, and offering the box
+  // would only invite someone to send to an address the app cannot deliver to.
+  // Connecting is also what derives the key, exactly as VeilX does it: connect,
+  // sign the typed message, and the note follows.
+  const destWallet = toStarknet() ? state.snSession?.address : state.evmSession?.address;
+  const connectDest = destWallet
+    ? `<div class="dest-wallet"><span class="dest-mark"></span><span class="mono">${esc(short(destWallet, 10, 8))}</span>
+         <span class="dest-note">your connected wallet</span></div>`
+    : `<button id="connect-dest" class="max" style="margin-top:8px">Connect ${esc(toStarknet() ? starknetLabel : evmLabel)} wallet</button>`;
 
   return `
   ${banner}
@@ -473,7 +490,6 @@ function transferView(): string {
     <div class="leg">
       <div class="leg-head"><span>To</span><span class="leg-balance">${esc(destBalance)}</span></div>
       <div class="chain"><span class="chain-mark ${destMark()}">${toStarknet() ? 'S' : 'E'}</span>${esc(destLabel())}</div>
-      <input id="recipient" class="recipient" placeholder="0x… recipient on ${esc(destLabel())}" value="${esc(state.recipient)}" />
       ${connectDest}
       ${deliveryControls()}
     </div>
@@ -555,8 +571,6 @@ function render(): void {
   const amount = document.getElementById('amount') as HTMLInputElement | null;
   if (amount) amount.oninput = () => { state.amount = amount.value; state.error = undefined; refreshQuote(); paintCta(); };
 
-  const recipient = document.getElementById('recipient') as HTMLInputElement | null;
-  if (recipient) recipient.onchange = () => { state.recipient = recipient.value.trim(); void refreshDest(); };
 
   const max = document.getElementById('max');
   if (max) max.onclick = () => {
@@ -607,7 +621,7 @@ function render(): void {
   if (claimNote) claimNote.onclick = () => void doClaimNote();
 
   const connectDest = document.getElementById('connect-dest');
-  if (connectDest) connectDest.onclick = () => void (toStarknet() ? doConnectStarknet(true) : doConnectEvm(true));
+  if (connectDest) connectDest.onclick = () => void (toStarknet() ? doConnectStarknet() : doConnectEvm());
 
   const claimSn = document.getElementById('claim-sn');
   if (claimSn) claimSn.onclick = () => void doClaimStarknet();
@@ -760,14 +774,14 @@ async function refreshAll(): Promise<void> {
   refreshQuote();
 }
 
-const refreshDest = refreshAll;
 
-async function doConnectEvm(destOnly = false): Promise<void> {
+async function doConnectEvm(): Promise<void> {
   state.busy = 'Connecting…'; paintCta();
   try {
     state.evmSession = await evm.connectEvm();
     state.token = await evm.tokenInfo(state.asset);
-    if (destOnly && !toStarknet() && !state.recipient) state.recipient = state.evmSession.address;
+    // Bridging back, the destination is this wallet. Not a choice.
+    if (!toStarknet()) state.recipient = state.evmSession.address;
     state.error = undefined;
   } catch (e: any) {
     state.error = e?.message ?? String(e);
@@ -777,17 +791,43 @@ async function doConnectEvm(destOnly = false): Promise<void> {
   }
 }
 
-async function doConnectStarknet(destOnly = false): Promise<void> {
+/// Connect, sign, derive, find the note -- one flow, as in VeilX.
+///
+/// The signature IS the point of connecting here: it produces the private
+/// viewing key, and the key is what says where this holder's notes live. Asking
+/// for it as a separate step later would be asking twice for one decision.
+async function doConnectStarknet(): Promise<void> {
+  state.busy = 'Connecting…'; paintCta();
+  const previous = state.snSession?.address;
   try {
     state.snSession = await sn.connectStarknet();
-    if (!state.recipient && (destOnly ? toStarknet() : !toStarknet())) {
-      state.recipient = state.snSession.address;
+    // A different account means the cached viewing key belongs to someone else.
+    // Drop it rather than decrypting one account's notes with another's key.
+    if (previous && previous !== state.snSession.address) {
+      const chainId = (await sn.snProvider.getChainId()) as unknown as string;
+      forgetViewingKey(previous, chainId);
+      state.noteCtx = undefined;
+      state.noteId = '';
+      state.noteSlot = undefined;
+      state.noteEmptySlot = undefined;
+      state.noteClaimedBy = undefined;
+      state.noteSearched = false;
     }
+    // Bridging in, the destination is this wallet. Not a choice: the note is
+    // derived from this account's viewing key and nobody else can produce it.
+    if (toStarknet()) state.recipient = state.snSession.address;
     state.error = undefined;
   } catch (e: any) {
     state.error = e?.message ?? String(e);
+    state.busy = undefined;
+    await refreshAll();
+    return;
   }
+  state.busy = undefined;
   await refreshAll();
+
+  // Now the note. A cached key needs no signature, so a reload is silent.
+  if (toStarknet() && state.asset.poolReady) await doFindNote();
 }
 
 /// Derive the viewing key, find this holder's fillable note, and read who has

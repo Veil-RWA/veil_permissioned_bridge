@@ -437,6 +437,18 @@ a { color: inherit; }
 
 /* ----------------------------------------------------------- delivery */
 
+/* The destination is the connected wallet, shown rather than typed. */
+.dest-wallet {
+  display: flex; align-items: center; gap: 9px;
+  margin-top: 4px; padding: 10px 12px;
+  background: var(--ground); border: 1px solid var(--rule); border-radius: 10px;
+}
+.dest-mark {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--good); flex: none;
+}
+.dest-note { margin-left: auto; font-size: 11px; color: var(--faint); }
+
 .delivery { margin-top: 12px; }
 .delivery-head {
   font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
