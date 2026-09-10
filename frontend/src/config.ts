@@ -91,9 +91,17 @@ export const evmChain = EVM_CHAIN_IDS[deployment.evmNetwork ?? 'ethereum-sepolia
 export const evmLabel = evmChain?.label ?? 'Ethereum';
 export const starknetLabel = STARKNET_LABELS[deployment.starknetNetwork ?? 'starknet-sepolia'] ?? 'Starknet';
 
-export const EVM_RPC = import.meta.env.VITE_EVM_RPC_URL
+/// An env var left blank in `.env` arrives as an EMPTY STRING, not undefined,
+/// and `??` does not fall back on that -- so a blank line in the file would
+/// shadow the value it was meant to leave alone. Treat blank as unset.
+const env = (value: unknown): string | undefined => {
+  const s = typeof value === 'string' ? value.trim() : '';
+  return s === '' ? undefined : s;
+};
+
+export const EVM_RPC = env(import.meta.env.VITE_EVM_RPC_URL)
   ?? 'https://ethereum-sepolia-rpc.publicnode.com';
-export const STARKNET_RPC = import.meta.env.VITE_STARKNET_RPC_URL
+export const STARKNET_RPC = env(import.meta.env.VITE_STARKNET_RPC_URL)
   ?? 'https://starknet-sepolia.drpc.org';
 
 /// The SNIP-36 prove-and-settle service. Creating an open note runs
@@ -105,12 +113,12 @@ export const STARKNET_RPC = import.meta.env.VITE_STARKNET_RPC_URL
 /// nobody chose. Absent, the app says note creation is unavailable instead of
 /// silently failing at the prover.
 export const PROVER_ENDPOINT: string | undefined =
-  import.meta.env.VITE_VEIL_PROVER_ENDPOINT ?? deployment.veil?.proverEndpoint;
+  env(import.meta.env.VITE_VEIL_PROVER_ENDPOINT) ?? env(deployment.veil?.proverEndpoint);
 
 /// Account the prover submits the settle from. The browser cannot sign a
 /// settle, so there is no per-user key here -- same arrangement as veilx/app.
 export const PROVER_MASTER_ADDRESS: string | undefined =
-  import.meta.env.VITE_VEIL_MASTER_ADDRESS ?? deployment.veil?.masterAddress;
+  env(import.meta.env.VITE_VEIL_MASTER_ADDRESS) ?? env(deployment.veil?.masterAddress);
 
 const testnet = (deployment.evmNetwork ?? '').includes('sepolia');
 export const EXPLORER_EVM = testnet ? 'https://sepolia.etherscan.io' : 'https://etherscan.io';

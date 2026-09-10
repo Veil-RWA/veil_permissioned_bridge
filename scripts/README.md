@@ -11,10 +11,23 @@ cp .env.example .env    # then fill it in
 set -a && . ./.env && set +a
 ```
 
+There are **two** environment files, loaded by different tools and kept apart on
+purpose:
+
+| File | Holds | Secret? |
+|---|---|---|
+| `scripts/.env` | `EVM_*` and `STARKNET_*` RPCs, account and **private keys** | Yes — gitignored, use throwaway testnet accounts |
+| `frontend/.env` | RPCs, which deployment to load, the prover endpoint | No — Vite inlines it into the bundle |
+
+Nothing in `frontend/.env` is a secret and the app never needs a key: it signs
+with the user's wallet. The app also runs with that file blank; only "Create my
+open note" needs anything set there. Each file lists which script or feature
+needs which variable.
+
 You need: a funded EVM account (gas + the LayerZero message fee, in ETH), a
-funded Starknet account (fees in STRK), and **an ERC-3643 token that already
-exists**. This bridge does not issue one — the whole premise is that the asset
-belongs to an issuer.
+funded Starknet account (fees in STRK), and an ERC-3643 token. On mainnet that
+token belongs to an issuer and this bridge does not issue one. On testnet there
+is no issuer, so step 0 deploys faucet assets instead.
 
 ## Assets
 
