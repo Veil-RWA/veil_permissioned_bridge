@@ -28,6 +28,37 @@ asset. Class declarations are cached across assets, so the second one is cheaper
 The Veil **pool** is the exception and is NOT per asset — one pool carries any
 number of them, so every asset lands in the same main pool. See step 6.
 
+## 0. No ERC-3643 asset to bridge? Deploy a faucet one
+
+The bridge escrows an asset that already exists and belongs to an issuer, so
+`deploy-evm.js` does not create one. On testnet there is no issuer:
+
+```bash
+node deploy-faucet.js --asset gold --evm ethereum-sepolia [--modules]
+```
+
+That deploys a REAL ERC-3643 token — full transfer gate, identity registry,
+modular compliance — with a public `claim()` that registers the caller and mints
+to them. Anyone can then get a permissioned balance without being
+hand-registered:
+
+```bash
+cast send <token> "claim()" --rpc-url $EVM_RPC_URL --private-key $KEY
+```
+
+`--modules` additionally deploys the five T-REX modules, bound but unconfigured,
+so `export-compliance.js` has something real to enumerate. Configure them with
+`--max-balance` / `--supply-limit`, or by calling the modules directly.
+
+The faucet is the only testnet-shaped part: on a real asset, registration is the
+issuer's KYC decision and minting is theirs. Everything else is the production
+gate, so a bridge-out that fails here fails for the reason it would against an
+issuer's token.
+
+**After it, register the lockbox** — `deploy-evm.js` prints the command. T-REX
+verifies the RECIPIENT of a transfer and on a bridge-out that is the lockbox, so
+without it every escrow reverts inside the token.
+
 ## Already deployed? Skip to the addresses
 
 If the contracts exist and you just have their addresses:

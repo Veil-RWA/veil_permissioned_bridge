@@ -8,3 +8,5 @@ echo "=== bridge: adversarial tests ==="
 (cd test && node bridge.test.js)
 echo "=== bridge: attack tests ==="
 (cd test && node attack.test.js)
+echo "=== faucet: deployable ERC-3643 assets ==="
+(cd test && node faucet.test.js)
