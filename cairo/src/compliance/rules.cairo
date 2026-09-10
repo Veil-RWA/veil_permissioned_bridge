@@ -39,6 +39,7 @@
 // for the honest list of what that means.
 
 use starknet::ContractAddress;
+use super::super::mirrored_registry::LocalIdentity;
 
 #[starknet::interface]
 pub trait IComplianceRule<TContractState> {
@@ -51,6 +52,11 @@ pub trait IComplianceRule<TContractState> {
 pub trait IMirrorLookup<TContractState> {
     fn identity_of(self: @TContractState, sn_account: ContractAddress) -> felt252;
     fn investor_country(self: @TContractState, account: ContractAddress) -> u16;
+    /// Registered directly on this chain rather than bound to an EVM account:
+    /// a Veil pool, or another contract with no counterpart on the source
+    /// chain: a Veil pool, or another contract with no counterpart on the
+    /// source chain. Such an account is a VENUE, not an investor.
+    fn local_identity(self: @TContractState, sn_account: ContractAddress) -> LocalIdentity;
 }
 
 #[starknet::interface]
@@ -257,7 +263,19 @@ pub mod MirroredCompliance {
                 }
 
                 // MaxBalanceModule, keyed on the receiver's EVM identity.
-                if self.max_balance_enabled.read() {
+                //
+                // A VENUE is exempt. A holding cap is a per-investor rule -- how
+                // much of this asset one investor may hold -- and a Veil pool is
+                // not an investor: it is where every investor's position lives,
+                // so its balance is the sum of many people's and would breach
+                // any cap immediately. It also has no EVM identity to key on.
+                // Applying the cap to it would not enforce anything; it would
+                // just make pool delivery impossible, which is the only way in.
+                //
+                // The investor-side cap is still enforced, on the way in, by the
+                // gateway's `can_bridge_mint(recipient)` check against the
+                // recipient's own identity -- so this exemption moves nothing.
+                if self.max_balance_enabled.read() && !mirror.local_identity(to).allowed {
                     let cap = self.max_balance.read();
                     if amount > cap {
                         return false;
@@ -272,9 +290,14 @@ pub mod MirroredCompliance {
                 }
             }
 
-            // TransferRestrictModule: mint and burn pass unconditionally.
+            // TransferRestrictModule: mint and burn pass unconditionally, and
+            // so does a venue -- an allow-list of investors says nothing about
+            // the pool they all settle through.
             if self.transfer_restrict_enabled.read() && !is_mint && !is_burn {
                 let mirror = IMirrorLookupDispatcher { contract_address: self.registry.read() };
+                if mirror.local_identity(to).allowed {
+                    return self.custom_rules_allow(from, to, amount);
+                }
                 let id_from = mirror.identity_of(from);
                 let id_to = mirror.identity_of(to);
                 // An OR, matching upstream: either party being allow-listed

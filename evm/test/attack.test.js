@@ -21,6 +21,8 @@
 const { Chain_, test, eq, ok, reverts, succeeds, run, ethers } = require('./harness');
 
 const OWNER = 1;
+// Every bridge-out names a note: there is no wallet delivery.
+const NOTE_D = '0x' + 'ab'.repeat(32);
 const ALICE = 2;
 const BOB = 3;
 const MALLORY = 5;
@@ -68,7 +70,7 @@ const deliverUnlock = (endpoint, lockbox, recipient, amount, nonce = 1) =>
 
 test('mallory cannot release escrow by calling lzReceive herself', async () => {
   const { token, lockbox } = await setup();
-  await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
 
   const res = await lockbox.call(
     'lzReceive',
@@ -82,7 +84,7 @@ test('mallory cannot release escrow by calling lzReceive herself', async () => {
 
 test('mallory cannot release escrow by spoofing the source contract', async () => {
   const { token, endpoint, lockbox } = await setup();
-  await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
 
   const res = await endpoint.call('deliver', [
     lockbox.hex,
@@ -97,7 +99,7 @@ test('mallory cannot release escrow by spoofing the source contract', async () =
 
 test('mallory cannot release escrow from a chain that was never configured', async () => {
   const { token, endpoint, lockbox } = await setup();
-  await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
 
   const res = await endpoint.call('deliver', [
     lockbox.hex,
@@ -112,7 +114,7 @@ test('mallory cannot release escrow from a chain that was never configured', asy
 
 test('an unlock larger than the escrow moves no value', async () => {
   const { token, endpoint, lockbox } = await setup();
-  await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
 
   // Even from the trusted peer, a release the escrow cannot cover must not
   // reach into whatever else the lockbox happens to hold.
@@ -129,7 +131,7 @@ test('an unlock larger than the escrow moves no value', async () => {
 
 test('mallory cannot redirect a held release to herself', async () => {
   const { registry, token, endpoint, lockbox } = await setup();
-  await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
   await registry.call('setVerified', [addr(BOB), false]);
   await deliverUnlock(endpoint, lockbox, addr(BOB), 400n);
   await registry.call('setVerified', [addr(BOB), true]);
@@ -142,7 +144,7 @@ test('mallory cannot redirect a held release to herself', async () => {
 
 test('a held release cannot be claimed twice', async () => {
   const { registry, token, endpoint, lockbox } = await setup();
-  await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
   await registry.call('setVerified', [addr(BOB), false]);
   await deliverUnlock(endpoint, lockbox, addr(BOB), 400n);
   await registry.call('setVerified', [addr(BOB), true]);
@@ -154,7 +156,7 @@ test('a held release cannot be claimed twice', async () => {
 
 test('a re-entrant token cannot drain a claim twice', async () => {
   const { registry, token, endpoint, lockbox } = await setup({ tokenContract: 'MockReentrantToken' });
-  await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
   await registry.call('setVerified', [addr(BOB), false]);
   await deliverUnlock(endpoint, lockbox, addr(BOB), 400n);
   await registry.call('setVerified', [addr(BOB), true]);
@@ -172,7 +174,7 @@ test('a re-entrant token cannot drain a claim twice', async () => {
 
 test('tokens donated to the lockbox cannot be claimed by anyone', async () => {
   const { token, lockbox } = await setup();
-  await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
   // A direct transfer in is not escrow: no message ever named a recipient for
   // it, so there is no claim to make against it.
   await token.call('mint', [addr(MALLORY), 5000n]);
@@ -188,7 +190,7 @@ test('mallory cannot escrow a victim tokens she was never approved for', async (
   const { token, lockbox } = await setup();
   // Alice approved the LOCKBOX, not Mallory, and bridgeOut pulls from the caller.
   reverts(
-    await lockbox.call('bridgeOut', [1000n, B32(999), 200000n, addr(REFUND)], MALLORY),
+    await lockbox.call('bridgeOut', [1000n, B32(999), NOTE_D, B32(0), 200000n, addr(REFUND)], MALLORY),
     'balance'
   );
   eq((await token.call('balanceOf', [addr(ALICE)])).decoded[0], 1_000_000n, 'alice debited');
@@ -201,7 +203,7 @@ test('an unverified attacker cannot escrow even holding tokens', async () => {
   await registry.call('setVerified', [addr(MALLORY), false]);
 
   reverts(
-    await lockbox.call('bridgeOut', [5000n, B32(999), 200000n, addr(REFUND)], MALLORY),
+    await lockbox.call('bridgeOut', [5000n, B32(999), NOTE_D, B32(0), 200000n, addr(REFUND)], MALLORY),
     'NotVerified'
   );
   eq((await endpoint.call('sendCount')).decoded[0], 0n, 'message sent anyway');
@@ -210,7 +212,7 @@ test('an unverified attacker cannot escrow even holding tokens', async () => {
 
 test('a zero-amount bridgeOut is refused rather than spending a message', async () => {
   const { endpoint, lockbox } = await setup();
-  reverts(await lockbox.call('bridgeOut', [0n, B32(101), 200000n, addr(REFUND)], ALICE), 'ZeroAmount');
+  reverts(await lockbox.call('bridgeOut', [0n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE), 'ZeroAmount');
   eq((await endpoint.call('sendCount')).decoded[0], 0n, 'message sent');
 });
 
@@ -260,15 +262,15 @@ test('mallory cannot repoint the peer at a contract she controls', async () => {
 
 test('escrow accounting survives a full attack sequence', async () => {
   const { registry, token, endpoint, lockbox } = await setup();
-  await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE);
-  await lockbox.call('bridgeOut', [500n, B32(202), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [500n, B32(202), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
 
   // Everything Mallory can legally reach, in sequence.
   await lockbox.call('lzReceive', [[DST_EID, PEER, 9n], B32(9), unlockMsg(addr(MALLORY), 1500n), addr(0), '0x'], MALLORY);
   await endpoint.call('deliver', [lockbox.hex, DST_EID, B32('0xbad'), 9n, unlockMsg(addr(MALLORY), 1500n)]);
   await lockbox.call('claim', [addr(MALLORY)], MALLORY);
   await lockbox.call('syncCompliance', [addr(MALLORY), 200000n, addr(REFUND)], MALLORY);
-  await lockbox.call('bridgeOut', [1n, B32(303), 200000n, addr(REFUND)], MALLORY);
+  await lockbox.call('bridgeOut', [1n, B32(303), NOTE_D, B32(0), 200000n, addr(REFUND)], MALLORY);
 
   eq((await token.call('balanceOf', [addr(MALLORY)])).decoded[0], 0n, 'mallory gained');
   eq((await token.call('balanceOf', [lockbox.hex])).decoded[0], 1500n, 'escrow moved');

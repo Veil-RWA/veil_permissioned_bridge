@@ -438,6 +438,10 @@ a { color: inherit; }
 /* ----------------------------------------------------------- delivery */
 
 .delivery { margin-top: 12px; }
+.delivery-head {
+  font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--faint); margin-bottom: 9px;
+}
 .seg {
   display: inline-flex; gap: 3px; padding: 3px;
   background: var(--ground); border: 1px solid var(--rule); border-radius: 999px;

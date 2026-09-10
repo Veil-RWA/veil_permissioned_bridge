@@ -3,11 +3,11 @@
 //
 //   node bridge.js --asset gold --amount 1000000000000000000 --to 0x<starknet address>
 //                  [--gas-limit 400000] [--watch 900]
-//                  [--note 0x<open note id>] [--pool 0x<veil pool>]
+//                  --note 0x<open note id> [--pool 0x<veil pool>]
 //
-// With --note the amount is delivered into a Veil pool open note instead of the
-// recipient's wallet. The note must already be CLAIMED on the gateway by the
-// recipient, or the far side declines it and the amount lands in the wallet.
+// --note is REQUIRED. Every bridge-in lands in a Veil pool open note; there is
+// no wallet delivery. The note must already be CLAIMED on the gateway by the
+// recipient, or the far side quarantines the amount instead of filling it.
 //
 // --pool names WHICH Veil pool. A Veil pool is multi-asset -- one pool carries
 // any number of tokens -- so the asset never implies the pool. Omit it for the
@@ -110,13 +110,17 @@ async function main() {
   // ---- delivery -----------------------------------------------------------
   // Wallet unless a note is named. The pool is only meaningful alongside one.
   const noteId = args.note;
+  if (!noteId) {
+    throw new Error(
+      '--note is required: every bridge-in lands in a Veil pool note.\n' +
+      '  Derive it from the recipient\'s viewing key with the Veil SDK, and have\n' +
+      '  them claim it on the gateway (register_note) before bridging.'
+    );
+  }
   const veilNet = veil(args.starknet ?? d.starknetNetwork);
   const mainPool = d.veil?.pool ?? veilNet.pool;
   const chosenPool = args.pool;
-  if (chosenPool && !noteId) {
-    throw new Error('--pool only means something with --note: a wallet transfer does not enter a pool');
-  }
-  if (noteId) {
+  {
     if (BigInt(noteId) === 0n) throw new Error('--note must be a non-zero felt');
     if (amount >= (1n << 128n)) {
       throw new Error(`amount ${amount} does not fit a note (max 2^128 - 1)`);
@@ -127,8 +131,6 @@ async function main() {
     if (chosenPool && mainPool && BigInt(chosenPool) !== BigInt(mainPool)) {
       console.log('             not the main pool - the gateway will check it against the factory');
     }
-  } else {
-    console.log('delivery     wallet');
   }
 
   // ---- quote --------------------------------------------------------------
@@ -160,11 +162,9 @@ async function main() {
   const ZERO_WORD = '0x' + '0'.repeat(64);
   const word = (v) => '0x' + BigInt(v).toString(16).padStart(64, '0');
   const poolWord = chosenPool ? word(chosenPool) : ZERO_WORD;
-  const tx = noteId
-    ? await lockbox.bridgeOutToPool(
-        amount, recipient, word(noteId), poolWord, gasLimit, wallet.address, { value: nativeFee }
-      )
-    : await lockbox.bridgeOut(amount, recipient, gasLimit, wallet.address, { value: nativeFee });
+  const tx = await lockbox.bridgeOut(
+    amount, recipient, word(noteId), poolWord, gasLimit, wallet.address, { value: nativeFee }
+  );
   const receipt = await tx.wait();
   done('tx', tx.hash, `${evmNet.explorer}/tx/${tx.hash}`);
 

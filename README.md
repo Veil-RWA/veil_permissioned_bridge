@@ -106,10 +106,18 @@ safe direction:
 
 ## Where a bridge-in lands
 
-By default, the recipient's wallet: a public balance. A transfer can instead be
-addressed to an **open note** in a Veil pool, and arrives in the pool. The
-sender chooses per transfer; the mode, the note id and the pool ride in the MINT
-message.
+**Always a Veil pool note.** There is no wallet delivery and no wallet fallback.
+The twin is a permissioned asset whose point is to settle privately inside the
+pool, so a public balance on Starknet is the thing this bridge exists to avoid.
+The note id and the pool ride in the MINT message.
+
+A transfer that cannot be filled — no note, unclaimed, pool paused or refusing —
+is **quarantined** on the gateway: held, not minted anywhere, and released later
+with `claim_to_note` into a note the recipient has claimed. That is the only way
+value leaves quarantine. Nothing anywhere mints the twin to a holder's wallet.
+
+A holder who wants a public balance withdraws it from the pool, which is the
+pool's own unshield and not something the bridge does.
 
 ### Which pool
 
@@ -153,9 +161,15 @@ addressed to that same holder may fill it. Claims are write-once.
 arrives the tokens are already escrowed on the source chain, so `lz_receive` may
 not reject it. The gateway therefore mints into its own custody and lets the
 pool **pull**, rather than pushing tokens at it. A pool that reverts, is paused,
-has not allow-listed the gateway, or takes nothing never receives anything, and
-the sweep hands the balance to the recipient. An amount at or above 2^128 cannot
-fit a note and is refused on the source chain, where it is free.
+has not allow-listed the gateway, or takes nothing never receives anything —
+whatever is left in the gateway's custody is **burned back** and the amount is
+held as pending, so `total_supply + total_pending` still equals the escrow and
+no public balance is ever created. An amount at or above 2^128 cannot fit a note
+and is refused on the source chain, where it is free.
+
+`claim_to_note` is the one place that may revert, and deliberately: nothing has
+been spent to reach it, so failing loudly and leaving the amount pending is safe
+and retryable. Everything on the `lz_receive` path quarantines instead.
 
 ## The three problems a naive mirror gets wrong
 

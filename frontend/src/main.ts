@@ -37,7 +37,6 @@ type State = {
   direction: Direction;
   asset: Asset;
   pickerOpen: boolean;
-  delivery: evm.Delivery;
   /// Which Veil pool the transfer is addressed to. 'main' is the gateway's
   /// default; 'custom' is an address the user pasted. A pool is multi-asset, so
   /// this is a real choice and not implied by the asset.
@@ -72,7 +71,6 @@ const state: State = {
   direction: 'toStarknet',
   asset: initial,
   pickerOpen: false,
-  delivery: 'wallet',
   poolChoice: 'main',
   customPool: '',
   poolChecking: false,
@@ -237,23 +235,24 @@ function claimsCard(): string {
 
 // ------------------------------------------------------------------ delivery
 
-/// Where a bridge-in lands. Only offered when bridging IN and the asset's
-/// gateway has a pool configured -- there is nothing to choose otherwise.
+/// Where a bridge-in lands -- which is always a Veil pool note. There is no
+/// wallet delivery and no wallet fallback: the twin is a permissioned asset
+/// whose point is to settle privately inside the pool, and a public balance on
+/// Starknet is the thing this bridge exists to avoid. A transfer that cannot be
+/// filled is held on the gateway and stays claimable into a note.
+///
+/// So this is not a choice of destination. The only choice is WHICH pool.
 function deliveryControls(): string {
   if (!toStarknet() || !state.asset.poolReady) return '';
-  const pool = state.delivery === 'pool';
   const claimed = state.noteClaimedBy;
   const mine = claimed && state.snSession &&
     BigInt(claimed) === BigInt(state.snSession.address);
   const unclaimed = claimed !== undefined && BigInt(claimed) === 0n;
 
   return `<div class="delivery">
-    <div class="seg" role="radiogroup" aria-label="Where it lands">
-      <button class="seg-btn${pool ? '' : ' is-on'}" data-delivery="wallet" role="radio" aria-checked="${!pool}">Wallet</button>
-      <button class="seg-btn${pool ? ' is-on' : ''}" data-delivery="pool" role="radio" aria-checked="${pool}">Veil pool</button>
-    </div>
-    ${pool ? poolSection() + noteSection(claimed, Boolean(mine), Boolean(unclaimed)) :
-      `<p class="delivery-note">Arrives as a public balance on ${esc(starknetLabel)}.</p>`}
+    <div class="delivery-head">Lands in a Veil pool</div>
+    ${poolSection()}
+    ${noteSection(claimed, Boolean(mine), Boolean(unclaimed))}
   </div>`;
 }
 
@@ -399,7 +398,7 @@ function ctaLabel(): { text: string; disabled: boolean; note: string } {
     if (s && !s.verified) return { text: 'Not eligible to bridge', disabled: true, note: 'Your address is not verified on the source registry.' };
     if (s && !s.lockboxRegistered) return { text: 'Bridge not approved by issuer', disabled: true, note: 'The lockbox must be a registered identity before any escrow can succeed.' };
     if (s && s.allowance < amount) return { text: `Approve ${state.token.symbol}`, disabled: false, note: 'One approval, then the transfer.' };
-    if (state.delivery === 'pool') {
+    {
       // A pool that does not exist would cost a message and land in the wallet
       // anyway, so it is stopped here rather than discovered on the far side.
       if (state.poolChoice === 'custom') {
@@ -486,7 +485,7 @@ function transferView(): string {
       <div class="detail"><dt>Asset</dt><dd>${esc(state.asset.name)}</dd></div>
       <div class="detail"><dt>Route</dt><dd>${esc(sourceLabel())} → ${esc(destLabel())}</dd></div>
       ${toStarknet() && state.asset.poolReady
-        ? `<div class="detail"><dt>Lands as</dt><dd>${state.delivery === 'pool' ? 'Pool note' : 'Wallet balance'}</dd></div>` : ''}
+        ? `<div class="detail"><dt>Lands as</dt><dd>Pool note</dd></div>` : ''}
       <div class="detail"><dt>Message fee</dt><dd>${state.fee !== undefined ? units(state.fee, 18, 6) + (toStarknet() ? ' ETH' : ' STRK') : '—'}</dd></div>
       <div class="detail"><dt>Bridge fee</dt><dd>0</dd></div>
       <div class="detail"><dt>Estimated time</dt><dd>~3–10 min</dd></div>
@@ -581,12 +580,7 @@ function render(): void {
     b.onclick = () => {
       // The same control class serves both segmented pickers, so each button
       // acts on the one it actually belongs to.
-      if (b.dataset.delivery) {
-        state.delivery = b.dataset.delivery as evm.Delivery;
-        if (state.delivery === 'wallet') {
-          state.noteId = ''; state.noteClaimedBy = undefined; state.noteSearched = false;
-        }
-      } else if (b.dataset.pool) {
+      if (b.dataset.pool) {
         state.poolChoice = b.dataset.pool as 'main' | 'custom';
         // A pool the user has moved away from must not stay approved: going
         // back to "another pool" re-checks whatever is in the box.
@@ -702,6 +696,16 @@ async function selectAsset(id: string): Promise<void> {
   state.claimableEvm = 0n;
   state.error = undefined;
   state.notice = undefined;
+  // The note and the pool check both belong to the old asset: a note id is
+  // derived per token, and a pool carrying one asset need not carry another.
+  state.noteId = '';
+  state.noteCtx = undefined;
+  state.noteSlot = undefined;
+  state.noteEmptySlot = undefined;
+  state.noteClaimedBy = undefined;
+  state.noteSearched = false;
+  state.poolCheck = undefined;
+  state.poolChecking = false;
   render();
   try { state.token = await evm.tokenInfo(next); } catch { /* catalogue stands */ }
   await refreshAll();
@@ -883,8 +887,7 @@ async function onCta(): Promise<void> {
       const fee = state.fee ?? (await evm.quote(asset, amount, state.recipient));
       state.busy = 'Confirm in wallet…'; paintCta();
       const { hash, guid } = await evm.bridgeOut(
-        state.evmSession!, asset, amount, state.recipient, fee, state.delivery, state.noteId,
-        selectedPool()
+        state.evmSession!, asset, amount, state.recipient, fee, state.noteId, selectedPool()
       );
       record({
         direction: 'toStarknet', asset: asset.id, symbol: state.token.symbol,

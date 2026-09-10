@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "typecheck": "node scripts/typecheck.mjs",
     "sync-sdk": "node scripts/sync-sdk.mjs",
-    "test": "node src/notes.test.mjs"
+    "test": "node src/notes.test.mjs",
+    "demo": "VITE_DEPLOYMENT=demo.json npm run dev",
+    "build:demo": "VITE_DEPLOYMENT=demo.json npm run build"
   },
   "dependencies": {
     "ethers": "^6.13.0",

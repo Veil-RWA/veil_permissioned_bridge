@@ -12,6 +12,8 @@
 const { Chain_, test, eq, ok, reverts, succeeds, run, ethers } = require('./harness');
 
 const OWNER = 1;
+// Every bridge-out names a note: there is no wallet delivery.
+const NOTE_D = '0x' + 'ab'.repeat(32);
 const ALICE = 2;
 const BOB = 3;
 const MALLORY = 5;
@@ -88,18 +90,17 @@ test('MINT encoding matches the layout pinned on the Cairo side', async () => {
     true,
     false,
     840,
-    0,
     B32(0),
     B32(0),
   ]);
   succeeds(res, 'encodeMint');
   const bytes = res.decoded[0];
   const expected = ethers.solidityPacked(
-    ['uint8', 'bytes32', 'bytes32', 'uint256', 'uint64', 'bool', 'bool', 'uint16', 'uint8', 'bytes32', 'bytes32'],
-    [1, B32('0xa11ce'), B32(101), 1000n, 7n, true, false, 840, 0, B32(0), B32(0)]
+    ['uint8', 'bytes32', 'bytes32', 'uint256', 'uint64', 'bool', 'bool', 'uint16', 'bytes32', 'bytes32'],
+    [1, B32('0xa11ce'), B32(101), 1000n, 7n, true, false, 840, B32(0), B32(0)]
   );
   eq(bytes, expected, 'packed bytes');
-  eq((bytes.length - 2) / 2, 174, 'MINT length');
+  eq((bytes.length - 2) / 2, 173, 'MINT length');
 
   // The exact byte offsets the Cairo test reads.
   const b = ethers.getBytes(bytes);
@@ -115,7 +116,7 @@ test('MINT encoding matches the layout pinned on the Cairo side', async () => {
   eq(b[107], 0x03, 'country hi');
   eq(b[108], 0x48, 'country lo');
   // Naming no pool means the far side uses its default, the main Veil pool.
-  eq(b[173], 0, 'pool');
+  eq(b[172], 0, 'pool');
 });
 
 test('IDENTITY and GLOBAL encodings match the pinned layouts', async () => {
@@ -182,7 +183,7 @@ test('UNLOCK refuses a wrong length or kind', async () => {
 test('bridgeOut escrows and ships the sender compliance snapshot', async () => {
   const { token, endpoint, lockbox, chain } = await setup();
 
-  succeeds(await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE));
+  succeeds(await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE));
 
   eq((await token.call('balanceOf', [lockbox.hex])).decoded[0], 1000n, 'escrowed');
   eq((await token.call('balanceOf', [addr(ALICE)])).decoded[0], 999000n, 'alice debited');
@@ -207,24 +208,23 @@ test('bridgeOut escrows and ships the sender compliance snapshot', async () => {
   eq(decoded.decoded[6], 840n, 'country');
 });
 
-test('bridgeOutToPool carries the delivery mode and the note id', async () => {
+test('a bridge-out carries its note id and pool', async () => {
   const { token, endpoint, lockbox, chain } = await setup();
   const NOTE = B32('0xbeef');
   succeeds(
-    await lockbox.call('bridgeOutToPool', [1000n, B32(101), NOTE, B32(0), 200000n, addr(REFUND)], ALICE),
-    'bridgeOutToPool'
+    await lockbox.call('bridgeOut', [1000n, B32(101), NOTE, B32(0), 200000n, addr(REFUND)], ALICE),
+    'bridgeOut'
   );
   eq((await token.call('balanceOf', [lockbox.hex])).decoded[0], 1000n, 'escrowed');
 
   const codec = await chain.deploy('CodecHarness');
   const decoded = await codec.call('decodeMint', [(await endpoint.call('lastMessage')).decoded[0]]);
   succeeds(decoded, 'decodeMint');
-  eq(decoded.decoded[7], 1n, 'delivery = POOL');
-  eq(decoded.decoded[8], NOTE, 'note id');
-  eq(decoded.decoded[9], B32(0), 'pool = default');
+  eq(decoded.decoded[7], NOTE, 'note id');
+  eq(decoded.decoded[8], B32(0), 'pool = default');
 });
 
-test('bridgeOutToPool can name a pool other than the default', async () => {
+test('a bridge-out can name a pool other than the default', async () => {
   // A Veil pool is multi-asset, so the asset never implies the pool. Zero means
   // the gateway's default -- the main Veil pool -- and a holder whose entity
   // runs its own pool names that one instead. The gateway checks it against the
@@ -233,39 +233,41 @@ test('bridgeOutToPool can name a pool other than the default', async () => {
   const NOTE = B32('0xbeef');
   const OWN_POOL = B32('0x12808521ab5f277d84eb430f2d59ff8753e91947b43fcf9aea341b38481a80a');
   succeeds(
-    await lockbox.call('bridgeOutToPool', [1000n, B32(101), NOTE, OWN_POOL, 200000n, addr(REFUND)], ALICE),
-    'bridgeOutToPool'
+    await lockbox.call('bridgeOut', [1000n, B32(101), NOTE, OWN_POOL, 200000n, addr(REFUND)], ALICE),
+    'bridgeOut'
   );
   const codec = await chain.deploy('CodecHarness');
   const decoded = await codec.call('decodeMint', [(await endpoint.call('lastMessage')).decoded[0]]);
   succeeds(decoded, 'decodeMint');
-  eq(decoded.decoded[9], OWN_POOL, 'pool travels on the wire');
+  eq(decoded.decoded[8], OWN_POOL, 'pool travels on the wire');
 });
 
 test('a pool transfer with no note, or too large for one, is refused here', async () => {
   const { endpoint, lockbox } = await setup();
-  // Both would silently degrade to the wallet on the far side. Refusing costs
-  // nothing here and tells the user why.
+  // Both would be quarantined on the far side rather than filled. Refusing
+  // costs nothing here and tells the user why.
   reverts(
-    await lockbox.call('bridgeOutToPool', [1000n, B32(101), B32(0), B32(0), 200000n, addr(REFUND)], ALICE),
+    await lockbox.call('bridgeOut', [1000n, B32(101), B32(0), B32(0), 200000n, addr(REFUND)], ALICE),
     'ZeroNoteId'
   );
   const tooBig = 1n << 128n;
-  await lockbox.call('bridgeOut', [0n, B32(101), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [0n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
   reverts(
-    await lockbox.call('bridgeOutToPool', [tooBig, B32(101), B32('0xbeef'), B32(0), 200000n, addr(REFUND)], ALICE),
+    await lockbox.call('bridgeOut', [tooBig, B32(101), B32('0xbeef'), B32(0), 200000n, addr(REFUND)], ALICE),
     'AmountTooLargeForNote'
   );
   eq((await endpoint.call('sendCount')).decoded[0], 0n, 'message sent');
 });
 
-test('a wallet transfer carries no note and mode zero', async () => {
+test('every transfer names a note -- there is no wallet mode', async () => {
+  // The wire format has no delivery field any more: a bridge-in always lands
+  // in a Veil pool note, so a message that names none is not representable.
   const { endpoint, lockbox, chain } = await setup();
-  await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
   const codec = await chain.deploy('CodecHarness');
   const decoded = await codec.call('decodeMint', [(await endpoint.call('lastMessage')).decoded[0]]);
-  eq(decoded.decoded[7], 0n, 'delivery = WALLET');
-  eq(decoded.decoded[8], B32(0), 'no note id');
+  eq(decoded.decoded[7], NOTE_D, 'note id travels');
+  eq(decoded.decoded[8], B32(0), 'default pool');
 });
 
 test('bridgeOut refuses an unverified sender before spending a message', async () => {
@@ -273,7 +275,7 @@ test('bridgeOut refuses an unverified sender before spending a message', async (
   await registry.call('setVerified', [addr(ALICE), false]);
 
   reverts(
-    await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE),
+    await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE),
     'NotVerified'
   );
   eq((await endpoint.call('sendCount')).decoded[0], 0n, 'no message sent');
@@ -286,7 +288,7 @@ test('bridgeOut fails while the lockbox is not a registered identity', async () 
   // switch, and it is live.
   const { lockbox, endpoint } = await setup({ registerLockbox: false });
   reverts(
-    await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE),
+    await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE),
     'recipient not verified'
   );
   eq((await endpoint.call('sendCount')).decoded[0], 0n, 'no message sent');
@@ -296,12 +298,12 @@ test('bridgeOut is blocked by the token pause and by a freeze', async () => {
   const { token, lockbox } = await setup();
 
   await token.call('setPaused', [true]);
-  reverts(await lockbox.call('bridgeOut', [1n, B32(101), 200000n, addr(REFUND)], ALICE), 'paused');
+  reverts(await lockbox.call('bridgeOut', [1n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE), 'paused');
   await token.call('setPaused', [false]);
 
   await token.call('setFrozen', [addr(ALICE), true]);
   reverts(
-    await lockbox.call('bridgeOut', [1n, B32(101), 200000n, addr(REFUND)], ALICE),
+    await lockbox.call('bridgeOut', [1n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE),
     'sender frozen'
   );
 });
@@ -310,7 +312,7 @@ test('bridgeOut is blocked by a compliance module saying no', async () => {
   const { compliance, lockbox } = await setup();
   await compliance.call('setAllow', [false]);
   reverts(
-    await lockbox.call('bridgeOut', [1n, B32(101), 200000n, addr(REFUND)], ALICE),
+    await lockbox.call('bridgeOut', [1n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE),
     'compliance'
   );
 });
@@ -338,7 +340,7 @@ test('syncCompliance is permissionless and forwards only live registry state', a
 
 test('sequence numbers are strictly increasing across every account message', async () => {
   const { lockbox } = await setup();
-  await lockbox.call('bridgeOut', [1n, B32(101), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [1n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
   eq((await lockbox.call('seq')).decoded[0], 1n, 'after bridgeOut');
   await lockbox.call('syncCompliance', [addr(ALICE), 200000n, addr(REFUND)], MALLORY);
   eq((await lockbox.call('seq')).decoded[0], 2n, 'after sync');
@@ -373,7 +375,7 @@ test('only the owner may set the destination or the peer', async () => {
 
 test('an unlock releases escrow to a verified recipient', async () => {
   const { token, endpoint, lockbox } = await setup();
-  await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
 
   succeeds(await deliverUnlock(endpoint, lockbox, addr(BOB), 400n), 'deliver');
   eq((await token.call('balanceOf', [addr(BOB)])).decoded[0], 400n, 'released');
@@ -384,7 +386,7 @@ test('an unlock releases escrow to a verified recipient', async () => {
 
 test('an unlock to an ineligible recipient is held, never reverted', async () => {
   const { registry, token, endpoint, lockbox } = await setup();
-  await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
   await registry.call('setVerified', [addr(BOB), false]);
 
   // The twin is already burned on Starknet; reverting would destroy the claim.
@@ -397,7 +399,7 @@ test('an unlock to an ineligible recipient is held, never reverted', async () =>
 
 test('an unlock the token itself rejects is held rather than bubbling', async () => {
   const { token, endpoint, lockbox } = await setup();
-  await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
   // Verified but frozen: the registry says yes, the token says no.
   await token.call('setFrozen', [addr(BOB), true]);
 
@@ -407,7 +409,7 @@ test('an unlock the token itself rejects is held rather than bubbling', async ()
 
 test('a held release is claimable once eligibility returns', async () => {
   const { registry, token, endpoint, lockbox } = await setup();
-  await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
   await registry.call('setVerified', [addr(BOB), false]);
   await deliverUnlock(endpoint, lockbox, addr(BOB), 400n);
 
@@ -426,7 +428,7 @@ test('a held release is claimable once eligibility returns', async () => {
 
 test('only the endpoint and only the configured peer may deliver', async () => {
   const { endpoint, lockbox } = await setup();
-  await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
 
   // Straight call, not via the endpoint.
   const direct = await lockbox.call(
@@ -460,8 +462,8 @@ test('only the endpoint and only the configured peer may deliver', async () => {
 test('escrow accounting balances across a full round trip', async () => {
   const { registry, token, endpoint, lockbox } = await setup();
 
-  await lockbox.call('bridgeOut', [1000n, B32(101), 200000n, addr(REFUND)], ALICE);
-  await lockbox.call('bridgeOut', [500n, B32(202), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [1000n, B32(101), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
+  await lockbox.call('bridgeOut', [500n, B32(202), NOTE_D, B32(0), 200000n, addr(REFUND)], ALICE);
   eq((await lockbox.call('totalEscrowed')).decoded[0], 1500n, 'escrowed');
   eq((await token.call('balanceOf', [lockbox.hex])).decoded[0], 1500n, 'held by lockbox');
 

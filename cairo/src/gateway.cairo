@@ -50,7 +50,22 @@ pub trait IVeilBridgeGateway<TContractState> {
     /// bridge-in landed. Permissionless: the funds only ever move to the
     /// recipient, so anyone may pay the gas to release them once compliance
     /// data allows it.
-    fn claim_pending(ref self: TContractState, recipient: ContractAddress);
+    /// Release a quarantined amount into one of the recipient's open notes.
+    ///
+    /// There is no wallet release. The only way value leaves quarantine is into
+    /// a Veil pool note, which is the only place a bridge-in ever lands.
+    ///
+    /// Permissionless: anyone may pay the gas, but the note must already be
+    /// claimed BY the recipient, so the value can only go where the recipient
+    /// said. Unlike `lz_receive` this may revert -- nothing has been spent to
+    /// get here, so failing loudly and leaving the amount pending is safe and
+    /// retryable.
+    fn claim_to_note(
+        ref self: TContractState,
+        recipient: ContractAddress,
+        note_id: felt252,
+        pool: ContractAddress,
+    );
     fn pending_of(self: @TContractState, recipient: ContractAddress) -> u256;
     fn total_pending(self: @TContractState) -> u256;
 
@@ -102,12 +117,17 @@ pub mod VeilBridgeGateway {
         IVeilMirroredRegistryDispatcher, IVeilMirroredRegistryDispatcherTrait,
     };
     use super::super::msg_codec::{
-        DELIVERY_POOL, KIND_GLOBAL, KIND_IDENTITY, KIND_MINT, decode_global, decode_identity,
+        KIND_GLOBAL, KIND_IDENTITY, KIND_MINT, decode_global, decode_identity,
         decode_mint, encode_unlock, kind,
     };
-    // Both the pool and the factory are called through caught syscalls rather
-    // than dispatchers: a third-party contract that reverts must not take an
-    // inbound message down with it. See `deliver_to_pool` and `resolve_pool`.
+    // On the INBOUND path the pool and the factory are called through caught
+    // syscalls, never dispatchers: a third-party contract that reverts must not
+    // take a message down with it. See `deliver_to_pool` and `resolve_pool`.
+    //
+    // `claim_to_note` is the exception and uses the dispatcher on purpose --
+    // nothing has been spent to reach it, so a revert there is safe and tells
+    // the caller what went wrong.
+    use super::super::pool::{IVeilPoolDispatcher, IVeilPoolDispatcherTrait};
     use super::IVeilBridgeGateway;
 
     /// Deliberately carries no source identity. A Map cannot be enumerated, so
@@ -346,17 +366,43 @@ pub mod VeilBridgeGateway {
                 .quote(params, get_contract_address())
         }
 
-        fn claim_pending(ref self: ContractState, recipient: ContractAddress) {
+        fn claim_to_note(
+            ref self: ContractState,
+            recipient: ContractAddress,
+            note_id: felt252,
+            pool: ContractAddress,
+        ) {
             let amount = self.pending.read(recipient);
             assert(amount != 0, 'NOTHING_PENDING');
             let token = self.token_dispatcher();
             assert(token.can_bridge_mint(recipient, amount), 'STILL_INELIGIBLE');
+            assert(amount.high == 0, 'AMOUNT_TOO_LARGE');
+            assert(note_id != 0, 'NO_NOTE_ID');
+            assert(self.note_owners.read(note_id) == recipient, 'NOTE_NOT_CLAIMED');
 
-            // Clear before minting: `bridge_mint` calls out to the token, and
+            let (target, reason) = self.resolve_pool(pool);
+            assert(reason == 0, reason);
+
+            // Clear before calling out: the pool is a foreign contract, and
             // zeroing first means a re-entrant claim finds nothing to release.
             self.pending.write(recipient, 0);
             self.total_pending.write(self.total_pending.read() - amount);
-            token.bridge_mint(recipient, amount);
+
+            // Mint into this contract's custody and let the pool PULL, exactly
+            // as a delivery does. Nothing is pushed anywhere first.
+            let this = get_contract_address();
+            token.bridge_mint(this, amount);
+            token.approve(target, amount);
+            IVeilPoolDispatcher { contract_address: target }
+                .fill_open_note(note_id, token.contract_address, amount.low);
+            token.approve(target, 0);
+
+            // The return is not trusted; the balance is. A pool that took
+            // nothing must not leave the tokens sitting here.
+            assert(token.balance_of(this) == 0, 'POOL_TOOK_NOTHING');
+            // Deliberately does NOT carry the note or the pool: `note_owners`
+            // already records the claim, and repeating it in a log adds a
+            // public recipient-to-note linkage for nothing.
             self.emit(PendingClaimed { recipient, amount });
         }
 
@@ -523,19 +569,13 @@ pub mod VeilBridgeGateway {
                 return;
             }
 
-            // Pool delivery mints into this contract's own custody instead, so
-            // it must branch BEFORE the wallet mint or the amount is created
-            // twice.
-            if decoded.delivery == DELIVERY_POOL {
-                self
-                    .deliver_to_pool(
-                        decoded.sn_recipient, decoded.amount, decoded.note_id, decoded.pool,
-                    );
-                return;
-            }
-
-            self.token_dispatcher().bridge_mint(decoded.sn_recipient, decoded.amount);
-            self.emit(BridgeInMinted { recipient: decoded.sn_recipient, amount: decoded.amount });
+            // The pool is the ONLY destination. Nothing is ever minted to a
+            // recipient's wallet here: a bridge-in that cannot be filled is
+            // quarantined and stays claimable into a note.
+            self
+                .deliver_to_pool(
+                    decoded.sn_recipient, decoded.amount, decoded.note_id, decoded.pool,
+                );
         }
 
         /// Which pool this transfer may touch, and why not if it may touch none.
@@ -629,8 +669,10 @@ pub mod VeilBridgeGateway {
             };
 
             if reason != 0 {
-                self.token_dispatcher().bridge_mint(recipient, amount);
-                self.emit(DeliveryFellBack { recipient, amount, reason });
+                // Held, not minted. Nothing exists as a public balance and
+                // nothing is lost -- `claim_to_note` releases it into a note
+                // once whatever blocked it is fixed.
+                self.quarantine(recipient, amount, reason);
                 return;
             }
 
@@ -653,19 +695,19 @@ pub mod VeilBridgeGateway {
             token.approve(pool, 0);
 
             // Whatever the call reported, the balance is the truth. Anything
-            // still here was not taken and belongs to the recipient.
+            // still here was not taken. It must not become a public balance, so
+            // it is burned back out of existence and held as pending instead --
+            // which keeps `total_supply + total_pending` equal to the escrow.
             let retained = token.balance_of(this);
             if retained != 0 {
-                token.transfer(recipient, retained);
+                token.bridge_burn(this, retained);
                 self
-                    .emit(
-                        DeliveryFellBack {
-                            recipient,
-                            amount: retained,
-                            reason: match outcome {
-                                Result::Ok(_) => 'POOL_TOOK_NOTHING',
-                                Result::Err(_) => 'POOL_REVERTED',
-                            },
+                    .quarantine(
+                        recipient,
+                        retained,
+                        match outcome {
+                            Result::Ok(_) => 'POOL_TOOK_NOTHING',
+                            Result::Err(_) => 'POOL_REVERTED',
                         },
                     );
                 return;

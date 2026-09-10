@@ -31,8 +31,9 @@ use veil_bridge::mirrored_registry::{
 use veil_bridge::compliance::rules::{
     ComplianceSpec, IMirroredComplianceDispatcher, IMirroredComplianceDispatcherTrait,
 };
+use veil_bridge::mocks::{IMockPoolExtDispatcher, IMockPoolExtDispatcherTrait};
 use veil_bridge::msg_codec::{
-    DELIVERY_POOL, DELIVERY_WALLET, decode_mint,
+    decode_mint,
     GlobalMessage, IdentitySnapshot, MintMessage, encode_global, encode_identity, encode_mint,
     encode_unlock,
 };
@@ -44,6 +45,14 @@ use veil_bridge::mocks::{
 // Ethereum mainnet / Starknet mainnet endpoint ids.
 const EVM_EID: u32 = 30101;
 const STALENESS: u64 = 3600;
+/// Every mint names a note -- there is no wallet delivery. One per recipient,
+/// derived from their address so two recipients in a test never collide on the
+/// same one-shot note.
+const NOTE: felt252 = 0xBEEF;
+fn note_of(who: ContractAddress) -> felt252 {
+    let raw: felt252 = who.into();
+    raw + 0x10000
+}
 
 fn owner() -> ContractAddress {
     1000.try_into().unwrap()
@@ -92,6 +101,8 @@ struct Deployment {
     native: IMockNativeTokenExtDispatcher,
     native_addr: ContractAddress,
     compliance: IMirroredComplianceDispatcher,
+    pool: IMockPoolExtDispatcher,
+    pool_addr: ContractAddress,
 }
 
 /// Wires the full Starknet side against a mock endpoint. `real_endpoint`
@@ -140,6 +151,10 @@ fn deploy(real_endpoint: bool) -> Deployment {
     token_args.append(0); // compliance wired below, once its address is known
     let (token_addr, _) = token_class.deploy(@token_args).unwrap();
 
+    // Every bridge-in lands in a pool note, so the rig needs one.
+    let pool_class = declare("MockVeilPool").unwrap().contract_class();
+    let (pool_addr, _) = pool_class.deploy(@array![]).unwrap();
+
     let compliance_class = declare("MirroredCompliance").unwrap().contract_class();
     let (compliance_addr, _) = compliance_class
         .deploy(@array![owner().into(), registry_addr.into()])
@@ -151,6 +166,9 @@ fn deploy(real_endpoint: bool) -> Deployment {
 
     start_cheat_caller_address(registry_addr, owner());
     registry.set_gateway(gateway_addr);
+    // The pool is a Starknet contract with no EVM identity, so it is registered
+    // directly or the twin would refuse to transfer to it.
+    registry.set_local_identity(pool_addr, true, 840);
     stop_cheat_caller_address(registry_addr);
 
     start_cheat_caller_address(token_addr, owner());
@@ -166,7 +184,18 @@ fn deploy(real_endpoint: bool) -> Deployment {
     start_cheat_caller_address(gateway_addr, owner());
     gateway.set_token(token_addr);
     gateway.set_peer(EVM_EID, peer());
+    gateway.set_pool(pool_addr);
     stop_cheat_caller_address(gateway_addr);
+
+    // Each actor claims their own note up front. A bridge-in only fills a note
+    // its recipient has claimed, so without this every mint in every test would
+    // quarantine -- which is the correct behaviour, just not what most tests
+    // are about. `an_unclaimed_note_is_never_filled` covers the other case.
+    for who in array![alice(), bob(), carol(), mallory()] {
+        start_cheat_caller_address(gateway_addr, who);
+        gateway.register_note(note_of(who));
+        stop_cheat_caller_address(gateway_addr);
+    }
 
     Deployment {
         registry,
@@ -177,10 +206,19 @@ fn deploy(real_endpoint: bool) -> Deployment {
         native: IMockNativeTokenExtDispatcher { contract_address: native_addr },
         native_addr,
         compliance,
+        pool: IMockPoolExtDispatcher { contract_address: pool_addr },
+        pool_addr,
     }
 }
 
 /// Hand the gateway a message exactly as the endpoint would.
+/// Pay a holder out of the pool into their public wallet -- the pool's own
+/// Withdraw, not anything the bridge does. A bridge-in only ever lands in a
+/// note, so this is how a holder comes to hold the twin publicly at all.
+fn unshield(d: Deployment, who: ContractAddress, amount: u256) {
+    d.pool.withdraw_to(d.token.contract_address, who, amount);
+}
+
 fn deliver(d: Deployment, message: ByteArray, nonce: u64) {
     let caller = d.gateway.get_endpoint();
     start_cheat_caller_address(d.receiver.contract_address, caller);
@@ -211,8 +249,7 @@ fn mint_msg(
             identity: IdentitySnapshot { evm_account, seq, verified, frozen, country },
             sn_recipient: recipient,
             amount,
-            delivery: DELIVERY_WALLET,
-            note_id: 0,
+            note_id: note_of(recipient),
             pool: Zero::zero(),
         },
     )
@@ -229,8 +266,20 @@ fn identity_msg(
 
 #[test]
 fn mint_message_layout_is_pinned() {
-    let message = mint_msg(evm_alice(), alice(), amt(1000), 7, true, false, 840);
-    assert(message.len() == 174, 'MINT_LEN');
+    // Built explicitly rather than through the helper: this test pins bytes, so
+    // it must not depend on how the helper picks a note.
+    let message = encode_mint(
+        MintMessage {
+            identity: IdentitySnapshot {
+                evm_account: evm_alice(), seq: 7, verified: true, frozen: false, country: 840,
+            },
+            sn_recipient: alice(),
+            amount: amt(1000),
+            note_id: NOTE,
+            pool: Zero::zero(),
+        },
+    );
+    assert(message.len() == 173, 'MINT_LEN');
     assert(message.at(0).unwrap() == 1, 'KIND');
     // evm_alice = 0x0A11CE, right-aligned in the 32-byte word at offset 1,
     // so its three bytes land in the word's last three slots.
@@ -247,15 +296,15 @@ fn mint_message_layout_is_pinned() {
     // country 840 = 0x0348.
     assert(message.at(107).unwrap() == 0x03, 'CTRY_HI');
     assert(message.at(108).unwrap() == 0x48, 'CTRY_LO');
-    // A wallet transfer carries no note.
-    assert(message.at(109).unwrap() == 0, 'DELIVERY');
-    assert(message.at(141).unwrap() == 0, 'NOTE_ID');
-    // ...and names no pool, so the far side would use its default.
-    assert(message.at(173).unwrap() == 0, 'POOL');
+    // note_id right-aligned in its word at 109. NOTE here is 0xBEEF.
+    assert(message.at(139).unwrap() == 0xbe, 'NOTE_HI');
+    assert(message.at(140).unwrap() == 0xef, 'NOTE_LO');
+    // Names no pool, so the far side uses its default: the main Veil pool.
+    assert(message.at(172).unwrap() == 0, 'POOL');
 }
 
 #[test]
-fn a_pool_delivery_message_carries_its_note_id() {
+fn a_mint_message_carries_its_note_id_and_pool() {
     let message = encode_mint(
         MintMessage {
             identity: IdentitySnapshot {
@@ -263,20 +312,17 @@ fn a_pool_delivery_message_carries_its_note_id() {
             },
             sn_recipient: alice(),
             amount: amt(1000),
-            delivery: DELIVERY_POOL,
             note_id: 0xBEEF,
             pool: Zero::zero(),
         },
     );
-    assert(message.len() == 174, 'MINT_LEN');
-    assert(message.at(109).unwrap() == 1, 'DELIVERY_POOL');
-    // note_id right-aligned in the trailing 32-byte word.
-    assert(message.at(140).unwrap() == 0xbe, 'NOTE_HI');
-    assert(message.at(141).unwrap() == 0xef, 'NOTE_LO');
+    assert(message.len() == 173, 'MINT_LEN');
+    // note_id right-aligned in its word at 109.
+    assert(message.at(139).unwrap() == 0xbe, 'NOTE_HI');
+    assert(message.at(140).unwrap() == 0xef, 'NOTE_LO');
     // Zero pool = the gateway's default, the main Veil pool.
-    assert(message.at(173).unwrap() == 0, 'POOL');
+    assert(message.at(172).unwrap() == 0, 'POOL');
     let decoded = decode_mint(@message);
-    assert(decoded.delivery == DELIVERY_POOL, 'DECODE_DELIVERY');
     assert(decoded.note_id == 0xBEEF, 'DECODE_NOTE');
 }
 
@@ -467,11 +513,13 @@ fn the_token_cannot_be_minted_by_anyone_but_the_gateway() {
 // ── Bridge in ────────────────────────────────────────────────────────────────
 
 #[test]
-fn a_verified_bridge_in_mints_and_binds() {
+fn a_verified_bridge_in_lands_in_the_pool_and_binds() {
     let d = deploy(false);
     deliver(d, mint_msg(evm_alice(), alice(), amt(1000), 1, true, false, 840), 1);
 
-    assert(d.token.balance_of(alice()) == amt(1000), 'BALANCE');
+    // Into her note, never her wallet: that is the whole point of the twin.
+    assert(d.pool.filled(note_of(alice())) == 1000, 'NOT_IN_NOTE');
+    assert(d.token.balance_of(alice()) == 0, 'LANDED_IN_WALLET');
     assert(d.token.total_supply() == amt(1000), 'SUPPLY');
     assert(d.registry.identity_of(alice()) == evm_alice(), 'BINDING');
     assert(d.registry.investor_country(alice()) == 840, 'COUNTRY');
@@ -508,13 +556,19 @@ fn quarantined_tokens_are_claimable_once_compliance_arrives() {
     // KYC completes on the source chain and someone pushes the update.
     deliver(d, identity_msg(evm_alice(), 2, true, false, 840), 2);
 
-    // Permissionless release: a third party may pay the gas, funds still go to
-    // the recipient the original message named.
-    start_cheat_caller_address(d.gateway.contract_address, mallory());
-    d.gateway.claim_pending(alice());
+    // The release goes into alice's own claimed note -- never her wallet.
+    start_cheat_caller_address(d.gateway.contract_address, alice());
+    d.gateway.register_note(NOTE);
     stop_cheat_caller_address(d.gateway.contract_address);
 
-    assert(d.token.balance_of(alice()) == amt(1000), 'NOT_RELEASED');
+    // Permissionless: a third party may pay the gas, but the note is alice's,
+    // so the value can only land where alice said.
+    start_cheat_caller_address(d.gateway.contract_address, mallory());
+    d.gateway.claim_to_note(alice(), NOTE, Zero::zero());
+    stop_cheat_caller_address(d.gateway.contract_address);
+
+    assert(d.pool.filled(NOTE) == 1000, 'NOT_IN_NOTE');
+    assert(d.token.balance_of(alice()) == 0, 'LANDED_IN_WALLET');
     assert(d.gateway.pending_of(alice()) == 0, 'PENDING_REMAINS');
     assert(d.gateway.total_pending() == 0, 'TOTAL_PENDING');
 }
@@ -524,7 +578,10 @@ fn quarantined_tokens_are_claimable_once_compliance_arrives() {
 fn a_claim_before_compliance_arrives_is_refused() {
     let d = deploy(false);
     deliver(d, mint_msg(evm_alice(), alice(), amt(1000), 1, false, false, 840), 1);
-    d.gateway.claim_pending(alice());
+    start_cheat_caller_address(d.gateway.contract_address, alice());
+    d.gateway.register_note(NOTE);
+    stop_cheat_caller_address(d.gateway.contract_address);
+    d.gateway.claim_to_note(alice(), NOTE, Zero::zero());
 }
 
 #[test]
@@ -583,9 +640,9 @@ fn the_mirrored_holding_cap_is_enforced_on_bridge_in() {
     assert(d.token.balance_of(alice()) == 0, 'CAP_NOT_ENFORCED');
     assert(d.gateway.pending_of(alice()) == amt(600), 'NOT_HELD');
 
-    // Under it: minted.
+    // Under it: delivered into bob's note.
     deliver(d, mint_msg(evm_bob(), bob(), amt(400), 2, true, false, 840), 3);
-    assert(d.token.balance_of(bob()) == amt(400), 'UNDER_CAP_BLOCKED');
+    assert(d.pool.filled(note_of(bob())) == 400, 'UNDER_CAP_BLOCKED');
 }
 
 // ── The twin as an ordinary permissioned asset ───────────────────────────────
@@ -597,6 +654,10 @@ fn verified_holders_can_transfer_the_twin() {
     let d = deploy(false);
     deliver(d, mint_msg(evm_alice(), alice(), amt(1000), 1, true, false, 840), 1);
     deliver(d, mint_msg(evm_bob(), bob(), amt(0), 2, true, false, 76), 2);
+
+    // The bridge-in landed in alice's note, so she unshields before she can
+    // move the twin publicly.
+    unshield(d, alice(), amt(1000));
 
     start_cheat_caller_address(d.token.contract_address, alice());
     d.token.transfer(bob(), amt(250));
@@ -629,6 +690,9 @@ fn a_transfer_breaching_the_mirrored_cap_reverts() {
     d.compliance.apply_spec(cap_spec(amt(500)));
     stop_cheat_caller_address(d.compliance.contract_address);
     deliver(d, mint_msg(evm_alice(), alice(), amt(400), 1, true, false, 840), 2);
+    // The bridge-in landed in a note; unshield so there is a public balance
+    // to spend. That is the pool's Withdraw, not the bridge's doing.
+    unshield(d, alice(), amt(1000));
     deliver(d, mint_msg(evm_bob(), bob(), amt(200), 2, true, false, 76), 3);
 
     // bob holds 200; another 400 would put him over the mirrored cap of 500.
@@ -657,6 +721,9 @@ fn a_stale_mirror_freezes_ordinary_transfers_too() {
 fn bridging_back_burns_and_emits_the_right_bytes() {
     let d = deploy(true);
     deliver(d, mint_msg(evm_alice(), alice(), amt(1000), 1, true, false, 840), 1);
+    // The bridge-in landed in a note; unshield so there is a public balance
+    // to spend. That is the pool's Withdraw, not the bridge's doing.
+    unshield(d, alice(), amt(1000));
     assert(d.token.total_supply() == amt(1000), 'SUPPLY');
 
     start_cheat_caller_address(d.gateway.contract_address, alice());
@@ -729,6 +796,9 @@ fn a_stale_mirror_blocks_the_exit_too() {
 fn the_fee_is_collected_from_the_caller_and_approved_to_the_endpoint() {
     let d = deploy(true);
     deliver(d, mint_msg(evm_alice(), alice(), amt(1000), 1, true, false, 840), 1);
+    // The bridge-in landed in a note; unshield so there is a public balance
+    // to spend. That is the pool's Withdraw, not the bridge's doing.
+    unshield(d, alice(), amt(1000));
 
     let fee = amt(5000);
     d.native.mint(alice(), fee);
@@ -762,6 +832,9 @@ fn the_fee_is_collected_from_the_caller_and_approved_to_the_endpoint() {
 fn bridging_back_without_approving_the_fee_fails_before_any_send() {
     let d = deploy(true);
     deliver(d, mint_msg(evm_alice(), alice(), amt(1000), 1, true, false, 840), 1);
+    // The bridge-in landed in a note; unshield so there is a public balance
+    // to spend. That is the pool's Withdraw, not the bridge's doing.
+    unshield(d, alice(), amt(1000));
     d.native.mint(alice(), amt(5000));
 
     start_cheat_caller_address(d.gateway.contract_address, alice());
@@ -784,12 +857,18 @@ fn supply_tracks_escrow_across_a_round_trip() {
     // Two bridge-ins: one mints, one quarantines. Escrowed on the source chain
     // is 1500; supply + pending must equal it at every step.
     deliver(d, mint_msg(evm_alice(), alice(), amt(1000), 1, true, false, 840), 1);
+    // The bridge-in landed in a note; unshield so there is a public balance
+    // to spend. That is the pool's Withdraw, not the bridge's doing.
+    unshield(d, alice(), amt(1000));
     deliver(d, mint_msg(evm_bob(), bob(), amt(500), 2, false, false, 840), 2);
     assert(d.token.total_supply() + d.gateway.total_pending() == amt(1500), 'AFTER_IN');
 
     // Bob's KYC lands and he claims: still 1500, just distributed differently.
     deliver(d, identity_msg(evm_bob(), 3, true, false, 840), 3);
-    d.gateway.claim_pending(bob());
+    start_cheat_caller_address(d.gateway.contract_address, bob());
+    d.gateway.register_note(note_of(bob()));
+    stop_cheat_caller_address(d.gateway.contract_address);
+    d.gateway.claim_to_note(bob(), note_of(bob()), Zero::zero());
     assert(d.token.total_supply() == amt(1500), 'AFTER_CLAIM');
     assert(d.gateway.total_pending() == 0, 'PENDING_AFTER_CLAIM');
 

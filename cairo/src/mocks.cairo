@@ -160,6 +160,13 @@ pub trait IMockPoolExt<TContractState> {
     fn set_mode(ref self: TContractState, mode: u8);
     fn filled(self: @TContractState, note_id: felt252) -> u128;
     fn calls(self: @TContractState) -> u32;
+    /// Unshield: pay a holder out of the pool into their public wallet.
+    /// This is how a holder comes to hold the twin at all now that a bridge-in
+    /// only ever lands in a note -- it is the pool's `Withdraw`, not anything
+    /// the bridge does.
+    fn withdraw_to(
+        ref self: TContractState, token: ContractAddress, to: ContractAddress, amount: u256,
+    );
 }
 
 #[starknet::contract]
@@ -209,6 +216,11 @@ pub mod MockVeilPool {
         }
         fn calls(self: @ContractState) -> u32 {
             self.calls.read()
+        }
+        fn withdraw_to(
+            ref self: ContractState, token: ContractAddress, to: ContractAddress, amount: u256,
+        ) {
+            IERC20Dispatcher { contract_address: token }.transfer(to, amount);
         }
     }
 }

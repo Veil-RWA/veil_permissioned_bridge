@@ -310,6 +310,28 @@ pub mod VeilBridgedERC3643 {
 
         fn bridge_burn(ref self: ContractState, from: ContractAddress, amount: u256) {
             self.assert_gateway();
+
+            // Undoing a mint the gateway still holds is not a holder exiting.
+            // A pool that refused the tokens leaves them in the gateway's own
+            // transient custody, and they must not become a public balance --
+            // so they are burned back out of existence and held as pending
+            // instead. The gateway is not a holder and the value never reached
+            // one, so the holder gate below does not apply. It grants nothing
+            // new either: the gateway is already the only address that can
+            // mint. `destroyed` still fires, because `bridge_mint` told the
+            // compliance module about this amount on the way in and the ledger
+            // has to balance.
+            if from == self.gateway.read() {
+                self.erc20.burn(from, amount);
+                let compliance = self.compliance.read();
+                if !compliance.is_zero() {
+                    IBridgeComplianceDispatcher { contract_address: compliance }
+                        .destroyed(from, amount);
+                }
+                self.emit(BridgeBurned { from, amount });
+                return;
+            }
+
             // Burning moves value out of this chain, so it runs the same gate a
             // transfer would: a frozen or revoked holder must not be able to
             // exit. Their route out is the issuer's `forced_transfer`.

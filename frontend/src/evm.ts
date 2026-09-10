@@ -6,8 +6,7 @@ import type { Asset } from './assets';
 
 const LOCKBOX_ABI = [
   'function quoteBridgeOut(uint256 amount, bytes32 snRecipient, uint128 gasLimit) view returns (tuple(uint256 nativeFee, uint256 lzTokenFee))',
-  'function bridgeOut(uint256 amount, bytes32 snRecipient, uint128 gasLimit, address refundAddress) payable returns (bytes32)',
-  'function bridgeOutToPool(uint256 amount, bytes32 snRecipient, bytes32 noteId, bytes32 pool, uint128 gasLimit, address refundAddress) payable returns (bytes32)',
+  'function bridgeOut(uint256 amount, bytes32 snRecipient, bytes32 noteId, bytes32 pool, uint128 gasLimit, address refundAddress) payable returns (bytes32)',
   'function totalEscrowed() view returns (uint256)',
   'function claimable(address) view returns (uint256)',
   'function claim(address recipient) returns (uint256)',
@@ -146,7 +145,6 @@ export async function approve(session: EvmSession, asset: Asset, amount: bigint)
 }
 
 export type BridgeResult = { hash: string; guid?: string };
-export type Delivery = 'wallet' | 'pool';
 
 export async function bridgeOut(
   session: EvmSession,
@@ -154,8 +152,7 @@ export async function bridgeOut(
   amount: bigint,
   recipient: string,
   fee: bigint,
-  delivery: Delivery = 'wallet',
-  noteId = '',
+  noteId: string,
   /// Which Veil pool. Undefined means the gateway's default -- the main pool --
   /// which is what almost every transfer wants. A pool is multi-asset, so this
   /// is never implied by the asset.
@@ -166,14 +163,11 @@ export async function bridgeOut(
   const word = (v: string) => zeroPadValue('0x' + BigInt(v).toString(16).padStart(64, '0'), 32);
   const ZERO_WORD = zeroPadValue('0x00', 32);
   // Same message width either way, so the quote holds for both.
-  const tx = delivery === 'pool'
-    ? await lockbox.bridgeOutToPool(
-        amount, snRecipientWord(recipient), word(noteId), pool ? word(pool) : ZERO_WORD,
-        DEFAULT_GAS_LIMIT, session.address, { value: fee }
-      )
-    : await lockbox.bridgeOut(
-        amount, snRecipientWord(recipient), DEFAULT_GAS_LIMIT, session.address, { value: fee }
-      );
+  // One entrypoint: a bridge-in always lands in a Veil pool note.
+  const tx = await lockbox.bridgeOut(
+    amount, snRecipientWord(recipient), word(noteId), pool ? word(pool) : ZERO_WORD,
+    DEFAULT_GAS_LIMIT, session.address, { value: fee }
+  );
   const receipt = await tx.wait();
 
   let guid: string | undefined;

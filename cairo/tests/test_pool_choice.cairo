@@ -38,7 +38,7 @@ use veil_bridge::mocks::{
     IMockPoolExtDispatcherTrait,
 };
 use veil_bridge::msg_codec::{
-    DELIVERY_POOL, IdentitySnapshot, MintMessage, encode_mint,
+    IdentitySnapshot, MintMessage, encode_mint,
 };
 
 const EVM_EID: u32 = 30101;
@@ -174,7 +174,7 @@ fn msg(
             identity: IdentitySnapshot {
                 evm_account: evm_alice(), seq, verified: true, frozen: false, country: 840,
             },
-            sn_recipient: to, amount, delivery: DELIVERY_POOL, note_id, pool,
+            sn_recipient: to, amount, note_id, pool,
         },
     )
 }
@@ -305,7 +305,8 @@ fn a_pool_the_factory_never_made_is_refused() {
         'IMPOSTOR_CALLED',
     );
     // And nothing was lost: the escrow is already spent, so it lands in the wallet.
-    assert(r.token.balance_of(alice()) == amt(1000), 'NOT_SWEPT');
+    assert(r.gateway.pending_of(alice()) == amt(1000), 'NOT_QUARANTINED');
+    assert(r.token.balance_of(alice()) == 0, 'LANDED_IN_WALLET');
     assert(r.token.balance_of(r.gateway.contract_address) == 0, 'GATEWAY_RETAINED');
     assert(r.main.filled(NOTE) == 0, 'SILENTLY_REROUTED');
 }
@@ -319,7 +320,8 @@ fn with_no_factory_wired_only_the_main_pool_is_reachable() {
     // called on trust.
     deliver(r, msg(alice(), amt(1000), 1, NOTE, r.own_addr), 1);
     assert(r.own.filled(NOTE) == 0, 'CALLED_UNVOUCHED');
-    assert(r.token.balance_of(alice()) == amt(1000), 'NOT_SWEPT');
+    assert(r.gateway.pending_of(alice()) == amt(1000), 'NOT_QUARANTINED');
+    assert(r.token.balance_of(alice()) == 0, 'LANDED_IN_WALLET');
 
     // The default still works without a factory: the operator set it.
     claim(r, alice(), NOTE_B);
@@ -337,8 +339,9 @@ fn a_broken_factory_does_not_take_the_message_down() {
     // still completes and the tokens still reach the recipient.
     deliver(r, msg(alice(), amt(1000), 1, NOTE, r.own_addr), 1);
     assert(r.own.filled(NOTE) == 0, 'CALLED_ANYWAY');
-    assert(r.token.balance_of(alice()) == amt(1000), 'NOT_SWEPT');
-    assert(r.token.total_supply() == amt(1000), 'SUPPLY');
+    assert(r.gateway.pending_of(alice()) == amt(1000), 'NOT_QUARANTINED');
+    assert(r.token.balance_of(alice()) == 0, 'LANDED_IN_WALLET');
+    assert(r.token.total_supply() == 0, 'SUPPLY');
 }
 
 #[test]
@@ -349,7 +352,9 @@ fn a_refused_pool_never_double_mints() {
     claim(r, alice(), NOTE);
     deliver(r, msg(alice(), amt(1000), 1, NOTE, r.impostor_addr), 1);
 
-    assert(r.token.total_supply() == amt(1000), 'SUPPLY_INFLATED');
+    // Nothing was minted at all: the amount is held, not created.
+    assert(r.token.total_supply() == 0, 'SUPPLY_INFLATED');
+    assert(r.gateway.pending_of(alice()) == amt(1000), 'NOT_QUARANTINED');
 }
 
 // ── Attacks ──────────────────────────────────────────────────────────────────
@@ -365,7 +370,7 @@ fn mallory_cannot_redirect_a_transfer_into_a_contract_she_controls() {
     deliver(r, msg(alice(), amt(1000), 1, NOTE, r.impostor_addr), 1);
 
     assert(r.token.balance_of(r.impostor_addr) == 0, 'MALLORY_PAID');
-    assert(r.token.balance_of(alice()) == amt(1000), 'ALICE_ROBBED');
+    assert(r.gateway.pending_of(alice()) == amt(1000), 'ALICE_ROBBED');
 }
 
 #[test]
@@ -376,7 +381,8 @@ fn a_registered_pool_still_cannot_take_an_unclaimed_note() {
     deliver(r, msg(alice(), amt(1000), 1, NOTE, r.own_addr), 1);
 
     assert(r.own.filled(NOTE) == 0, 'FILLED_UNCLAIMED');
-    assert(r.token.balance_of(alice()) == amt(1000), 'NOT_SWEPT');
+    assert(r.gateway.pending_of(alice()) == amt(1000), 'NOT_QUARANTINED');
+    assert(r.token.balance_of(alice()) == 0, 'LANDED_IN_WALLET');
 }
 
 #[test]
@@ -389,8 +395,7 @@ fn pool_choice_does_not_bypass_eligibility() {
             identity: IdentitySnapshot {
                 evm_account: evm_alice(), seq: 1, verified: false, frozen: false, country: 840,
             },
-            sn_recipient: alice(), amount: amt(1000), delivery: DELIVERY_POOL,
-            note_id: NOTE, pool: r.own_addr,
+            sn_recipient: alice(), amount: amt(1000), note_id: NOTE, pool: r.own_addr,
         },
     );
     deliver(r, message, 1);

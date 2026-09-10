@@ -102,7 +102,8 @@ confirm against.
 
 ## 6. Pool delivery (optional)
 
-Only needed if transfers should land in a Veil pool note rather than a wallet.
+**Required, not optional.** Every bridge-in lands in a Veil pool note — there is
+no wallet delivery — so a gateway without a pool quarantines everything.
 
 **A Veil pool is multi-asset**: one pool carries any number of ERC-3643 tokens.
 So the pool is not per-asset — every asset this bridge carries lands in the same

@@ -39,8 +39,9 @@ use veil_bridge::lz::{
 use veil_bridge::mirrored_registry::{
     IVeilMirroredRegistryDispatcher, IVeilMirroredRegistryDispatcherTrait,
 };
+use veil_bridge::mocks::{IMockPoolExtDispatcher, IMockPoolExtDispatcherTrait};
 use veil_bridge::msg_codec::{
-    DELIVERY_WALLET,IdentitySnapshot, MintMessage, encode_identity, encode_mint};
+    IdentitySnapshot, MintMessage, encode_identity, encode_mint};
 
 const EVM_EID: u32 = 30101;
 const STALENESS: u64 = 3600;
@@ -83,6 +84,15 @@ struct Rig {
     gateway: IVeilBridgeGatewayDispatcher,
     receiver: ILayerZeroReceiverDispatcher,
     compliance: IMirroredComplianceDispatcher,
+    pool: IMockPoolExtDispatcher,
+    pool_addr: ContractAddress,
+}
+
+/// One note per recipient, derived from their address, so two recipients in a
+/// test never collide on the same one-shot note.
+fn note_of(who: ContractAddress) -> felt252 {
+    let raw: felt252 = who.into();
+    raw + 0x10000
 }
 
 fn deploy() -> Rig {
@@ -125,6 +135,10 @@ fn deploy() -> Rig {
     args.append(compliance_addr.into());
     let (token_addr, _) = token_class.deploy(@args).unwrap();
 
+    // Every bridge-in lands in a pool note, so the rig needs one.
+    let pool_class = declare("MockVeilPool").unwrap().contract_class();
+    let (pool_addr, _) = pool_class.deploy(@array![]).unwrap();
+
     let registry = IVeilMirroredRegistryDispatcher { contract_address: registry_addr };
     let token = IVeilBridgedERC3643Dispatcher { contract_address: token_addr };
     let gateway = IVeilBridgeGatewayDispatcher { contract_address: gateway_addr };
@@ -132,6 +146,7 @@ fn deploy() -> Rig {
 
     start_cheat_caller_address(registry_addr, owner());
     registry.set_gateway(gateway_addr);
+    registry.set_local_identity(pool_addr, true, 840);
     stop_cheat_caller_address(registry_addr);
     start_cheat_caller_address(token_addr, owner());
     token.set_gateway(gateway_addr);
@@ -143,7 +158,16 @@ fn deploy() -> Rig {
     start_cheat_caller_address(gateway_addr, owner());
     gateway.set_token(token_addr);
     gateway.set_peer(EVM_EID, peer());
+    gateway.set_pool(pool_addr);
     stop_cheat_caller_address(gateway_addr);
+
+    // Each actor claims their own note up front: a bridge-in only fills a note
+    // its recipient has claimed.
+    for who in array![victim(), bob(), mallory()] {
+        start_cheat_caller_address(gateway_addr, who);
+        gateway.register_note(note_of(who));
+        stop_cheat_caller_address(gateway_addr);
+    }
 
     Rig {
         registry,
@@ -151,7 +175,15 @@ fn deploy() -> Rig {
         gateway,
         receiver: ILayerZeroReceiverDispatcher { contract_address: gateway_addr },
         compliance,
+        pool: IMockPoolExtDispatcher { contract_address: pool_addr },
+        pool_addr,
     }
+}
+
+/// Pay a holder out of the pool into their public wallet -- the pool's own
+/// Withdraw. A bridge-in only ever lands in a note.
+fn unshield(r: Rig, who: ContractAddress, amount: u256) {
+    r.pool.withdraw_to(r.token.contract_address, who, amount);
 }
 
 fn deliver(r: Rig, message: ByteArray, nonce: u64) {
@@ -179,8 +211,7 @@ fn mint_msg(
             },
             sn_recipient: to,
             amount,
-            delivery: DELIVERY_WALLET,
-            note_id: 0,
+            note_id: note_of(to),
             pool: Zero::zero(),
         },
     )
@@ -280,7 +311,8 @@ fn mallory_cannot_inflate_supply_by_replaying_an_identity_message() {
     }), 3);
 
     assert(r.token.total_supply() == supply_before, 'SUPPLY_INFLATED');
-    assert(r.token.balance_of(victim()) == amt(1000), 'BALANCE_INFLATED');
+    assert(r.pool.filled(note_of(victim())) == 1000, 'BALANCE_INFLATED');
+    assert(r.token.balance_of(victim()) == 0, 'LANDED_IN_WALLET');
 }
 
 // ── Quarantine ───────────────────────────────────────────────────────────────
@@ -297,12 +329,18 @@ fn mallory_cannot_redirect_a_quarantined_balance_to_herself() {
     deliver(r, encode_identity(IdentitySnapshot {
         evm_account: evm_victim(), seq: 2, verified: true, frozen: false, country: 840,
     }), 2);
-    start_cheat_caller_address(r.gateway.contract_address, mallory());
-    r.gateway.claim_pending(victim());
+    start_cheat_caller_address(r.gateway.contract_address, victim());
+    r.gateway.register_note(note_of(victim()));
     stop_cheat_caller_address(r.gateway.contract_address);
 
-    assert(r.token.balance_of(victim()) == amt(1000), 'VICTIM_NOT_PAID');
+    start_cheat_caller_address(r.gateway.contract_address, mallory());
+    r.gateway.claim_to_note(victim(), note_of(victim()), Zero::zero());
+    stop_cheat_caller_address(r.gateway.contract_address);
+
+    // Into the victim's own note, never a wallet and never mallory's.
+    assert(r.pool.filled(note_of(victim())) == 1000, 'VICTIM_NOT_PAID');
     assert(r.token.balance_of(mallory()) == 0, 'MALLORY_PAID');
+    assert(r.token.balance_of(victim()) == 0, 'LANDED_IN_WALLET');
 }
 
 #[test]
@@ -313,9 +351,12 @@ fn a_quarantined_balance_cannot_be_claimed_twice() {
     deliver(r, encode_identity(IdentitySnapshot {
         evm_account: evm_victim(), seq: 2, verified: true, frozen: false, country: 840,
     }), 2);
-    r.gateway.claim_pending(victim());
+    start_cheat_caller_address(r.gateway.contract_address, victim());
+    r.gateway.register_note(note_of(victim()));
+    stop_cheat_caller_address(r.gateway.contract_address);
+    r.gateway.claim_to_note(victim(), note_of(victim()), Zero::zero());
     // Draining the same credit twice would break the escrow invariant.
-    r.gateway.claim_pending(victim());
+    r.gateway.claim_to_note(victim(), note_of(victim()), Zero::zero());
 }
 
 // ── Identity and eligibility ─────────────────────────────────────────────────
@@ -348,7 +389,7 @@ fn a_revoked_holder_cannot_move_value_by_any_route() {
     // Holding is allowed after revocation; moving is not. The exits are checked
     // one by one in the panicking tests below -- here we assert the balance is
     // still there, so the block is a freeze and not a confiscation.
-    assert(r.token.balance_of(mallory()) == amt(1000), 'BALANCE_SEIZED');
+    assert(r.pool.filled(note_of(mallory())) == 1000, 'BALANCE_SEIZED');
     assert(!r.registry.is_verified(mallory()), 'STILL_VERIFIED');
 }
 
@@ -407,7 +448,7 @@ fn a_stale_record_freezes_a_holder_even_with_no_revocation_delivered() {
     // nobody paying to push the message. Expiry closes it without anyone acting.
     start_cheat_block_timestamp_global(1000 + STALENESS + 1);
     assert(!r.registry.is_verified(mallory()), 'STALE_STILL_LIVE');
-    assert(r.token.balance_of(mallory()) == amt(1000), 'BALANCE_SEIZED');
+    assert(r.pool.filled(note_of(mallory())) == 1000, 'BALANCE_SEIZED');
 }
 
 #[test]
@@ -440,7 +481,7 @@ fn binding_capture_is_griefing_only_and_the_owner_can_undo_it() {
     assert(r.registry.identity_of(victim()) == evm_mallory(), 'NOT_CAPTURED');
     // The dust genuinely mints: the wallet was unbound, and Mallory's identity
     // is live, so it carries the transfer.
-    assert(r.token.balance_of(victim()) == amt(1), 'DUST_NOT_MINTED');
+    assert(r.pool.filled(note_of(victim())) == 1, 'DUST_NOT_MINTED');
     assert(r.token.balance_of(mallory()) == 0, 'MALLORY_GAINED');
 
     // The harm is real but bounded: when Mallory is revoked, the victim's
@@ -460,9 +501,16 @@ fn binding_capture_is_griefing_only_and_the_owner_can_undo_it() {
     start_cheat_caller_address(r.registry.contract_address, owner());
     r.registry.admin_rebind(victim(), evm_victim());
     stop_cheat_caller_address(r.registry.contract_address);
-    r.gateway.claim_pending(victim());
-    // 1000 released, plus the dust that was already there.
-    assert(r.token.balance_of(victim()) == amt(1001), 'NOT_RECOVERED');
+    // A fresh note: the first one already holds Mallory's dust, and a note is
+    // one-shot.
+    let recovery = note_of(victim()) + 1;
+    start_cheat_caller_address(r.gateway.contract_address, victim());
+    r.gateway.register_note(recovery);
+    stop_cheat_caller_address(r.gateway.contract_address);
+    r.gateway.claim_to_note(victim(), recovery, Zero::zero());
+    // Released into the victim's note, not their wallet.
+    assert(r.pool.filled(recovery) == 1000, 'NOT_RECOVERED');
+    assert(r.token.balance_of(victim()) == 0, 'LANDED_IN_WALLET');
 }
 
 #[test]
@@ -560,7 +608,10 @@ fn no_sequence_of_attacks_breaks_the_escrow_invariant() {
     deliver(r, encode_identity(IdentitySnapshot {
         evm_account: evm_mallory(), seq: 1, verified: true, frozen: false, country: 840,
     }), 4);
-    r.gateway.claim_pending(mallory());
+    start_cheat_caller_address(r.gateway.contract_address, mallory());
+    r.gateway.register_note(note_of(mallory()));
+    stop_cheat_caller_address(r.gateway.contract_address);
+    r.gateway.claim_to_note(mallory(), note_of(mallory()), Zero::zero());
     deliver(r, mint_msg(evm_mallory(), mallory(), amt(500), 2, true), 5);
 
     // Supply plus quarantine still equals exactly what was escrowed, plus the

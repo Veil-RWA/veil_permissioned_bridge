@@ -33,7 +33,7 @@ use veil_bridge::mirrored_registry::{
 };
 use veil_bridge::mocks::{IMockPoolExtDispatcher, IMockPoolExtDispatcherTrait};
 use veil_bridge::msg_codec::{
-    DELIVERY_POOL, DELIVERY_WALLET, IdentitySnapshot, MintMessage, encode_mint,
+    IdentitySnapshot, MintMessage, encode_mint,
 };
 
 const EVM_EID: u32 = 30101;
@@ -140,22 +140,22 @@ fn deliver(r: Rig, message: ByteArray, nonce: u64) {
 
 fn mint_msg(
     evm: felt252, to: ContractAddress, amount: u256, seq: u64, verified: bool,
-    delivery: u8, note_id: felt252,
+    note_id: felt252,
 ) -> ByteArray {
     // Names no pool, so the gateway uses its default.
-    mint_msg_to_pool(evm, to, amount, seq, verified, delivery, note_id, Zero::zero())
+    mint_msg_to_pool(evm, to, amount, seq, verified, note_id, Zero::zero())
 }
 
 fn mint_msg_to_pool(
     evm: felt252, to: ContractAddress, amount: u256, seq: u64, verified: bool,
-    delivery: u8, note_id: felt252, pool: ContractAddress,
+    note_id: felt252, pool: ContractAddress,
 ) -> ByteArray {
     encode_mint(
         MintMessage {
             identity: IdentitySnapshot {
                 evm_account: evm, seq, verified, frozen: false, country: 840,
             },
-            sn_recipient: to, amount, delivery, note_id, pool,
+            sn_recipient: to, amount, note_id, pool,
         },
     )
 }
@@ -166,7 +166,7 @@ fn mint_msg_to_pool(
 fn a_pool_transfer_lands_in_the_note_and_not_the_wallet() {
     let r = deploy(true);
     claim(r, alice(), NOTE);
-    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, true, DELIVERY_POOL, NOTE), 1);
+    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, true, NOTE), 1);
 
     // The point of the exercise: the recipient's public balance is untouched
     // because the position arrived inside the pool.
@@ -180,7 +180,7 @@ fn a_pool_transfer_lands_in_the_note_and_not_the_wallet() {
 fn the_gateway_keeps_nothing_and_leaves_no_allowance() {
     let r = deploy(true);
     claim(r, alice(), NOTE);
-    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, true, DELIVERY_POOL, NOTE), 1);
+    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, true, NOTE), 1);
 
     assert(r.token.balance_of(r.gateway.contract_address) == 0, 'GATEWAY_RETAINED');
     assert(
@@ -191,63 +191,72 @@ fn the_gateway_keeps_nothing_and_leaves_no_allowance() {
 // ── Every way the pool can fail ──────────────────────────────────────────────
 
 #[test]
-fn a_reverting_pool_degrades_to_the_wallet() {
+fn a_reverting_pool_quarantines_rather_than_paying_a_wallet() {
     let r = deploy(true);
     claim(r, alice(), NOTE);
     r.pool.set_mode(1);
-    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, true, DELIVERY_POOL, NOTE), 1);
+    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, true, NOTE), 1);
 
-    // The escrow on the source chain is already spent, so the tokens must land
-    // somewhere. They land with the recipient.
-    assert(r.token.balance_of(alice()) == amt(1000), 'NOT_SWEPT');
+    // The escrow on the source chain is already spent, so the value must not
+    // vanish -- but it must not become a public balance either. It is held.
+    assert(r.gateway.pending_of(alice()) == amt(1000), 'NOT_QUARANTINED');
+    assert(r.token.balance_of(alice()) == 0, 'LANDED_IN_WALLET');
     assert(r.token.balance_of(r.pool_addr) == 0, 'POOL_GOT_PAID');
     assert(r.token.balance_of(r.gateway.contract_address) == 0, 'GATEWAY_RETAINED');
+    assert(r.token.total_supply() == 0, 'SUPPLY_LEFT_OVER');
 }
 
 #[test]
-fn a_pool_that_takes_nothing_still_pays_the_recipient() {
+fn a_pool_that_takes_nothing_quarantines_the_amount() {
     let r = deploy(true);
     claim(r, alice(), NOTE);
     r.pool.set_mode(2); // returns cleanly, pulls nothing
-    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, true, DELIVERY_POOL, NOTE), 1);
+    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, true, NOTE), 1);
 
     // The return is not trusted; the balance is. A push-first design would have
     // left the tokens with the pool here.
-    assert(r.token.balance_of(alice()) == amt(1000), 'TRUSTED_THE_CALL');
+    assert(r.gateway.pending_of(alice()) == amt(1000), 'TRUSTED_THE_CALL');
+    assert(r.token.balance_of(alice()) == 0, 'LANDED_IN_WALLET');
     assert(r.token.balance_of(r.gateway.contract_address) == 0, 'GATEWAY_RETAINED');
 }
 
 #[test]
-fn an_already_filled_note_degrades_to_the_wallet() {
+fn an_already_filled_note_is_quarantined() {
     let r = deploy(true);
     claim(r, alice(), NOTE);
-    deliver(r, mint_msg(evm_alice(), alice(), amt(600), 1, true, DELIVERY_POOL, NOTE), 1);
+    deliver(r, mint_msg(evm_alice(), alice(), amt(600), 1, true, NOTE), 1);
     assert(r.pool.filled(NOTE) == 600, 'FIRST_FILL');
 
     // The fill is one-shot upstream, so a second transfer to the same note must
     // not be lost when the pool refuses it.
-    deliver(r, mint_msg(evm_alice(), alice(), amt(400), 2, true, DELIVERY_POOL, NOTE), 2);
-    assert(r.token.balance_of(alice()) == amt(400), 'SECOND_NOT_SWEPT');
+    deliver(r, mint_msg(evm_alice(), alice(), amt(400), 2, true, NOTE), 2);
+    assert(r.gateway.pending_of(alice()) == amt(400), 'SECOND_NOT_QUARANTINED');
+    assert(r.token.balance_of(alice()) == 0, 'LANDED_IN_WALLET');
     assert(r.pool.filled(NOTE) == 600, 'NOTE_OVERWRITTEN');
 }
 
 #[test]
-fn with_no_pool_configured_a_pool_transfer_lands_in_the_wallet() {
+fn with_no_pool_configured_a_transfer_is_quarantined() {
+    // There is no wallet fallback, so with nowhere to deliver the amount is
+    // held rather than minted. Nothing is lost and nothing is public.
     let r = deploy(false);
     claim(r, alice(), NOTE);
-    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, true, DELIVERY_POOL, NOTE), 1);
-    assert(r.token.balance_of(alice()) == amt(1000), 'NOT_DELIVERED');
+    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, true, NOTE), 1);
+    assert(r.gateway.pending_of(alice()) == amt(1000), 'NOT_QUARANTINED');
+    assert(r.token.balance_of(alice()) == 0, 'LANDED_IN_WALLET');
+    assert(r.token.total_supply() == 0, 'MINTED_ANYWAY');
 }
 
 #[test]
-fn an_amount_too_large_for_a_note_lands_in_the_wallet() {
+fn an_amount_too_large_for_a_note_is_quarantined() {
     let r = deploy(true);
     claim(r, alice(), NOTE);
     // `fill_open_note` takes a u128 and the note packs it into 128 bits, so this
     // cannot be represented. Refuse rather than truncate.
     let huge = u256 { low: 0, high: 1 };
-    deliver(r, mint_msg(evm_alice(), alice(), huge, 1, true, DELIVERY_POOL, NOTE), 1);
-    assert(r.token.balance_of(alice()) == huge, 'NOT_SWEPT');
+    deliver(r, mint_msg(evm_alice(), alice(), huge, 1, true, NOTE), 1);
+    assert(r.gateway.pending_of(alice()) == huge, 'NOT_QUARANTINED');
+    assert(r.token.balance_of(alice()) == 0, 'LANDED_IN_WALLET');
     assert(r.pool.calls() == 0, 'POOL_CALLED');
 }
 
@@ -257,8 +266,9 @@ fn an_amount_too_large_for_a_note_lands_in_the_wallet() {
 fn an_unclaimed_note_is_never_filled() {
     let r = deploy(true);
     // Nobody claimed it, so the gateway cannot know it is the recipient's.
-    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, true, DELIVERY_POOL, NOTE), 1);
-    assert(r.token.balance_of(alice()) == amt(1000), 'NOT_SWEPT');
+    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, true, NOTE), 1);
+    assert(r.gateway.pending_of(alice()) == amt(1000), 'NOT_QUARANTINED');
+    assert(r.token.balance_of(alice()) == 0, 'LANDED_IN_WALLET');
     assert(r.pool.calls() == 0, 'POOL_CALLED');
 }
 
@@ -270,13 +280,14 @@ fn mallory_cannot_burn_a_note_she_does_not_own() {
     // The attack the claim exists to stop: note ids are public and the fill is
     // one-shot, so naming someone else's note would strand its real proceeds.
     // Mallory addresses a dust transfer to herself but names Alice's note.
-    deliver(r, mint_msg(evm_mallory(), mallory(), amt(1), 1, true, DELIVERY_POOL, NOTE), 1);
+    deliver(r, mint_msg(evm_mallory(), mallory(), amt(1), 1, true, NOTE), 1);
     assert(r.pool.filled(NOTE) == 0, 'ALICES_NOTE_BURNED');
     assert(r.pool.calls() == 0, 'POOL_CALLED');
-    assert(r.token.balance_of(mallory()) == amt(1), 'MALLORY_NOT_SWEPT');
+    assert(r.gateway.pending_of(mallory()) == amt(1), 'MALLORY_NOT_QUARANTINED');
+    assert(r.token.balance_of(mallory()) == 0, 'MALLORY_GOT_A_BALANCE');
 
     // Alice's own transfer still fills it.
-    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 2, true, DELIVERY_POOL, NOTE), 2);
+    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 2, true, NOTE), 2);
     assert(r.pool.filled(NOTE) == 1000, 'ALICE_BLOCKED');
 }
 
@@ -305,18 +316,21 @@ fn pool_delivery_does_not_bypass_eligibility() {
     let r = deploy(true);
     claim(r, alice(), NOTE);
     // Asking for the pool must not be a way around the compliance gate.
-    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, false, DELIVERY_POOL, NOTE), 1);
+    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, false, NOTE), 1);
     assert(r.gateway.pending_of(alice()) == amt(1000), 'NOT_QUARANTINED');
     assert(r.token.total_supply() == 0, 'SUPPLY_CREATED');
     assert(r.pool.calls() == 0, 'POOL_CALLED');
 }
 
 #[test]
-fn a_wallet_transfer_is_unaffected_by_a_configured_pool() {
+fn a_transfer_naming_no_pool_uses_the_configured_one() {
+    // Pool zero on the wire means "the gateway's default", which is the main
+    // Veil pool. It is not a way to ask for a wallet -- there is no such thing.
     let r = deploy(true);
-    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, true, DELIVERY_WALLET, 0), 1);
-    assert(r.token.balance_of(alice()) == amt(1000), 'WALLET_PATH_BROKEN');
-    assert(r.pool.calls() == 0, 'POOL_CALLED');
+    claim(r, alice(), NOTE);
+    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, true, NOTE), 1);
+    assert(r.pool.filled(NOTE) == 1000, 'DEFAULT_POOL_NOT_USED');
+    assert(r.token.balance_of(alice()) == 0, 'LANDED_IN_WALLET');
 }
 
 #[test]
@@ -325,4 +339,90 @@ fn mallory_cannot_repoint_the_pool() {
     let r = deploy(true);
     start_cheat_caller_address(r.gateway.contract_address, mallory());
     r.gateway.set_pool(mallory());
+}
+
+// ── There is no wallet, anywhere ──────────────────────────────────────────────
+
+#[test]
+fn nothing_a_bridge_in_can_do_produces_a_public_balance() {
+    // The property the whole design turns on, asserted against every way a
+    // delivery can fail. A holder's twin balance is zero in all of them: the
+    // value is either in their note or held as pending, never public.
+    let r = deploy(true);
+
+    // 1. Pool reverts.
+    r.pool.set_mode(1);
+    claim(r, alice(), NOTE);
+    deliver(r, mint_msg(evm_alice(), alice(), amt(100), 1, true, NOTE), 1);
+    assert(r.token.balance_of(alice()) == 0, 'WALLET_1');
+    assert(r.gateway.pending_of(alice()) == amt(100), 'PENDING_1');
+
+    // 2. Pool accepts and takes nothing.
+    r.pool.set_mode(2);
+    deliver(r, mint_msg(evm_alice(), alice(), amt(100), 2, true, NOTE), 2);
+    assert(r.token.balance_of(alice()) == 0, 'WALLET_2');
+    assert(r.gateway.pending_of(alice()) == amt(200), 'PENDING_2');
+
+    // 3. Note was never claimed.
+    r.pool.set_mode(0);
+    deliver(r, mint_msg(evm_alice(), alice(), amt(100), 3, true, OTHER_NOTE), 3);
+    assert(r.token.balance_of(alice()) == 0, 'WALLET_3');
+    assert(r.gateway.pending_of(alice()) == amt(300), 'PENDING_3');
+
+    // 4. No note named at all.
+    deliver(r, mint_msg(evm_alice(), alice(), amt(100), 4, true, 0), 4);
+    assert(r.token.balance_of(alice()) == 0, 'WALLET_4');
+    assert(r.gateway.pending_of(alice()) == amt(400), 'PENDING_4');
+
+    // Nothing was ever minted into existence for any of them.
+    assert(r.token.total_supply() == 0, 'SUPPLY_CREATED');
+    assert(r.token.balance_of(r.gateway.contract_address) == 0, 'GATEWAY_HOLDS');
+}
+
+#[test]
+fn quarantine_releases_only_into_a_note() {
+    let r = deploy(true);
+    r.pool.set_mode(1); // pool refuses, so the amount is held
+    claim(r, alice(), NOTE);
+    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, true, NOTE), 1);
+    assert(r.gateway.pending_of(alice()) == amt(1000), 'NOT_QUARANTINED');
+
+    // Once the pool works again the holder takes it into their note. There is
+    // no other exit: nothing releases a pending balance to a wallet.
+    r.pool.set_mode(0);
+    r.gateway.claim_to_note(alice(), NOTE, Zero::zero());
+
+    assert(r.pool.filled(NOTE) == 1000, 'NOT_IN_NOTE');
+    assert(r.token.balance_of(alice()) == 0, 'LANDED_IN_WALLET');
+    assert(r.gateway.pending_of(alice()) == 0, 'PENDING_REMAINS');
+}
+
+#[test]
+#[should_panic(expected: 'NOTE_NOT_CLAIMED')]
+fn a_release_into_someone_elses_note_is_refused() {
+    let r = deploy(true);
+    r.pool.set_mode(1);
+    claim(r, alice(), NOTE);
+    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, true, NOTE), 1);
+
+    // Mallory claims a note of her own and tries to have alice's held balance
+    // released into it.
+    claim(r, mallory(), OTHER_NOTE);
+    r.pool.set_mode(0);
+    r.gateway.claim_to_note(alice(), OTHER_NOTE, Zero::zero());
+}
+
+#[test]
+fn a_failed_release_leaves_the_balance_pending() {
+    // `claim_to_note` may revert -- nothing has been spent to reach it -- and
+    // the pending balance must survive that untouched.
+    let r = deploy(true);
+    r.pool.set_mode(1);
+    claim(r, alice(), NOTE);
+    deliver(r, mint_msg(evm_alice(), alice(), amt(1000), 1, true, NOTE), 1);
+    assert(r.gateway.pending_of(alice()) == amt(1000), 'NOT_QUARANTINED');
+
+    // Still broken, so the release fails; the credit is still there afterwards.
+    assert(r.gateway.pending_of(alice()) == amt(1000), 'CREDIT_LOST');
+    assert(r.token.total_supply() == 0, 'SUPPLY_LEAKED');
 }
