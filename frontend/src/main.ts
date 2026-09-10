@@ -18,6 +18,7 @@
 
 import {
   isDeployed, evmLabel, starknetLabel, EXPLORER_EVM, EXPLORER_SN, LZ_SCAN, STARKNET_FEE_TOKEN,
+  PROVER_ENDPOINT, PROVER_MASTER_ADDRESS,
 } from './config';
 import { assets, defaultAsset, type Asset } from './assets';
 import { short, units, parseUnits, duration, ago } from './format';
@@ -25,7 +26,7 @@ import * as evm from './evm';
 import * as sn from './starknet';
 import { load as loadHistory, record, update, type Transfer } from './history';
 import {
-  deriveNoteContext, findFillableNote, forgetViewingKey,
+  deriveNoteContext, findFillableNote, forgetViewingKey, createOpenNote,
   hasCachedViewingKey, type NoteContext, type NoteSlot,
 } from './notes';
 import {
@@ -327,21 +328,18 @@ function noteSection(claimed: string | undefined, mine: boolean, unclaimed: bool
       <button id="derive-note" class="max" style="margin-top:8px">Sign to find my open note</button>`;
   }
   if (!state.noteId) {
-    // Says what is missing, why the bridge cannot supply it, and what to do.
-    // "No fillable open note" said none of those three things.
-    return `<p class="delivery-note is-warn">
-        You have no <strong>empty open note</strong> for ${esc(state.token.symbol)} in this pool.
+    // The bridge MAKES one. `create_open_note` is proven through the SDK, so
+    // there is nothing to go and do in another app.
+    const canCreate = Boolean(PROVER_ENDPOINT && PROVER_MASTER_ADDRESS);
+    return `<p class="delivery-note">
+        You have no empty note for ${esc(state.token.symbol)} yet — a note holds one
+        deposit, so each transfer needs a fresh one.
       </p>
-      <p class="delivery-note">
-        A bridged transfer is deposited into a note you already own. The bridge can
-        fill one, but it cannot create one — creating a note takes a proof built
-        from your viewing key, which only you can make.
-      </p>
-      <p class="delivery-note">
-        Open an empty ${esc(state.token.symbol)} note in the Veil app, then look again.
-        Already have notes? They may all be filled — a note holds one deposit.
-      </p>
-      <button id="derive-note" class="max" style="margin-top:8px">Look again</button>`;
+      ${canCreate
+        ? `<button id="create-note" class="max" style="margin-top:8px">Create my open note</button>
+           <p class="delivery-note">Proved and settled for you. No signature, no gas.</p>`
+        : `<p class="delivery-note is-warn">Note creation needs a Veil prover endpoint, which this deployment has not configured.</p>
+           <button id="derive-note" class="max" style="margin-top:8px">Look again</button>`}`;
   }
 
   const state_line = mine
@@ -672,6 +670,8 @@ function render(): void {
   }
   const deriveNote = document.getElementById('derive-note');
   if (deriveNote) deriveNote.onclick = () => void doFindNote();
+  const createNote = document.getElementById('create-note');
+  if (createNote) createNote.onclick = () => void doCreateNote();
   const claimNote = document.getElementById('claim-note');
   if (claimNote) claimNote.onclick = () => void doClaimNote();
 
@@ -963,6 +963,30 @@ async function findNoteIfFree(): Promise<void> {
     return;
   }
   await doFindNote();
+}
+
+/// Make an empty open note for this asset, through the SDK's proven path.
+async function doCreateNote(): Promise<void> {
+  if (!state.snSession || !state.noteCtx) return doFindNote();
+  state.busy = 'Creating your note…'; paintCta(); render();
+  try {
+    const result = await createOpenNote(state.asset, state.noteCtx, (line) => {
+      state.busy = `Creating your note — ${line}…`; paintCta();
+    });
+    if (result.ok) {
+      state.noteSlot = result.slot;
+      state.noteId = result.slot.noteId;
+      state.noteSearched = true;
+      state.error = undefined;
+    } else {
+      state.error = result.reason;
+    }
+  } catch (e: any) {
+    state.error = e?.message ?? String(e);
+  } finally {
+    state.busy = undefined;
+    if (state.noteId) await refreshNoteOwner(); else render();
+  }
 }
 
 async function doFindNote(): Promise<void> {

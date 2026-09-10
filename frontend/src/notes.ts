@@ -163,3 +163,99 @@ export async function nextEmptySlot(
   }
   return undefined;
 }
+
+// ── Creating the note ────────────────────────────────────────────────────────
+//
+// The bridge does not need the holder to go and make a note somewhere else. The
+// SDK creates one here, at bridge time, through the same proven path the Veil
+// app uses: `create_open_note_derive` runs in the proven virtual block and
+// `create_open_note_settle` writes the empty note on-chain, carrying the
+// derive's proof and proof_facts (SNIP-36).
+//
+// The browser cannot sign a settle, so -- exactly as veilx/app does it -- no
+// privateKey or senderAddress is passed and the prover service submits from its
+// own account. That is what `masterAddress` is for.
+//
+// The pool assigns the index itself (`next_note_slot_internal`), so nothing
+// here picks one: after the settle, the scan finds the new note where the pool
+// put it.
+
+import { VeilProver } from 'veil-sdk';
+import { PROVER_ENDPOINT, PROVER_MASTER_ADDRESS, STARKNET_RPC } from './config';
+
+const U128_MAX = (1n << 128n) - 1n;
+const hexOf = (v: bigint): string => '0x' + v.toString(16);
+const u256Pair = (v: bigint): [string, string] => [hexOf(v & U128_MAX), hexOf(v >> 128n)];
+
+/// A fresh felt, for the audit ephemeral secret and the subchannel salt. Both
+/// must be unpredictable: the first blinds the auditor encryption, the second
+/// opens the subchannel.
+function randomFelt(): bigint {
+  const bytes = new Uint8Array(31);          // < 2^248, safely inside the field
+  crypto.getRandomValues(bytes);
+  let v = 0n;
+  for (const b of bytes) v = (v << 8n) | BigInt(b);
+  return v === 0n ? 1n : v;
+}
+
+/// Calldata for `create_open_note_derive(owner, k: u256, token,
+/// audit_ephemeral_secret_r, subchannel_salt)`.
+export function buildCreateOpenNoteCalldata(
+  owner: bigint, viewingKey: bigint, token: bigint,
+  auditEphemeralSecretR: bigint, subchannelSalt: bigint,
+): string[] {
+  return [
+    hexOf(owner),
+    ...u256Pair(viewingKey),
+    hexOf(token),
+    hexOf(auditEphemeralSecretR),
+    hexOf(subchannelSalt),
+  ];
+}
+
+export type CreateNoteResult = { ok: true; slot: NoteSlot } | { ok: false; reason: string };
+
+/// Create an empty open note for this asset, then find it.
+export async function createOpenNote(
+  asset: Asset, ctx: NoteContext, onProgress?: (line: string) => void
+): Promise<CreateNoteResult> {
+  const pool = asset.addresses.starknet?.pool;
+  const token = asset.addresses.starknet?.token;
+  if (!pool || !token) return { ok: false, reason: 'This asset has no Veil pool configured.' };
+  if (!PROVER_ENDPOINT) {
+    return { ok: false, reason: 'No Veil prover endpoint is configured for this deployment.' };
+  }
+  if (!PROVER_MASTER_ADDRESS) {
+    return { ok: false, reason: 'No prover master account is configured for this deployment.' };
+  }
+
+  const prover = new VeilProver({
+    veilAddress: pool,
+    pool: 'erc3643',
+    endpoint: PROVER_ENDPOINT,
+    transport: 'job',
+    rpcUrl: STARKNET_RPC,
+    // The browser cannot sign a settle; the prover submits from its own account.
+    masterAddress: PROVER_MASTER_ADDRESS,
+  });
+
+  const calldata = buildCreateOpenNoteCalldata(
+    ctx.owner, ctx.viewingKey, BigInt(token), randomFelt(), randomFelt(),
+  );
+
+  try {
+    onProgress?.('proving');
+    await prover.createOpenNote(calldata);
+  } catch (e: any) {
+    return { ok: false, reason: e?.message ?? String(e) };
+  }
+
+  onProgress?.('finding the note');
+  const slot = await findFillableNote(asset, ctx);
+  if (!slot) {
+    // The settle reported success but the note is not readable yet. Usually the
+    // block has not been seen by this RPC; saying so beats "no note found".
+    return { ok: false, reason: 'The note was created but is not visible yet. Try "Look again" in a moment.' };
+  }
+  return { ok: true, slot };
+}

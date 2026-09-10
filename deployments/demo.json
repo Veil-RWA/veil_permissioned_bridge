@@ -1,5 +1,5 @@
 {
-  "_comment": "DEMO ONLY -- for looking at the app without deploying. The EVM and gateway addresses below are PLACEHOLDERS and point at nothing; connecting a wallet will not work. The Veil pool, factory and identity registry ARE real, live Starknet Sepolia contracts, so the pool existence check runs for real against them.",
+  "_comment": "DEMO ONLY -- for looking at the app without deploying. The EVM and gateway addresses below are PLACEHOLDERS and point at nothing; connecting a wallet will not work. The Veil pool, factory and identity registry ARE real, live Starknet Sepolia contracts, so the pool existence check runs for real against them. veil.proverEndpoint and veil.masterAddress are blank here: without them the app says note creation is unavailable rather than failing at the prover.",
   "demo": true,
   "evmNetwork": "ethereum-sepolia",
   "starknetNetwork": "starknet-sepolia",
@@ -7,7 +7,9 @@
   "starknetEid": 40500,
   "veil": {
     "pool": "0x12808521ab5f277d84eb430f2d59ff8753e91947b43fcf9aea341b38481a80a",
-    "factory": "0x244b26034b77cd3bbafe6a506ec177e7981bf0620021f3082813fc22a40cbe8"
+    "factory": "0x244b26034b77cd3bbafe6a506ec177e7981bf0620021f3082813fc22a40cbe8",
+    "proverEndpoint": "",
+    "masterAddress": ""
   },
   "assets": {
     "gold": {
@@ -22,7 +24,10 @@
         "token": "0x42b9723359b79acc7d79c2c70ce6a7e870de750792f0cb4d74589146169170d",
         "symbol": "bXAU"
       },
-      "wired": { "peers": true, "links": true }
+      "wired": {
+        "peers": true,
+        "links": true
+      }
     }
   }
 }

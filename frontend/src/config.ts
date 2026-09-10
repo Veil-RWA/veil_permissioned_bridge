@@ -45,6 +45,10 @@ export type Deployment = {
     /// records the deployer, so this is what tells a real pool from a typo.
     /// Without it the app offers only the main pool.
     factory?: string;
+    /// SNIP-36 prove-and-settle service, used to CREATE an open note.
+    proverEndpoint?: string;
+    /// Account the prover submits settles from.
+    masterAddress?: string;
   };
   /// Pre-catalogue single-asset deployments. Read by assets.ts as a fallback.
   evm?: AssetDeployment['evm'];
@@ -82,6 +86,22 @@ export const EVM_RPC = import.meta.env.VITE_EVM_RPC_URL
   ?? 'https://ethereum-sepolia-rpc.publicnode.com';
 export const STARKNET_RPC = import.meta.env.VITE_STARKNET_RPC_URL
   ?? 'https://starknet-sepolia.drpc.org';
+
+/// The SNIP-36 prove-and-settle service. Creating an open note runs
+/// `create_open_note_derive` in the proven virtual block and submits
+/// `create_open_note_settle` with its proof, and neither can happen in a
+/// browser -- the prover does both.
+///
+/// No default: a hardcoded endpoint here would send a holder's proof to a host
+/// nobody chose. Absent, the app says note creation is unavailable instead of
+/// silently failing at the prover.
+export const PROVER_ENDPOINT: string | undefined =
+  import.meta.env.VITE_VEIL_PROVER_ENDPOINT ?? deployment.veil?.proverEndpoint;
+
+/// Account the prover submits the settle from. The browser cannot sign a
+/// settle, so there is no per-user key here -- same arrangement as veilx/app.
+export const PROVER_MASTER_ADDRESS: string | undefined =
+  import.meta.env.VITE_VEIL_MASTER_ADDRESS ?? deployment.veil?.masterAddress;
 
 const testnet = (deployment.evmNetwork ?? '').includes('sepolia');
 export const EXPLORER_EVM = testnet ? 'https://sepolia.etherscan.io' : 'https://etherscan.io';

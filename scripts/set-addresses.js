@@ -5,6 +5,7 @@
 //     --lockbox 0x... --token 0x... \
 //     --registry 0x... --gateway 0x... --compliance 0x... --twin 0x... \
 //     [--reader 0x...] [--wired] [--pool 0x...] [--factory 0x...]
+//     [--prover https://...] [--master 0x...]
 //
 // --pool and --factory are Veil's, not the asset's: a Veil pool is multi-asset,
 // so one pool serves every asset here. They default to the main Veil pool and
@@ -82,6 +83,10 @@ function main() {
   const factory = args.factory ?? deployment.veil.factory ?? veilNet.factory;
   if (pool) { deployment.veil.pool = pool; slot.starknet.pool = pool; }
   if (factory) deployment.veil.factory = factory;
+  // The prove-and-settle service, used to CREATE an open note. Without it the
+  // app can fill a note but not make one.
+  if (args.prover) deployment.veil.proverEndpoint = args.prover;
+  if (args.master) deployment.veil.masterAddress = args.master;
   if (args.wired) slot.wired = { peers: true, links: true };
 
   const file = saveDeployment(args, deployment);
@@ -103,6 +108,8 @@ function main() {
   console.log('  starknet.twin      ' + (slot.starknet.token || '(missing)'));
   console.log('  veil.pool          ' + (deployment.veil?.pool || '(none - wallet delivery only)'));
   console.log('  veil.factory       ' + (deployment.veil?.factory || '(none - only the main pool reachable)'));
+  console.log('  veil.prover        ' + (deployment.veil?.proverEndpoint || '(none - cannot create notes)'));
+  console.log('  veil.master        ' + (deployment.veil?.masterAddress || '(none - cannot create notes)'));
   console.log('');
   console.log(`written to ${path.relative(process.cwd(), file)}`);
 
