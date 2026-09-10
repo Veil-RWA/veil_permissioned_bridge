@@ -25,7 +25,7 @@ import * as evm from './evm';
 import * as sn from './starknet';
 import { load as loadHistory, record, update, type Transfer } from './history';
 import {
-  deriveNoteContext, findFillableNote, nextEmptySlot, forgetViewingKey,
+  deriveNoteContext, findFillableNote, forgetViewingKey,
   hasCachedViewingKey, type NoteContext, type NoteSlot,
 } from './notes';
 import {
@@ -51,7 +51,6 @@ type State = {
   noteClaimedBy?: string;
   noteCtx?: NoteContext;
   noteSlot?: NoteSlot;
-  noteEmptySlot?: NoteSlot;
   noteSearched: boolean;
   evmSession?: evm.EvmSession;
   snSession?: sn.SnSession;
@@ -328,10 +327,20 @@ function noteSection(claimed: string | undefined, mine: boolean, unclaimed: bool
       <button id="derive-note" class="max" style="margin-top:8px">Sign to find my open note</button>`;
   }
   if (!state.noteId) {
-    const empty = state.noteEmptySlot;
-    return `<p class="delivery-note is-warn">No fillable open note found for this asset.
-      ${empty ? `The next slot would be index ${empty.index}.` : ''}
-      Create one in the Veil app, then look again.</p>
+    // Says what is missing, why the bridge cannot supply it, and what to do.
+    // "No fillable open note" said none of those three things.
+    return `<p class="delivery-note is-warn">
+        You have no <strong>empty open note</strong> for ${esc(state.token.symbol)} in this pool.
+      </p>
+      <p class="delivery-note">
+        A bridged transfer is deposited into a note you already own. The bridge can
+        fill one, but it cannot create one — creating a note takes a proof built
+        from your viewing key, which only you can make.
+      </p>
+      <p class="delivery-note">
+        Open an empty ${esc(state.token.symbol)} note in the Veil app, then look again.
+        Already have notes? They may all be filled — a note holds one deposit.
+      </p>
       <button id="derive-note" class="max" style="margin-top:8px">Look again</button>`;
   }
 
@@ -816,7 +825,6 @@ async function selectAsset(id: string): Promise<void> {
   state.noteId = '';
   state.noteCtx = undefined;
   state.noteSlot = undefined;
-  state.noteEmptySlot = undefined;
   state.noteClaimedBy = undefined;
   state.noteSearched = false;
   state.poolCheck = undefined;
@@ -917,7 +925,6 @@ async function doConnectStarknet(): Promise<void> {
       state.noteCtx = undefined;
       state.noteId = '';
       state.noteSlot = undefined;
-      state.noteEmptySlot = undefined;
       state.noteClaimedBy = undefined;
       state.noteSearched = false;
     }
@@ -967,7 +974,6 @@ async function doFindNote(): Promise<void> {
     state.noteSlot = slot;
     state.noteId = slot?.noteId ?? '';
     state.noteSearched = true;
-    if (!slot) state.noteEmptySlot = await nextEmptySlot(state.asset, state.noteCtx);
     state.error = undefined;
   } catch (e: any) {
     state.error = e?.message ?? String(e);
@@ -1189,7 +1195,6 @@ async function doDisconnect(which: 'sn' | 'evm'): Promise<void> {
     state.noteCtx = undefined;
     state.noteId = '';
     state.noteSlot = undefined;
-    state.noteEmptySlot = undefined;
     state.noteClaimedBy = undefined;
     state.noteSearched = false;
     state.mirror = undefined;
