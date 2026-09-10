@@ -60,10 +60,15 @@ pub trait IVeilBridgeGateway<TContractState> {
     fn set_delegate(ref self: TContractState, delegate: ContractAddress);
     fn set_dst_eid(ref self: TContractState, dst_eid: u32);
     fn set_token(ref self: TContractState, token: ContractAddress);
-    /// The Veil pool this gateway fills notes in. Zero disables pool delivery,
-    /// and every POOL message then lands in the recipient's wallet.
+    /// The DEFAULT Veil pool, used by every POOL message that names none.
+    /// Zero disables default pool delivery, and those messages then land in the
+    /// recipient's wallet.
     fn set_pool(ref self: TContractState, pool: ContractAddress);
     fn pool(self: @TContractState) -> ContractAddress;
+    /// The VeilERC3643Factory that vouches for any OTHER pool a message names.
+    /// Zero means only the default pool is reachable.
+    fn set_factory(ref self: TContractState, factory: ContractAddress);
+    fn factory(self: @TContractState) -> ContractAddress;
     /// Claim an open note for pool delivery. The caller becomes its owner here,
     /// and only a transfer addressed to that same owner may fill it.
     fn register_note(ref self: TContractState, note_id: felt252);
@@ -100,7 +105,9 @@ pub mod VeilBridgeGateway {
         DELIVERY_POOL, KIND_GLOBAL, KIND_IDENTITY, KIND_MINT, decode_global, decode_identity,
         decode_mint, encode_unlock, kind,
     };
-    use super::super::pool::{IVeilPoolDispatcher, IVeilPoolDispatcherTrait};
+    // Both the pool and the factory are called through caught syscalls rather
+    // than dispatchers: a third-party contract that reverts must not take an
+    // inbound message down with it. See `deliver_to_pool` and `resolve_pool`.
     use super::IVeilBridgeGateway;
 
     /// Deliberately carries no source identity. A Map cannot be enumerated, so
@@ -212,6 +219,8 @@ pub mod VeilBridgeGateway {
         token: ContractAddress,
         registry: ContractAddress,
         pool: ContractAddress,
+        /// Vouches for a pool the message names instead of the default one.
+        factory: ContractAddress,
         /// note_id -> the address allowed to have it filled. Claimed by the
         /// holder, write-once, so a claim cannot be taken over later.
         note_owners: Map<felt252, ContractAddress>,
@@ -399,6 +408,15 @@ pub mod VeilBridgeGateway {
             self.pool.read()
         }
 
+        fn set_factory(ref self: ContractState, factory: ContractAddress) {
+            self.assert_owner();
+            self.factory.write(factory);
+        }
+
+        fn factory(self: @ContractState) -> ContractAddress {
+            self.factory.read()
+        }
+
         /// Claim a note before bridging into it.
         ///
         /// The pool cannot tell the gateway who owns a note -- `get_open_note`
@@ -509,12 +527,71 @@ pub mod VeilBridgeGateway {
             // it must branch BEFORE the wallet mint or the amount is created
             // twice.
             if decoded.delivery == DELIVERY_POOL {
-                self.deliver_to_pool(decoded.sn_recipient, decoded.amount, decoded.note_id);
+                self
+                    .deliver_to_pool(
+                        decoded.sn_recipient, decoded.amount, decoded.note_id, decoded.pool,
+                    );
                 return;
             }
 
             self.token_dispatcher().bridge_mint(decoded.sn_recipient, decoded.amount);
             self.emit(BridgeInMinted { recipient: decoded.sn_recipient, amount: decoded.amount });
+        }
+
+        /// Which pool this transfer may touch, and why not if it may touch none.
+        ///
+        /// A Veil pool is multi-asset, so the asset does not imply the pool and
+        /// the message has to name one. A message that names none gets the
+        /// gateway's default -- the main Veil pool. A message that names one is
+        /// naming an address that arrived over the wire, and the gateway must
+        /// not call that on a peer's say-so: it asks the factory first, and
+        /// only a pool the factory itself deployed comes back usable.
+        ///
+        /// Nothing here reverts. A rejected pool is a policy outcome, and by the
+        /// time this runs the tokens are already escrowed on the source chain --
+        /// so the caller turns a reason into a wallet mint instead.
+        fn resolve_pool(
+            self: @ContractState, requested: ContractAddress,
+        ) -> (ContractAddress, felt252) {
+            let default_pool = self.pool.read();
+
+            // The common case, and the one the operator already vetted.
+            if requested.is_zero() || requested == default_pool {
+                let reason = if default_pool.is_zero() {
+                    'NO_POOL'
+                } else {
+                    0
+                };
+                return (default_pool, reason);
+            }
+
+            let factory = self.factory.read();
+            if factory.is_zero() {
+                // No factory wired, so nothing can vouch for this address.
+                return (Zero::zero(), 'NO_FACTORY');
+            }
+
+            let mut call_data: Array<felt252> = array![];
+            Serde::serialize(@requested, ref call_data);
+
+            // A factory that reverts or answers strangely must not take the
+            // message down with it, so the call is caught rather than trusted.
+            match starknet::syscalls::call_contract_syscall(
+                factory, selector!("get_pool_owner"), call_data.span(),
+            ) {
+                Result::Ok(returned) => {
+                    // `pool_owner` is only ever written by `create_pool`, so a
+                    // non-zero owner is proof the factory deployed this pool.
+                    // Anything else -- an unknown address, a contract that is
+                    // not a pool -- reads back zero.
+                    if returned.len() == 1 && *returned.at(0) != 0 {
+                        (requested, 0)
+                    } else {
+                        (Zero::zero(), 'UNKNOWN_POOL')
+                    }
+                },
+                Result::Err(_) => (Zero::zero(), 'FACTORY_FAILED'),
+            }
         }
 
         /// Fill the recipient's open note instead of minting to their wallet,
@@ -532,10 +609,11 @@ pub mod VeilBridgeGateway {
             recipient: ContractAddress,
             amount: u256,
             note_id: felt252,
+            requested_pool: ContractAddress,
         ) {
-            let pool = self.pool.read();
-            let reason = if pool.is_zero() {
-                'NO_POOL'
+            let (pool, pool_reason) = self.resolve_pool(requested_pool);
+            let reason = if pool_reason != 0 {
+                pool_reason
             } else if note_id == 0 {
                 'NO_NOTE_ID'
             } else if self.note_owners.read(note_id) != recipient {

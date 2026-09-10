@@ -18,7 +18,7 @@ linking against it.
 bridge/
   cairo/          Starknet side — own Scarb package (veil_bridge)
     src/          mirrored_registry, bridged_token, gateway, compliance/rules
-    tests/        101 tests (incl. 26 attack, 14 pool delivery)
+    tests/        113 tests (incl. 26 attack, 14 pool delivery, 12 pool choice)
   evm/            EVM side — own solc build + harness
     contracts/    VeilERC3643Lockbox, ComplianceReader, BridgeMsgCodec, lz/
     test/         44 tests (incl. 15 attack tests) + a JSON-RPC test node
@@ -108,7 +108,35 @@ safe direction:
 
 By default, the recipient's wallet: a public balance. A transfer can instead be
 addressed to an **open note** in a Veil pool, and arrives in the pool. The
-sender chooses per transfer; the mode and the note id ride in the MINT message.
+sender chooses per transfer; the mode, the note id and the pool ride in the MINT
+message.
+
+### Which pool
+
+A Veil pool is **multi-asset**: one pool carries any number of ERC-3643 tokens
+(`allowed_tokens` on `VeilERC3643`). So the asset never implies the pool, and
+something has to choose.
+
+- **By default, the main Veil pool** — already deployed, already carrying
+  assets. This is the gateway's configured default (`set_pool`), and it is what
+  a message that names no pool gets. Naming nothing is the common case.
+- **Optionally, another pool.** Veil allows an entity that wants its own
+  separate pool to deploy one through `VeilERC3643Factory.create_pool`. A sender
+  can address a transfer to one by naming its address.
+
+Naming a pool means an address arrives over the wire and the gateway is asked to
+call it from inside `lz_receive`. It does not do that on a peer's say-so.
+`create_pool` is the only way a Veil pool exists and it records the deployer in
+`pool_owner`, so the gateway asks the factory (`set_factory`) first: a non-zero
+owner is proof of a genuine pool. A pool that does not check out is declined and
+the amount lands in the wallet. This keeps the choice permissionless — a pool
+created a minute ago works, with no operator-maintained allowlist — without
+letting a message point the gateway at a contract of its own choosing.
+
+The app checks the same thing **before** the source chain is touched, so a typo
+costs nothing rather than costing a message. It checks two things, because both
+have to be true: that the factory made the pool, and that the pool actually
+carries this asset (`is_token_allowed`) — multi-asset is not every-asset.
 
 The gateway calls the pool's `fill_open_note` directly. Two things must be in
 place, both on the pool's side: the gateway must be on its `allowed_adapters`
@@ -208,10 +236,15 @@ Endpoints (LayerZero metadata API, verified 2026-09):
 `staleness_window = 0` disables expiry — devnet only; on a live deployment it
 means an unbounded revocation lag.
 
-One lockbox and one twin per asset. Assets are not pooled: a shared lockbox
-would let one issuer's pause or compromise reach another's holders, and would
-blur the escrow invariant that `total_supply + total_pending` on Starknet equals
-what is escrowed on EVM.
+One lockbox and one twin per asset. The **escrow** is never shared: a shared
+lockbox would let one issuer's pause or compromise reach another's holders, and
+would blur the escrow invariant that `total_supply + total_pending` on Starknet
+equals what is escrowed on EVM.
+
+The Veil **pool** on the far side is the opposite, and this is not a
+contradiction: one pool carries many assets without mixing their books, so every
+asset here lands in the same main pool by default. Separate escrow, shared
+pool.
 
 ## Toolchain note
 
@@ -297,7 +330,8 @@ details inline above the action button.
 It carries **multiple assets** — gold, silver, treasuries, private credit and
 real estate in the shipped catalogue (`frontend/src/assets.ts`). Picking one
 switches the entire contract set, not just a ticker, because there is one
-lockbox and one twin per asset and they are never pooled. Assets the current
+lockbox and one twin per asset and the escrow is never shared. (The Veil pool
+they land in IS shared — one pool carries every asset.) Assets the current
 deployment does not carry stay visible and greyed rather than hidden, so the
 question "does this bridge support my instrument" always has an answer on
 screen.

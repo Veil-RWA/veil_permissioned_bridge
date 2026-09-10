@@ -1,9 +1,14 @@
 // The assets this bridge carries.
 //
-// One lockbox and one twin PER ASSET -- assets are never pooled, because a
+// One lockbox and one twin PER ASSET -- the ESCROW is never shared, because a
 // shared lockbox would let one issuer's pause or compromise reach another
 // issuer's holders, and would blur the escrow invariant. So each entry here
 // carries its own contract set, filled in by the deployment scripts.
+//
+// The Veil POOL on the far side is the opposite: one pool carries any number of
+// assets, so it is shared and lives in the deployment config rather than here.
+// See pools.ts -- which pool a transfer lands in is the user's choice, not a
+// property of the instrument.
 //
 // This file is the catalogue: identity, display and decimals, which are
 // properties of the instrument rather than of any one deployment. Addresses
@@ -113,7 +118,11 @@ function resolve(meta: AssetMeta): Asset {
     addresses.starknet?.registry
   );
 
-  return { ...meta, addresses, available, poolReady: Boolean(addresses.starknet?.pool) };
+  // A pool is shared across assets, so a deployment-level main pool counts even
+  // when this asset's gateway has none recorded of its own.
+  const pool = addresses.starknet?.pool ?? deployment.veil?.pool;
+
+  return { ...meta, addresses, available, poolReady: Boolean(pool) };
 }
 
 export const assets: Asset[] = CATALOGUE.map(resolve);

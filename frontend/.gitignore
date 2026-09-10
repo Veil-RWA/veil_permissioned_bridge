@@ -4,3 +4,4 @@ node_modules
 /dist
 src/deployment.json
 .env
+src/pools.bundle.mjs

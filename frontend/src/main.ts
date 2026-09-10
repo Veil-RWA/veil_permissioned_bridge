@@ -25,6 +25,9 @@ import * as evm from './evm';
 import * as sn from './starknet';
 import { load as loadHistory, record, update, type Transfer } from './history';
 import { deriveNoteContext, findFillableNote, nextEmptySlot, type NoteContext, type NoteSlot } from './notes';
+import {
+  checkPool, mainPool, poolFactory, normalisePoolAddress, POOL_PROBLEMS, type PoolCheck,
+} from './pools';
 
 type View = 'transfer' | 'history';
 type Direction = 'toStarknet' | 'toEvm';
@@ -35,6 +38,13 @@ type State = {
   asset: Asset;
   pickerOpen: boolean;
   delivery: evm.Delivery;
+  /// Which Veil pool the transfer is addressed to. 'main' is the gateway's
+  /// default; 'custom' is an address the user pasted. A pool is multi-asset, so
+  /// this is a real choice and not implied by the asset.
+  poolChoice: 'main' | 'custom';
+  customPool: string;
+  poolCheck?: PoolCheck;
+  poolChecking: boolean;
   noteId: string;
   noteClaimedBy?: string;
   noteCtx?: NoteContext;
@@ -63,6 +73,9 @@ const state: State = {
   asset: initial,
   pickerOpen: false,
   delivery: 'wallet',
+  poolChoice: 'main',
+  customPool: '',
+  poolChecking: false,
   noteId: '',
   noteSearched: false,
   token: { symbol: initial.symbol, decimals: initial.decimals },
@@ -239,9 +252,53 @@ function deliveryControls(): string {
       <button class="seg-btn${pool ? '' : ' is-on'}" data-delivery="wallet" role="radio" aria-checked="${!pool}">Wallet</button>
       <button class="seg-btn${pool ? ' is-on' : ''}" data-delivery="pool" role="radio" aria-checked="${pool}">Veil pool</button>
     </div>
-    ${pool ? noteSection(claimed, Boolean(mine), Boolean(unclaimed)) :
+    ${pool ? poolSection() + noteSection(claimed, Boolean(mine), Boolean(unclaimed)) :
       `<p class="delivery-note">Arrives as a public balance on ${esc(starknetLabel)}.</p>`}
   </div>`;
+}
+
+/// WHICH pool. A Veil pool is multi-asset -- one pool carries any number of
+/// tokens -- so the asset does not answer this and the user has to.
+///
+/// Almost everyone wants the main pool. The alternative is for an entity that
+/// runs its own, and it means pasting an address, so the address is verified
+/// against the factory as it is typed: a pool that does not exist is caught
+/// here, before a message is paid for, rather than on the far side.
+function poolSection(): string {
+  const custom = state.poolChoice === 'custom';
+  const canCustom = Boolean(poolFactory());
+  const main = mainPool(state.asset);
+
+  const status = !custom
+    ? ''
+    : state.poolChecking
+      ? `<p class="delivery-note">Checking that pool…</p>`
+      : state.poolCheck?.ok
+        ? `<p class="delivery-note is-ok">Veil pool found. It carries ${esc(state.token.symbol)}.</p>`
+        : state.poolCheck
+          ? `<p class="delivery-note is-warn">${esc(POOL_PROBLEMS[state.poolCheck.reason])}</p>`
+          : `<p class="delivery-note">Paste the pool's address on ${esc(starknetLabel)}.</p>`;
+
+  return `<div class="pool-choice">
+    <div class="seg seg-sm" role="radiogroup" aria-label="Which pool">
+      <button class="seg-btn${custom ? '' : ' is-on'}" data-pool="main" role="radio" aria-checked="${!custom}">Main Veil pool</button>
+      <button class="seg-btn${custom ? ' is-on' : ''}" data-pool="custom" role="radio" aria-checked="${custom}"${canCustom ? '' : ' disabled'}>Another pool</button>
+    </div>
+    ${custom
+      ? `<input id="pool-address" class="pool-input mono" placeholder="0x…" spellcheck="false"
+           autocomplete="off" value="${esc(state.customPool)}" />
+         ${status}`
+      : main
+        ? `<p class="delivery-note">Lands in the main Veil pool <span class="mono">${esc(short(main, 8, 6))}</span>, the one Veil already runs. One pool carries every asset.</p>`
+        : `<p class="delivery-note is-warn">No Veil pool is configured for this deployment.</p>`}
+  </div>`;
+}
+
+/// The pool the transfer should name on the wire. Zero means "the gateway's
+/// default", which is what the main pool is, so it is never spelled out.
+function selectedPool(): string | undefined {
+  if (state.poolChoice !== 'custom') return undefined;
+  return state.poolCheck?.ok ? state.poolCheck.pool : undefined;
 }
 
 /// The note is DERIVED from the holder's viewing key, never typed. A pasted id
@@ -343,6 +400,25 @@ function ctaLabel(): { text: string; disabled: boolean; note: string } {
     if (s && !s.lockboxRegistered) return { text: 'Bridge not approved by issuer', disabled: true, note: 'The lockbox must be a registered identity before any escrow can succeed.' };
     if (s && s.allowance < amount) return { text: `Approve ${state.token.symbol}`, disabled: false, note: 'One approval, then the transfer.' };
     if (state.delivery === 'pool') {
+      // A pool that does not exist would cost a message and land in the wallet
+      // anyway, so it is stopped here rather than discovered on the far side.
+      if (state.poolChoice === 'custom') {
+        if (!normalisePoolAddress(state.customPool)) {
+          return { text: 'Enter the pool address', disabled: true, note: 'Paste the Veil pool you want this to land in.' };
+        }
+        if (state.poolChecking) {
+          return { text: 'Checking the pool…', disabled: true, note: 'Confirming a Veil pool exists at that address.' };
+        }
+        if (!state.poolCheck?.ok) {
+          return {
+            text: 'Pool cannot be used',
+            disabled: true,
+            note: state.poolCheck ? POOL_PROBLEMS[state.poolCheck.reason] : 'That pool has not been checked yet.',
+          };
+        }
+      } else if (!mainPool(state.asset)) {
+        return { text: 'No Veil pool configured', disabled: true, note: 'This deployment has no pool to deliver into.' };
+      }
       if (!validNoteId()) {
         return { text: 'Enter an open note id', disabled: true, note: 'A pool delivery needs a note to fill.' };
       }
@@ -448,7 +524,25 @@ function historyView(): string {
 // -------------------------------------------------------------------- render
 
 function render(): void {
+  // The whole card is rebuilt on every render, which would drop the caret out
+  // of a field being typed into. The pool address is checked AS it is typed, so
+  // that render lands mid-keystroke -- remember where the caret was and put it
+  // back.
+  const active = document.activeElement as HTMLInputElement | null;
+  const focusedId = active?.id;
+  const caret = active?.selectionStart ?? null;
+
   app.innerHTML = state.view === 'transfer' ? transferView() : historyView();
+
+  if (focusedId) {
+    const restored = document.getElementById(focusedId) as HTMLInputElement | null;
+    if (restored) {
+      restored.focus();
+      if (caret !== null && restored.setSelectionRange) {
+        try { restored.setSelectionRange(caret, caret); } catch { /* not a text input */ }
+      }
+    }
+  }
 
   document.querySelectorAll<HTMLButtonElement>('.tab').forEach((tab) => {
     tab.classList.toggle('is-active', tab.dataset.view === state.view);
@@ -485,13 +579,34 @@ function render(): void {
 
   document.querySelectorAll<HTMLButtonElement>('.seg-btn').forEach((b) => {
     b.onclick = () => {
-      state.delivery = b.dataset.delivery as evm.Delivery;
-      if (state.delivery === 'wallet') {
-        state.noteId = ''; state.noteClaimedBy = undefined; state.noteSearched = false;
+      // The same control class serves both segmented pickers, so each button
+      // acts on the one it actually belongs to.
+      if (b.dataset.delivery) {
+        state.delivery = b.dataset.delivery as evm.Delivery;
+        if (state.delivery === 'wallet') {
+          state.noteId = ''; state.noteClaimedBy = undefined; state.noteSearched = false;
+        }
+      } else if (b.dataset.pool) {
+        state.poolChoice = b.dataset.pool as 'main' | 'custom';
+        // A pool the user has moved away from must not stay approved: going
+        // back to "another pool" re-checks whatever is in the box.
+        state.poolCheck = undefined;
+        if (state.poolChoice === 'custom' && state.customPool.trim()) void doCheckPool();
       }
       render();
     };
   });
+
+  const poolInput = document.getElementById('pool-address') as HTMLInputElement | null;
+  if (poolInput) {
+    poolInput.oninput = () => {
+      state.customPool = poolInput.value;
+      state.poolCheck = undefined;
+      schedulePoolCheck();
+      // Re-render for the button state without losing the caret.
+      paintCta();
+    };
+  }
   const deriveNote = document.getElementById('derive-note');
   if (deriveNote) deriveNote.onclick = () => void doFindNote();
   const claimNote = document.getElementById('claim-note');
@@ -507,6 +622,36 @@ function render(): void {
 
   const cta = document.getElementById('cta');
   if (cta) cta.onclick = () => void onCta();
+}
+
+let poolCheckTimer: ReturnType<typeof setTimeout> | undefined;
+let poolCheckToken = 0;
+
+/// Check as the user types, but not on every keystroke: an address is pasted or
+/// typed in bursts, and each check is two RPC reads.
+function schedulePoolCheck(): void {
+  if (poolCheckTimer) clearTimeout(poolCheckTimer);
+  poolCheckTimer = setTimeout(() => void doCheckPool(), 350);
+}
+
+async function doCheckPool(): Promise<void> {
+  const input = state.customPool;
+  if (!normalisePoolAddress(input)) {
+    state.poolChecking = false;
+    state.poolCheck = undefined;
+    render();
+    return;
+  }
+  // Answers can arrive out of order once someone edits mid-flight. Only the
+  // newest one is allowed to write.
+  const mine = ++poolCheckToken;
+  state.poolChecking = true;
+  render();
+  const result = await checkPool(state.asset, input);
+  if (mine !== poolCheckToken || state.customPool !== input) return;
+  state.poolChecking = false;
+  state.poolCheck = result;
+  render();
 }
 
 function paintCta(): void {
@@ -738,7 +883,8 @@ async function onCta(): Promise<void> {
       const fee = state.fee ?? (await evm.quote(asset, amount, state.recipient));
       state.busy = 'Confirm in wallet…'; paintCta();
       const { hash, guid } = await evm.bridgeOut(
-        state.evmSession!, asset, amount, state.recipient, fee, state.delivery, state.noteId
+        state.evmSession!, asset, amount, state.recipient, fee, state.delivery, state.noteId,
+        selectedPool()
       );
       record({
         direction: 'toStarknet', asset: asset.id, symbol: state.token.symbol,

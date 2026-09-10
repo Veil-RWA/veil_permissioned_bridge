@@ -102,7 +102,13 @@ contract VeilERC3643Lockbox is OAppLite {
         returns (bytes32 guid)
     {
         return _bridge(
-            amount, snRecipient, BridgeMsgCodec.DELIVERY_WALLET, bytes32(0), gasLimit, refundAddress
+            amount,
+            snRecipient,
+            BridgeMsgCodec.DELIVERY_WALLET,
+            bytes32(0),
+            bytes32(0),
+            gasLimit,
+            refundAddress
         );
     }
 
@@ -118,17 +124,32 @@ contract VeilERC3643Lockbox is OAppLite {
     /// A note packs its amount into 128 bits, so anything at or above 2**128
     /// could never be delivered. Refused here, where it is free, rather than
     /// silently degrading on the far side.
+    ///
+    /// `pool` names WHICH Veil pool. A Veil pool is multi-asset -- one pool
+    /// carries any number of tokens -- so the asset does not imply the pool and
+    /// the holder has to say. Zero means the gateway's default, the main Veil
+    /// pool, which is what almost every transfer wants. A non-zero value sends
+    /// to an entity's own pool instead, and the gateway checks it against the
+    /// VeilERC3643Factory before touching it; one that does not check out is
+    /// declined there and the amount lands in the recipient's wallet.
     function bridgeOutToPool(
         uint256 amount,
         bytes32 snRecipient,
         bytes32 noteId,
+        bytes32 pool,
         uint128 gasLimit,
         address refundAddress
     ) external payable returns (bytes32 guid) {
         if (noteId == bytes32(0)) revert ZeroNoteId();
         if (amount >= (1 << 128)) revert AmountTooLargeForNote();
         return _bridge(
-            amount, snRecipient, BridgeMsgCodec.DELIVERY_POOL, noteId, gasLimit, refundAddress
+            amount,
+            snRecipient,
+            BridgeMsgCodec.DELIVERY_POOL,
+            noteId,
+            pool,
+            gasLimit,
+            refundAddress
         );
     }
 
@@ -137,6 +158,7 @@ contract VeilERC3643Lockbox is OAppLite {
         bytes32 snRecipient,
         uint8 delivery,
         bytes32 noteId,
+        bytes32 pool,
         uint128 gasLimit,
         address refundAddress
     ) private returns (bytes32 guid) {
@@ -164,7 +186,8 @@ contract VeilERC3643Lockbox is OAppLite {
             _isFrozen(msg.sender),
             registry.investorCountry(msg.sender),
             delivery,
-            noteId
+            noteId,
+            pool
         );
 
         guid = _lzSend(dstEid, message, _lzReceiveOptions(gasLimit), refundAddress).guid;
@@ -218,7 +241,7 @@ contract VeilERC3643Lockbox is OAppLite {
         // MINT is fixed width, so one quote covers both entrypoints.
         bytes memory message = BridgeMsgCodec.encodeMint(
             msg.sender, snRecipient, amount, seq + 1, true, false, 0,
-            BridgeMsgCodec.DELIVERY_WALLET, bytes32(0)
+            BridgeMsgCodec.DELIVERY_WALLET, bytes32(0), bytes32(0)
         );
         return _quote(dstEid, message, _lzReceiveOptions(gasLimit));
     }

@@ -15,7 +15,7 @@
 const { ethers } = require('ethers');
 
 const { compile } = require('../evm/test/harness');
-const { network } = require('./config');
+const { network, veil } = require('./config');
 const {
   parseArgs, loadDeployment, saveDeployment, requireEnv, assetSlot, starknetPeer, evmPeer,
   peerCalldata, starknetAccount, feltToBigInt, step, done,
@@ -69,14 +69,14 @@ async function main() {
   const asFelt = feltToBigInt;
 
   // ---- Starknet internal links -------------------------------------------
-  step(1, 6, 'registry.set_gateway');
+  step(1, 8, 'registry.set_gateway');
   if (asFelt(await call(slot.starknet.registry, 'gateway')) === BigInt(slot.starknet.gateway)) {
     done('already set', slot.starknet.gateway);
   } else {
     await invoke('tx', slot.starknet.registry, 'set_gateway', [slot.starknet.gateway]);
   }
 
-  step(2, 6, 'token.set_gateway + token.set_compliance');
+  step(2, 8, 'token.set_gateway + token.set_compliance');
   if (asFelt(await call(slot.starknet.token, 'gateway')) === BigInt(slot.starknet.gateway)) {
     done('gateway already set', slot.starknet.gateway);
   } else {
@@ -88,14 +88,14 @@ async function main() {
     await invoke('tx', slot.starknet.token, 'set_compliance', [slot.starknet.compliance]);
   }
 
-  step(3, 6, 'compliance.set_token');
+  step(3, 8, 'compliance.set_token');
   if (asFelt(await call(slot.starknet.compliance, 'token')) === BigInt(slot.starknet.token)) {
     done('already set', slot.starknet.token);
   } else {
     await invoke('tx', slot.starknet.compliance, 'set_token', [slot.starknet.token]);
   }
 
-  step(4, 6, 'gateway.set_token');
+  step(4, 8, 'gateway.set_token');
   if (asFelt(await call(slot.starknet.gateway, 'token')) === BigInt(slot.starknet.token)) {
     done('already set', slot.starknet.token);
   } else {
@@ -103,7 +103,7 @@ async function main() {
   }
 
   // ---- Peers, both directions --------------------------------------------
-  step(5, 6, `gateway.set_peer(${d.evmEid} -> lockbox)`);
+  step(5, 8, `gateway.set_peer(${d.evmEid} -> lockbox)`);
   const wantEvmPeer = BigInt(slot.evm.lockbox);
   const havePeer = await call(slot.starknet.gateway, 'get_peer', [String(d.evmEid)]);
   const haveLow = BigInt(Array.isArray(havePeer) ? havePeer[0] : havePeer.result[0]);
@@ -114,7 +114,7 @@ async function main() {
       [String(d.evmEid), ...peerCalldata(slot.evm.lockbox)]);
   }
 
-  step(6, 6, `lockbox.setPeer(${d.starknetEid} -> gateway)`);
+  step(6, 8, `lockbox.setPeer(${d.starknetEid} -> gateway)`);
   const want = starknetPeer(slot.starknet.gateway);
   const have = await lockbox.peers(d.starknetEid);
   if (have.toLowerCase() === want.toLowerCase()) {
@@ -124,6 +124,41 @@ async function main() {
     await tx.wait();
     done('tx', tx.hash, `${evmNet.explorer}/tx/${tx.hash}`);
   }
+
+  // ---- Veil: which pool this gateway delivers into -----------------------
+  // A Veil pool is multi-asset, so this is NOT per-asset state in any real
+  // sense: every asset points at the same main pool. It is set per gateway
+  // because a gateway carries one asset.
+  const veilNet = veil(args.starknet ?? d.starknetNetwork);
+  const wantPool = args.pool ?? d.veil?.pool ?? veilNet.pool;
+  const wantFactory = args.factory ?? d.veil?.factory ?? veilNet.factory;
+
+  step(7, 8, 'gateway.set_pool (main Veil pool)');
+  if (!wantPool) {
+    done('skipped', 'no pool known for this network - wallet delivery only');
+  } else if (asFelt(await call(slot.starknet.gateway, 'pool')) === BigInt(wantPool)) {
+    done('already set', wantPool);
+  } else {
+    await invoke('tx', slot.starknet.gateway, 'set_pool', [wantPool]);
+  }
+
+  step(8, 8, 'gateway.set_factory (vouches for any other pool)');
+  if (!wantFactory) {
+    done('skipped', 'no factory known - only the default pool will be reachable');
+  } else if (asFelt(await call(slot.starknet.gateway, 'factory')) === BigInt(wantFactory)) {
+    done('already set', wantFactory);
+  } else {
+    await invoke('tx', slot.starknet.gateway, 'set_factory', [wantFactory]);
+  }
+
+  // Recorded once at deployment level, not per asset, because one pool serves
+  // every asset. The app reads it from here.
+  if (wantPool || wantFactory) {
+    d.veil = { ...(d.veil ?? {}) };
+    if (wantPool) d.veil.pool = wantPool;
+    if (wantFactory) d.veil.factory = wantFactory;
+  }
+  if (wantPool) slot.starknet.pool = wantPool;
 
   slot.wired.peers = true;
   slot.wired.links = true;

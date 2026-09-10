@@ -4,7 +4,12 @@
 //   node set-addresses.js --asset gold \
 //     --lockbox 0x... --token 0x... \
 //     --registry 0x... --gateway 0x... --compliance 0x... --twin 0x... \
-//     [--reader 0x...] [--wired]
+//     [--reader 0x...] [--wired] [--pool 0x...] [--factory 0x...]
+//
+// --pool and --factory are Veil's, not the asset's: a Veil pool is multi-asset,
+// so one pool serves every asset here. They default to the main Veil pool and
+// the VeilERC3643Factory for the target network, and are recorded once at
+// deployment level rather than per asset.
 //
 // For when the contracts were deployed by hand, or by someone else, and all you
 // have is the addresses. Writes the same deployment file `deploy-evm.js` and
@@ -16,13 +21,13 @@
 // failures deep inside a contract call rather than here where it is obvious.
 
 const path = require('path');
-const { network } = require('./config');
+const { network, veil } = require('./config');
 const { parseArgs, loadDeployment, saveDeployment, assetSlot } = require('./lib');
 
 const EVM_FIELDS = { lockbox: 'evm', token: 'evm', reader: 'evm' };
 const SN_FIELDS = {
   registry: 'starknet', gateway: 'starknet', compliance: 'starknet', twin: 'starknet',
-  pool: 'starknet',
+  pool: 'starknet', factory: 'starknet',
 };
 
 function assertEvm(name, value) {
@@ -68,8 +73,15 @@ function main() {
   if (args.gateway) slot.starknet.gateway = args.gateway;
   if (args.compliance) slot.starknet.compliance = args.compliance;
   if (args.twin) slot.starknet.token = args.twin;
-  if (args.pool) slot.starknet.pool = args.pool;
   if (args.symbol) slot.starknet.symbol = args.symbol;
+
+  // Veil is deployment-level: one pool carries every asset.
+  const veilNet = veil(args.starknet);
+  deployment.veil = { ...(deployment.veil ?? {}) };
+  const pool = args.pool ?? deployment.veil.pool ?? veilNet.pool;
+  const factory = args.factory ?? deployment.veil.factory ?? veilNet.factory;
+  if (pool) { deployment.veil.pool = pool; slot.starknet.pool = pool; }
+  if (factory) deployment.veil.factory = factory;
   if (args.wired) slot.wired = { peers: true, links: true };
 
   const file = saveDeployment(args, deployment);
@@ -89,7 +101,8 @@ function main() {
   console.log('  starknet.gateway   ' + (slot.starknet.gateway || '(missing)'));
   console.log('  starknet.compliance ' + (slot.starknet.compliance || '(missing)'));
   console.log('  starknet.twin      ' + (slot.starknet.token || '(missing)'));
-  console.log('  starknet.pool      ' + (slot.starknet.pool || '(none - wallet delivery only)'));
+  console.log('  veil.pool          ' + (deployment.veil?.pool || '(none - wallet delivery only)'));
+  console.log('  veil.factory       ' + (deployment.veil?.factory || '(none - only the main pool reachable)'));
   console.log('');
   console.log(`written to ${path.relative(process.cwd(), file)}`);
 

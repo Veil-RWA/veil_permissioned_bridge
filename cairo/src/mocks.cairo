@@ -212,3 +212,50 @@ pub mod MockVeilPool {
         }
     }
 }
+
+/// TEST ONLY. The VeilERC3643Factory as the gateway asks about it, plus the
+/// ways it can fail the gateway: an unregistered address, and a factory that
+/// reverts outright.
+#[starknet::interface]
+pub trait IMockFactoryExt<TContractState> {
+    /// Pretend `pool` came out of `create_pool`, owned by `owner`.
+    fn register(ref self: TContractState, pool: ContractAddress, owner: ContractAddress);
+    /// Revert on every question from here on.
+    fn set_broken(ref self: TContractState, broken: bool);
+}
+
+#[starknet::contract]
+pub mod MockVeilFactory {
+    use starknet::ContractAddress;
+    use starknet::storage::{
+        Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
+        StoragePointerWriteAccess,
+    };
+    use veil_bridge::factory::IVeilFactory;
+    use super::IMockFactoryExt;
+
+    #[storage]
+    struct Storage {
+        broken: bool,
+        pool_owner: Map<ContractAddress, ContractAddress>,
+    }
+
+    #[abi(embed_v0)]
+    impl FactoryImpl of IVeilFactory<ContractState> {
+        fn get_pool_owner(self: @ContractState, pool: ContractAddress) -> ContractAddress {
+            assert(!self.broken.read(), 'FACTORY_BOOM');
+            // Upstream returns zero for anything `create_pool` never made.
+            self.pool_owner.read(pool)
+        }
+    }
+
+    #[abi(embed_v0)]
+    impl ExtImpl of IMockFactoryExt<ContractState> {
+        fn register(ref self: ContractState, pool: ContractAddress, owner: ContractAddress) {
+            self.pool_owner.write(pool, owner);
+        }
+        fn set_broken(ref self: ContractState, broken: bool) {
+            self.broken.write(broken);
+        }
+    }
+}

@@ -6,7 +6,7 @@
 // layout with fixed vectors so a one-sided edit fails loudly instead of
 // silently misreading amounts.
 //
-//   MINT (EVM -> Starknet), 142 bytes
+//   MINT (EVM -> Starknet), 174 bytes
 //     0    u8    kind = 1
 //     1    b32   evm_sender          20-byte address, left-padded
 //     33   b32   sn_recipient        Starknet address as a felt
@@ -17,11 +17,18 @@
 //     107  u16   country             ISO-3166 numeric
 //     109  u8    delivery            0 = wallet, 1 = Veil pool open note
 //     110  b32   note_id             0 unless delivery = 1
+//     142  b32   pool                0 = the gateway's default Veil pool
 //
 //   WALLET mints to the recipient's Starknet address. POOL fills the
 //   recipient's open note so the position arrives in the pool rather than as a
 //   public balance. POOL degrades to WALLET rather than failing -- see the
 //   gateway.
+//
+//   A Veil pool is MULTI-ASSET: one pool carries any number of tokens, so the
+//   pool named here is not implied by the asset. Zero means the gateway's
+//   configured default -- the main Veil pool. A non-zero value lets a holder
+//   send to an entity's own pool instead, and the gateway checks it against the
+//   VeilERC3643Factory before touching it.
 //
 //   IDENTITY (EVM -> Starknet), 45 bytes
 //     0    u8    kind = 2
@@ -84,6 +91,8 @@ pub struct MintMessage {
     pub amount: u256,
     pub delivery: u8,
     pub note_id: felt252,
+    /// Zero selects the gateway's default pool.
+    pub pool: starknet::ContractAddress,
 }
 
 #[derive(Copy, Drop, Serde, PartialEq, Debug)]
@@ -123,6 +132,7 @@ pub fn decode_mint(message: @ByteArray) -> MintMessage {
         amount: read_u256(message, 65),
         delivery: read_u8(message, 109),
         note_id: read_u256(message, 110).try_into().expect('BRIDGE_BAD_NOTE_ID'),
+        pool: word_to_starknet_address(read_u256(message, 142)),
     }
 }
 
@@ -172,6 +182,7 @@ pub fn encode_mint(msg: MintMessage) -> ByteArray {
     append_u16(ref out, msg.identity.country);
     append_u8(ref out, msg.delivery);
     append_u256(ref out, msg.note_id.into());
+    append_u256(ref out, Into::<_, felt252>::into(msg.pool).into());
     out
 }
 

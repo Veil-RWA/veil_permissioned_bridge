@@ -15,6 +15,7 @@
 // cannot say who owns a note, while note ids are public. Without a claim any
 // sender could name any note and burn it with dust.
 
+use core::num::traits::Zero;
 use snforge_std::{
     ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address,
     stop_cheat_caller_address,
@@ -141,12 +142,20 @@ fn mint_msg(
     evm: felt252, to: ContractAddress, amount: u256, seq: u64, verified: bool,
     delivery: u8, note_id: felt252,
 ) -> ByteArray {
+    // Names no pool, so the gateway uses its default.
+    mint_msg_to_pool(evm, to, amount, seq, verified, delivery, note_id, Zero::zero())
+}
+
+fn mint_msg_to_pool(
+    evm: felt252, to: ContractAddress, amount: u256, seq: u64, verified: bool,
+    delivery: u8, note_id: felt252, pool: ContractAddress,
+) -> ByteArray {
     encode_mint(
         MintMessage {
             identity: IdentitySnapshot {
                 evm_account: evm, seq, verified, frozen: false, country: 840,
             },
-            sn_recipient: to, amount, delivery, note_id,
+            sn_recipient: to, amount, delivery, note_id, pool,
         },
     )
 }

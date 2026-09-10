@@ -20,10 +20,13 @@ belongs to an issuer.
 
 Every step takes `--asset <id>`, one of `gold`, `silver`, `tbill`, `credit`,
 `estate` — the catalogue in `frontend/src/assets.ts`. **Each asset gets its own
-lockbox, gateway, registry, compliance and twin.** Assets are never pooled: a
+lockbox, gateway, registry, compliance and twin.** The escrow is never shared: a
 shared lockbox would let one issuer's pause or compromise reach another issuer's
 holders, and would blur the escrow invariant. So run the sequence below once per
 asset. Class declarations are cached across assets, so the second one is cheaper.
+
+The Veil **pool** is the exception and is NOT per asset — one pool carries any
+number of them, so every asset lands in the same main pool. See step 6.
 
 ## Already deployed? Skip to the addresses
 
@@ -100,7 +103,24 @@ confirm against.
 ## 6. Pool delivery (optional)
 
 Only needed if transfers should land in a Veil pool note rather than a wallet.
-Three things, and the first two are on the POOL's side:
+
+**A Veil pool is multi-asset**: one pool carries any number of ERC-3643 tokens.
+So the pool is not per-asset — every asset this bridge carries lands in the same
+one. `wire.js` defaults to the **main Veil pool** for the target network and
+records it once at deployment level, so in the normal case there is nothing to
+pass:
+
+```bash
+node wire.js --asset gold          # uses the main Veil pool + factory
+```
+
+Override either with `--pool` / `--factory`. `--factory` is the
+`VeilERC3643Factory`: it is what lets a sender address a transfer to an entity's
+OWN pool, because `create_pool` is the only way a pool exists and it records the
+deployer, so the gateway can tell a real pool from a pasted address. Without a
+factory wired, only the default pool is reachable.
+
+Three more things, and the first two are on the POOL's side:
 
 1. The pool allow-lists the gateway: `set_adapter_allowed(<gateway>, true)`.
    Without it every fill is declined and the amount lands in the wallet.
@@ -109,8 +129,12 @@ Three things, and the first two are on the POOL's side:
    otherwise:
 
 ```bash
-node wire.js --asset gold --pool 0x<veil-pool> --holder 0x<veil-pool>
+node wire.js --asset gold --holder 0x<veil-pool>
 ```
+
+   Do this for **every** pool that should be reachable, the main one included:
+   a pool the twin's registry has never heard of cannot hold it, however
+   genuine the factory says it is.
 
 3. Each holder needs an **open note** to fill. The bridge does not create one —
    that is the pool's proven `create_open_note` path. The app derives the

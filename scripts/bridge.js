@@ -3,6 +3,15 @@
 //
 //   node bridge.js --asset gold --amount 1000000000000000000 --to 0x<starknet address>
 //                  [--gas-limit 400000] [--watch 900]
+//                  [--note 0x<open note id>] [--pool 0x<veil pool>]
+//
+// With --note the amount is delivered into a Veil pool open note instead of the
+// recipient's wallet. The note must already be CLAIMED on the gateway by the
+// recipient, or the far side declines it and the amount lands in the wallet.
+//
+// --pool names WHICH Veil pool. A Veil pool is multi-asset -- one pool carries
+// any number of tokens -- so the asset never implies the pool. Omit it for the
+// main Veil pool, which is what the gateway defaults to.
 //
 // This is the script that proves the LayerZero pathway actually works. It:
 //   1. checks the preconditions that otherwise fail deep inside a revert,
@@ -18,7 +27,7 @@
 const { ethers } = require('ethers');
 const { RpcProvider } = require('starknet');
 const { compile } = require('../evm/test/harness');
-const { network } = require('./config');
+const { network, veil } = require('./config');
 const {
   parseArgs, loadDeployment, requireEnv, assetSlot, u256FromFelts, httpFetch, step, done,
 } = require('./lib');
@@ -98,6 +107,30 @@ async function main() {
   }
   if (balance < amount) throw new Error(`balance ${balance} < amount ${amount}`);
 
+  // ---- delivery -----------------------------------------------------------
+  // Wallet unless a note is named. The pool is only meaningful alongside one.
+  const noteId = args.note;
+  const veilNet = veil(args.starknet ?? d.starknetNetwork);
+  const mainPool = d.veil?.pool ?? veilNet.pool;
+  const chosenPool = args.pool;
+  if (chosenPool && !noteId) {
+    throw new Error('--pool only means something with --note: a wallet transfer does not enter a pool');
+  }
+  if (noteId) {
+    if (BigInt(noteId) === 0n) throw new Error('--note must be a non-zero felt');
+    if (amount >= (1n << 128n)) {
+      throw new Error(`amount ${amount} does not fit a note (max 2^128 - 1)`);
+    }
+    const target = chosenPool ?? mainPool;
+    console.log(`delivery     open note ${noteId}`);
+    console.log(`pool         ${target ?? '(gateway default)'}${chosenPool ? '' : '  [main Veil pool]'}`);
+    if (chosenPool && mainPool && BigInt(chosenPool) !== BigInt(mainPool)) {
+      console.log('             not the main pool - the gateway will check it against the factory');
+    }
+  } else {
+    console.log('delivery     wallet');
+  }
+
   // ---- quote --------------------------------------------------------------
   step(2, 5, 'quote the message fee from the endpoint');
   const fee = await lockbox.quoteBridgeOut.staticCall(amount, recipient, gasLimit);
@@ -122,7 +155,16 @@ async function main() {
   // ---- send ---------------------------------------------------------------
   step(4, 5, 'escrow + send');
   const supplyBefore = await starknetSupply(snRpc, slot.starknet.token);
-  const tx = await lockbox.bridgeOut(amount, recipient, gasLimit, wallet.address, { value: nativeFee });
+  // Zero means "the gateway's default", which is the main pool. Naming it
+  // explicitly would work too, but zero is what the common case should send.
+  const ZERO_WORD = '0x' + '0'.repeat(64);
+  const word = (v) => '0x' + BigInt(v).toString(16).padStart(64, '0');
+  const poolWord = chosenPool ? word(chosenPool) : ZERO_WORD;
+  const tx = noteId
+    ? await lockbox.bridgeOutToPool(
+        amount, recipient, word(noteId), poolWord, gasLimit, wallet.address, { value: nativeFee }
+      )
+    : await lockbox.bridgeOut(amount, recipient, gasLimit, wallet.address, { value: nativeFee });
   const receipt = await tx.wait();
   done('tx', tx.hash, `${evmNet.explorer}/tx/${tx.hash}`);
 

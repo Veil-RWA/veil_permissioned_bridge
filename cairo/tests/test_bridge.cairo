@@ -11,6 +11,7 @@
 // exact wire encoding, so a change to either codec that is not mirrored on the
 // other side fails here instead of on a testnet.
 
+use core::num::traits::Zero;
 use openzeppelin_token::erc20::interface::{IERC20Dispatcher, IERC20DispatcherTrait};
 use snforge_std::{
     ContractClassTrait, DeclareResultTrait, declare, start_cheat_block_timestamp_global,
@@ -212,6 +213,7 @@ fn mint_msg(
             amount,
             delivery: DELIVERY_WALLET,
             note_id: 0,
+            pool: Zero::zero(),
         },
     )
 }
@@ -228,7 +230,7 @@ fn identity_msg(
 #[test]
 fn mint_message_layout_is_pinned() {
     let message = mint_msg(evm_alice(), alice(), amt(1000), 7, true, false, 840);
-    assert(message.len() == 142, 'MINT_LEN');
+    assert(message.len() == 174, 'MINT_LEN');
     assert(message.at(0).unwrap() == 1, 'KIND');
     // evm_alice = 0x0A11CE, right-aligned in the 32-byte word at offset 1,
     // so its three bytes land in the word's last three slots.
@@ -248,6 +250,8 @@ fn mint_message_layout_is_pinned() {
     // A wallet transfer carries no note.
     assert(message.at(109).unwrap() == 0, 'DELIVERY');
     assert(message.at(141).unwrap() == 0, 'NOTE_ID');
+    // ...and names no pool, so the far side would use its default.
+    assert(message.at(173).unwrap() == 0, 'POOL');
 }
 
 #[test]
@@ -261,13 +265,16 @@ fn a_pool_delivery_message_carries_its_note_id() {
             amount: amt(1000),
             delivery: DELIVERY_POOL,
             note_id: 0xBEEF,
+            pool: Zero::zero(),
         },
     );
-    assert(message.len() == 142, 'MINT_LEN');
+    assert(message.len() == 174, 'MINT_LEN');
     assert(message.at(109).unwrap() == 1, 'DELIVERY_POOL');
     // note_id right-aligned in the trailing 32-byte word.
     assert(message.at(140).unwrap() == 0xbe, 'NOTE_HI');
     assert(message.at(141).unwrap() == 0xef, 'NOTE_LO');
+    // Zero pool = the gateway's default, the main Veil pool.
+    assert(message.at(173).unwrap() == 0, 'POOL');
     let decoded = decode_mint(@message);
     assert(decoded.delivery == DELIVERY_POOL, 'DECODE_DELIVERY');
     assert(decoded.note_id == 0xBEEF, 'DECODE_NOTE');

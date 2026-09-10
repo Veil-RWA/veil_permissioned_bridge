@@ -90,15 +90,16 @@ test('MINT encoding matches the layout pinned on the Cairo side', async () => {
     840,
     0,
     B32(0),
+    B32(0),
   ]);
   succeeds(res, 'encodeMint');
   const bytes = res.decoded[0];
   const expected = ethers.solidityPacked(
-    ['uint8', 'bytes32', 'bytes32', 'uint256', 'uint64', 'bool', 'bool', 'uint16', 'uint8', 'bytes32'],
-    [1, B32('0xa11ce'), B32(101), 1000n, 7n, true, false, 840, 0, B32(0)]
+    ['uint8', 'bytes32', 'bytes32', 'uint256', 'uint64', 'bool', 'bool', 'uint16', 'uint8', 'bytes32', 'bytes32'],
+    [1, B32('0xa11ce'), B32(101), 1000n, 7n, true, false, 840, 0, B32(0), B32(0)]
   );
   eq(bytes, expected, 'packed bytes');
-  eq((bytes.length - 2) / 2, 142, 'MINT length');
+  eq((bytes.length - 2) / 2, 174, 'MINT length');
 
   // The exact byte offsets the Cairo test reads.
   const b = ethers.getBytes(bytes);
@@ -113,6 +114,8 @@ test('MINT encoding matches the layout pinned on the Cairo side', async () => {
   eq(b[106], 0, 'frozen');
   eq(b[107], 0x03, 'country hi');
   eq(b[108], 0x48, 'country lo');
+  // Naming no pool means the far side uses its default, the main Veil pool.
+  eq(b[173], 0, 'pool');
 });
 
 test('IDENTITY and GLOBAL encodings match the pinned layouts', async () => {
@@ -208,7 +211,7 @@ test('bridgeOutToPool carries the delivery mode and the note id', async () => {
   const { token, endpoint, lockbox, chain } = await setup();
   const NOTE = B32('0xbeef');
   succeeds(
-    await lockbox.call('bridgeOutToPool', [1000n, B32(101), NOTE, 200000n, addr(REFUND)], ALICE),
+    await lockbox.call('bridgeOutToPool', [1000n, B32(101), NOTE, B32(0), 200000n, addr(REFUND)], ALICE),
     'bridgeOutToPool'
   );
   eq((await token.call('balanceOf', [lockbox.hex])).decoded[0], 1000n, 'escrowed');
@@ -218,6 +221,25 @@ test('bridgeOutToPool carries the delivery mode and the note id', async () => {
   succeeds(decoded, 'decodeMint');
   eq(decoded.decoded[7], 1n, 'delivery = POOL');
   eq(decoded.decoded[8], NOTE, 'note id');
+  eq(decoded.decoded[9], B32(0), 'pool = default');
+});
+
+test('bridgeOutToPool can name a pool other than the default', async () => {
+  // A Veil pool is multi-asset, so the asset never implies the pool. Zero means
+  // the gateway's default -- the main Veil pool -- and a holder whose entity
+  // runs its own pool names that one instead. The gateway checks it against the
+  // VeilERC3643Factory on arrival; nothing is trusted here.
+  const { endpoint, lockbox, chain } = await setup();
+  const NOTE = B32('0xbeef');
+  const OWN_POOL = B32('0x12808521ab5f277d84eb430f2d59ff8753e91947b43fcf9aea341b38481a80a');
+  succeeds(
+    await lockbox.call('bridgeOutToPool', [1000n, B32(101), NOTE, OWN_POOL, 200000n, addr(REFUND)], ALICE),
+    'bridgeOutToPool'
+  );
+  const codec = await chain.deploy('CodecHarness');
+  const decoded = await codec.call('decodeMint', [(await endpoint.call('lastMessage')).decoded[0]]);
+  succeeds(decoded, 'decodeMint');
+  eq(decoded.decoded[9], OWN_POOL, 'pool travels on the wire');
 });
 
 test('a pool transfer with no note, or too large for one, is refused here', async () => {
@@ -225,13 +247,13 @@ test('a pool transfer with no note, or too large for one, is refused here', asyn
   // Both would silently degrade to the wallet on the far side. Refusing costs
   // nothing here and tells the user why.
   reverts(
-    await lockbox.call('bridgeOutToPool', [1000n, B32(101), B32(0), 200000n, addr(REFUND)], ALICE),
+    await lockbox.call('bridgeOutToPool', [1000n, B32(101), B32(0), B32(0), 200000n, addr(REFUND)], ALICE),
     'ZeroNoteId'
   );
   const tooBig = 1n << 128n;
   await lockbox.call('bridgeOut', [0n, B32(101), 200000n, addr(REFUND)], ALICE);
   reverts(
-    await lockbox.call('bridgeOutToPool', [tooBig, B32(101), B32('0xbeef'), 200000n, addr(REFUND)], ALICE),
+    await lockbox.call('bridgeOutToPool', [tooBig, B32(101), B32('0xbeef'), B32(0), 200000n, addr(REFUND)], ALICE),
     'AmountTooLargeForNote'
   );
   eq((await endpoint.call('sendCount')).decoded[0], 0n, 'message sent');

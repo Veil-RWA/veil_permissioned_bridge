@@ -454,6 +454,24 @@ a { color: inherit; }
 .delivery-note.is-warn { color: var(--warn); }
 .delivery .recipient { margin-top: 9px; }
 
+/* Which pool. A Veil pool is multi-asset, so this is a real choice: the main
+   pool, or an entity's own by address. */
+.pool-choice {
+  margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--rule);
+}
+.seg-sm .seg-btn { padding: 5px 11px; font-size: 11px; }
+.seg-btn:disabled { opacity: .4; cursor: not-allowed; }
+.seg-btn:disabled:hover { color: var(--muted); }
+.pool-input {
+  width: 100%; margin-top: 9px; padding: 9px 11px;
+  background: var(--ground); border: 1px solid var(--rule); border-radius: 10px;
+  font-family: var(--mono); font-size: 12px; color: var(--ink);
+}
+.pool-input:focus {
+  outline: none; border-color: var(--warn-line); box-shadow: 0 0 0 3px var(--warn-soft, rgba(217,160,63,.12));
+}
+.pool-input::placeholder { color: var(--faint); }
+
 .note-found {
   display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
   margin-top: 9px; padding: 9px 11px;

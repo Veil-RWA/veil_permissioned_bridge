@@ -13,8 +13,10 @@ export type AssetDeployment = {
     gateway?: string;
     compliance?: string;
     token?: string;
-    /// The Veil pool this asset's gateway fills notes in. Absent means pool
-    /// delivery is not configured and every transfer lands in a wallet.
+    /// The Veil pool THIS asset's gateway defaults to -- what a transfer that
+    /// names no pool gets. In practice the main Veil pool, the same one for
+    /// every asset, because a pool is multi-asset. Absent means pool delivery
+    /// is not configured and every transfer lands in a wallet.
     pool?: string;
     name?: string;
     symbol?: string;
@@ -30,8 +32,20 @@ export type Deployment = {
   evmEid?: number;
   starknetEid?: number;
   /// Per-asset contract sets, keyed by catalogue id. One lockbox and one twin
-  /// each: assets are never pooled.
+  /// each -- the ESCROW is never shared, so one issuer's pause or compromise
+  /// cannot reach another's holders. The Veil pool below is shared, which is a
+  /// different thing: a pool holds many assets without mixing their books.
   assets?: Record<string, AssetDeployment>;
+  /// Veil itself, which is not per-asset.
+  veil?: {
+    /// The main Veil pool. Where bridged assets land unless the user names
+    /// another.
+    pool?: string;
+    /// VeilERC3643Factory. `create_pool` is the only way a pool exists and it
+    /// records the deployer, so this is what tells a real pool from a typo.
+    /// Without it the app offers only the main pool.
+    factory?: string;
+  };
   /// Pre-catalogue single-asset deployments. Read by assets.ts as a fallback.
   evm?: AssetDeployment['evm'];
   starknet?: AssetDeployment['starknet'];

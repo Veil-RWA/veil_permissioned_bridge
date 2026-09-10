@@ -20,6 +20,7 @@
 // exceeds what is escrowed on the source chain, and no address ever holds or
 // moves twin tokens without a live, fresh, un-revoked eligibility record.
 
+use core::num::traits::Zero;
 use snforge_std::{
     ContractClassTrait, DeclareResultTrait, declare, start_cheat_block_timestamp_global,
     start_cheat_caller_address, stop_cheat_caller_address,
@@ -180,6 +181,7 @@ fn mint_msg(
             amount,
             delivery: DELIVERY_WALLET,
             note_id: 0,
+            pool: Zero::zero(),
         },
     )
 }
