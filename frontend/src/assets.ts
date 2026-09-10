@@ -127,10 +127,15 @@ function resolve(meta: AssetMeta): Asset {
 
 export const assets: Asset[] = CATALOGUE.map(resolve);
 
-/// Faucet tokens on the source chain, for "Get faucets". Only assets that are
-/// actually deployed: claiming one that is not would revert on a dead address.
+/// Faucet tokens on the source chain, for "Get faucets".
+///
+/// Keyed on the EVM token ALONE, deliberately -- not on `available`. Claiming
+/// test tokens needs nothing but the token: the lockbox, the twin and the
+/// gateway are irrelevant to it. Requiring the full set would hide the button
+/// during exactly the window it exists for, between deploying the faucet assets
+/// and wiring the Starknet side.
 export const faucetTokens = (): string[] =>
-  assets.filter((a) => a.available && a.addresses.evm?.token)
+  assets.filter((a) => a.addresses.evm?.token)
         .map((a) => a.addresses.evm!.token!);
 
 export const faucetRouter = (): string | undefined => deployment.faucet?.router;
