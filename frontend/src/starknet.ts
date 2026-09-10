@@ -115,13 +115,21 @@ export async function connectStarknet(): Promise<SnSession> {
 /// undefined when there is nothing to restore -- never throws.
 export async function restoreStarknet(): Promise<SnSession | undefined> {
   if (!mayAutoConnect()) return undefined;
-  try {
-    const wallet = await pickWallet({ modalMode: 'neverAsk' });
-    if (!wallet) return undefined;
-    return await sessionFrom(wallet);
-  } catch {
-    return undefined;   // not authorised, locked, or on the wrong chain
+
+  // The extension may not have injected yet when this runs, and `neverAsk`
+  // simply answers "nothing" in that case. Asking once and giving up is why a
+  // reload looked like a disconnect, so try again briefly before concluding
+  // there is no wallet.
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      const wallet = await pickWallet({ modalMode: 'neverAsk' });
+      if (wallet) return await sessionFrom(wallet);
+    } catch {
+      return undefined;   // authorised but locked, or on the wrong chain
+    }
+    await new Promise((r) => setTimeout(r, 250));
   }
+  return undefined;
 }
 
 export async function disconnectStarknet(): Promise<void> {

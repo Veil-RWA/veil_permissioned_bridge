@@ -1179,13 +1179,18 @@ async function watchRelease(asset: Asset, hash: string, recipient: string): Prom
 
 async function boot(): Promise<void> {
   render();
-  if (!state.asset.available) return;
-  try { state.token = await evm.tokenInfo(state.asset); } catch { /* catalogue stands */ }
-  render();
+  if (state.asset.available) {
+    try { state.token = await evm.tokenInfo(state.asset); } catch { /* catalogue stands */ }
+    render();
+  }
 
   // Re-attach wallets the user already authorised HERE, without prompting, so a
   // reload keeps the session instead of looking like a disconnect. Neither call
   // throws: nothing to restore is the normal case.
+  //
+  // Runs even when no asset is deployed: whether a wallet is connected has
+  // nothing to do with whether this route carries an asset, and returning early
+  // was leaving the header showing "Connect" for an already-connected wallet.
   const [snSession, evmSession] = await Promise.all([
     sn.restoreStarknet(),
     evm.restoreEvm(),

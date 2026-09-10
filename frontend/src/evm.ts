@@ -191,10 +191,42 @@ export class PickEvmWalletError extends Error {
   }
 }
 
+/// Wait for a specific wallet to announce itself.
+///
+/// At page load the extension may not have injected yet, so the request this
+/// module dispatched on import can go unanswered and `announced` is still empty
+/// when a restore runs. Asking once and giving up is why a reload looked like a
+/// disconnect. Re-ask, and give the wallet a moment to answer.
+function waitForProvider(rdns: string, timeoutMs = 1500): Promise<boolean> {
+  if (providerFor(rdns)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (found: boolean): void => {
+      if (done) return;
+      done = true;
+      window.removeEventListener('eip6963:announceProvider', onAnnounce);
+      clearInterval(retry);
+      clearTimeout(giveUp);
+      resolve(found);
+    };
+    const onAnnounce = (): void => { if (providerFor(rdns)) finish(true); };
+    window.addEventListener('eip6963:announceProvider', onAnnounce);
+    // Re-ask periodically: a wallet injected after our first request only
+    // answers a new one.
+    const retry = setInterval(() => {
+      window.dispatchEvent(new Event('eip6963:requestProvider'));
+      if (providerFor(rdns)) finish(true);
+    }, 150);
+    const giveUp = setTimeout(() => finish(Boolean(providerFor(rdns))), timeoutMs);
+    window.dispatchEvent(new Event('eip6963:requestProvider'));
+  });
+}
+
 /// Reconnect on load without a prompt. Never throws.
 export async function restoreEvm(): Promise<EvmSession | undefined> {
   const rdns = lastWallet();
   if (!rdns) return undefined;
+  if (!(await waitForProvider(rdns))) return undefined;
   try { return await sessionFor(rdns, false); } catch { return undefined; }
 }
 
