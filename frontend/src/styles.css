@@ -468,15 +468,29 @@ a { color: inherit; }
 }
 .dest-disconnect:hover { color: var(--warn); }
 
-/* Which EVM wallet, when more than one announced itself. */
-.wallet-picker {
-  max-width: 420px; margin: 0 auto 14px; padding: 14px;
-  background: var(--panel); border: 1px solid var(--rule); border-radius: 14px;
+/* Which EVM wallet, when more than one announced itself.
+   A centred overlay, so it is visible wherever the page is scrolled. */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, .68);
+  backdrop-filter: blur(3px);
 }
-.picker-title {
-  font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
-  color: var(--faint); margin-bottom: 10px;
+.modal {
+  width: 100%; max-width: 380px; padding: 18px;
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .6);
 }
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 14px; font-size: 15px; font-weight: 600; color: var(--ink);
+}
+.modal-x {
+  border: 0; background: transparent; cursor: pointer;
+  font-size: 22px; line-height: 1; color: var(--faint); padding: 0 4px;
+}
+.modal-x:hover { color: var(--ink); }
 .wallet-row {
   display: flex; align-items: center; gap: 10px; width: 100%;
   padding: 10px 11px; margin-top: 6px; cursor: pointer;

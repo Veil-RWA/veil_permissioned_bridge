@@ -493,14 +493,23 @@ function transferView(): string {
            title="Disconnect">Disconnect</button></div>`
     : `<button id="connect-dest" class="max" style="margin-top:8px">Connect ${esc(toStarknet() ? starknetLabel : evmLabel)} wallet</button>`;
 
+  // A MODAL, not inline content. The previous version rendered the picker as a
+  // block above the card, so with the page scrolled at all it sat off-screen --
+  // you pressed Connect and nothing appeared to happen. An overlay is what
+  // every connect flow uses, and it shows wherever the page happens to be.
   const walletPicker = state.evmPicker?.length
-    ? `<div class="wallet-picker">
-        <div class="picker-title">Choose a wallet</div>
-        ${state.evmPicker.map((w) => `
-          <button class="wallet-row" data-wallet="${esc(w.rdns)}">
-            ${w.icon ? `<img class="wallet-icon" src="${esc(w.icon)}" alt="" />` : '<span class="wallet-icon"></span>'}
-            <span>${esc(w.name)}</span>
-          </button>`).join('')}
+    ? `<div class="modal-backdrop" id="wallet-modal">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="Connect a wallet">
+          <div class="modal-head">
+            <span>Connect an ${esc(evmLabel)} wallet</span>
+            <button class="modal-x" id="wallet-modal-close" aria-label="Close">&times;</button>
+          </div>
+          ${state.evmPicker.map((w) => `
+            <button class="wallet-row" data-wallet="${esc(w.rdns)}">
+              ${w.icon ? `<img class="wallet-icon" src="${esc(w.icon)}" alt="" />` : '<span class="wallet-icon"></span>'}
+              <span>${esc(w.name)}</span>
+            </button>`).join('')}
+        </div>
       </div>`
     : '';
 
@@ -664,6 +673,14 @@ function render(): void {
   const claimEvm = document.getElementById('claim-evm');
   if (claimEvm) claimEvm.onclick = () => void doClaimEvm();
 
+  const closePicker = (): void => { state.evmPicker = undefined; render(); };
+  const backdrop = document.getElementById('wallet-modal');
+  if (backdrop) {
+    // Click the backdrop itself, not a click that bubbled up from the dialog.
+    backdrop.onclick = (e) => { if (e.target === backdrop) closePicker(); };
+    document.getElementById('wallet-modal-close')!.onclick = closePicker;
+  }
+
   document.querySelectorAll<HTMLButtonElement>('.wallet-row').forEach((row) => {
     row.onclick = () => {
       state.evmPicker = undefined;
@@ -749,6 +766,14 @@ function paintCta(): void {
 
 document.addEventListener('click', () => {
   if (state.pickerOpen) { state.pickerOpen = false; render(); }
+});
+
+// Escape closes whatever is open. A modal with no way out but a precise click
+// on the backdrop is the other half of "impossible to use".
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (state.evmPicker) { state.evmPicker = undefined; render(); }
+  else if (state.pickerOpen) { state.pickerOpen = false; render(); }
 });
 
 // ------------------------------------------------------------------- actions
