@@ -353,12 +353,12 @@ supported` hint error rather than anything that points at the cause.
 
 ```bash
 bash setup.sh                       # npm install + link node_modules
-bash test.sh                        # everything, 169 tests
+bash test.sh                        # everything, 172 tests
 (cd cairo && snforge test)          # 101
 (cd evm/script && bash test.sh)     # 44
 (cd tools && node spec.test.js)     # 7
 (cd tools && node compliance-export.test.js)  # 11
-(cd frontend && node src/notes.test.mjs)      # 6
+(cd frontend && node src/notes.test.mjs)      # 9
 ```
 
 **Behaviour:** wire-format vectors pinned from both chains; sequence ordering and

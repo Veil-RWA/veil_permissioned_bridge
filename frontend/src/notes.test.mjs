@@ -8,6 +8,7 @@
 import assert from 'node:assert';
 import {
   deriveChannelKey, computeNoteId, viewingKeyAsScalar, derivePublicViewingKey,
+  viewingKeyTypedData, viewingKeyMessageHash, viewingKeyFromSignature,
 } from 'veil-sdk';
 
 const OWNER = 0xa11cen;
@@ -58,6 +59,32 @@ test('a different owner derives a different note', () => {
   const mine = computeNoteId(deriveChannelKey(OWNER, KEY, OWNER, EXPECTED_PUBKEY), TOKEN, 0);
   const theirs = computeNoteId(deriveChannelKey(0xb0bn, KEY, 0xb0bn, EXPECTED_PUBKEY), TOKEN, 0);
   assert.notStrictEqual(mine, theirs);
+});
+
+// The SDK is compiled against starknet v6 and runs here against v10. Note
+// derivation only touches @scure/starknet, but the viewing-key path pulls in
+// `ec`, `shortString` and `typedData` from starknet itself -- so exercise it,
+// or a v10 rename would surface as a failed signature in a user's wallet.
+test('the viewing-key path works against the installed starknet', () => {
+  const chainId = '0x534e5f5345504f4c4941';
+  const td = viewingKeyTypedData(chainId);
+  assert.strictEqual(td.primaryType, 'Message');
+  assert.strictEqual(td.domain.name, 'Veil');
+});
+
+test('the viewing-key message hash is deterministic', () => {
+  const chainId = '0x534e5f5345504f4c4941';
+  const a = viewingKeyMessageHash(chainId, '0xa11ce');
+  const b = viewingKeyMessageHash(chainId, '0xa11ce');
+  assert.strictEqual(a, b);
+  assert.notStrictEqual(a, viewingKeyMessageHash(chainId, '0xb0b'));
+});
+
+test('a signature reduces to a viewing key deterministically', () => {
+  // Same wallet, same signature, same key -- which is why nothing is stored.
+  const k = viewingKeyFromSignature(['0x1234', '0x5678']);
+  assert.strictEqual(viewingKeyFromSignature(['0x1234', '0x5678']), k);
+  assert.notStrictEqual(viewingKeyFromSignature(['0x9999', '0x5678']), k);
 });
 
 console.log(`\n${passed} passed`);
