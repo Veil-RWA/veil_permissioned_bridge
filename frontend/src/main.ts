@@ -58,8 +58,9 @@ type State = {
   token: { symbol: string; decimals: number };
   amount: string;
   recipient: string;
-  /// Wallets to choose between, when more than one is installed.
-  evmPicker?: evm.EvmWallet[];
+  /// Wallets to choose between, when more than one is installed. Only ever
+  /// wallets actually DETECTED -- the app never suggests installing one.
+  picker?: { chain: 'sn' | 'evm'; wallets: Array<{ id: string; name: string; icon: string }> };
   evmStatus?: evm.EvmStatus;
   mirror?: sn.MirrorStatus;
   claimableEvm: bigint;
@@ -493,11 +494,11 @@ function transferView(): string {
            title="Disconnect">Disconnect</button></div>`
     : `<button id="connect-dest" class="max" style="margin-top:8px">Connect ${esc(toStarknet() ? starknetLabel : evmLabel)} wallet</button>`;
 
-  const walletPicker = state.evmPicker?.length
+  const walletPicker = state.picker?.wallets.length
     ? `<div class="wallet-picker">
-        <div class="picker-title">Choose a wallet</div>
-        ${state.evmPicker.map((w) => `
-          <button class="wallet-row" data-wallet="${esc(w.rdns)}">
+        <div class="picker-title">Choose a ${esc(state.picker.chain === 'sn' ? starknetLabel : evmLabel)} wallet</div>
+        ${state.picker.wallets.map((w) => `
+          <button class="wallet-row" data-wallet="${esc(w.id)}" data-wallet-chain="${esc(state.picker!.chain)}">
             ${w.icon ? `<img class="wallet-icon" src="${esc(w.icon)}" alt="" />` : '<span class="wallet-icon"></span>'}
             <span>${esc(w.name)}</span>
           </button>`).join('')}
@@ -664,8 +665,10 @@ function render(): void {
 
   document.querySelectorAll<HTMLButtonElement>('.wallet-row').forEach((row) => {
     row.onclick = () => {
-      state.evmPicker = undefined;
-      void doConnectEvm(row.dataset.wallet!);
+      const chain = row.dataset.walletChain;
+      const id = row.dataset.wallet!;
+      state.picker = undefined;
+      void (chain === 'sn' ? doConnectStarknet(id) : doConnectEvm(id));
     };
   });
 
@@ -832,7 +835,7 @@ async function doConnectEvm(rdns?: string): Promise<void> {
   } catch (e: any) {
     // More than one wallet installed: show the picker instead of guessing.
     if (e?.name === 'PickEvmWalletError') {
-      state.evmPicker = e.wallets;
+      state.picker = { chain: 'evm', wallets: e.wallets.map((w: evm.EvmWallet) => ({ id: w.rdns, name: w.name, icon: w.icon })) };
       state.error = undefined;
     } else {
       state.error = e?.message ?? String(e);
@@ -848,11 +851,11 @@ async function doConnectEvm(rdns?: string): Promise<void> {
 /// The signature IS the point of connecting here: it produces the private
 /// viewing key, and the key is what says where this holder's notes live. Asking
 /// for it as a separate step later would be asking twice for one decision.
-async function doConnectStarknet(): Promise<void> {
+async function doConnectStarknet(id?: string): Promise<void> {
   state.busy = 'Connecting…'; paintCta();
   const previous = state.snSession?.address;
   try {
-    state.snSession = await sn.connectStarknet();
+    state.snSession = await sn.connectStarknet(id);
     // A different account means the cached viewing key belongs to someone else.
     // Drop it rather than decrypting one account's notes with another's key.
     if (previous && previous !== state.snSession.address) {
@@ -870,7 +873,12 @@ async function doConnectStarknet(): Promise<void> {
     if (toStarknet()) state.recipient = state.snSession.address;
     state.error = undefined;
   } catch (e: any) {
-    state.error = e?.message ?? String(e);
+    if (e?.name === 'PickSnWalletError') {
+      state.picker = { chain: 'sn', wallets: e.wallets };
+      state.error = undefined;
+    } else {
+      state.error = e?.message ?? String(e);
+    }
     state.busy = undefined;
     await refreshAll();
     return;
@@ -937,7 +945,7 @@ async function doClaimStarknet(): Promise<void> {
   } catch (e: any) {
     // More than one wallet installed: show the picker instead of guessing.
     if (e?.name === 'PickEvmWalletError') {
-      state.evmPicker = e.wallets;
+      state.picker = { chain: 'evm', wallets: e.wallets.map((w: evm.EvmWallet) => ({ id: w.rdns, name: w.name, icon: w.icon })) };
       state.error = undefined;
     } else {
       state.error = e?.message ?? String(e);
