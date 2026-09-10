@@ -754,7 +754,7 @@ function paintNavWallets(): void {
   // Only when an EVM wallet is connected and there is something to claim:
   // a faucet button with nowhere to send the tokens is just a dead control.
   const faucet = state.evmSession && faucetTokens().length
-    ? `<button class="nav-chip" id="get-faucets" ${state.busy ? 'disabled' : ''}>
+    ? `<button class="nav-chip is-action" id="get-faucets" ${state.busy ? 'disabled' : ''}>
          ${state.busy === FAUCET_BUSY ? 'Claiming…' : 'Get faucets'}
        </button>`
     : '';

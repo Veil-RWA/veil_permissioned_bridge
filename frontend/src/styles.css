@@ -458,6 +458,24 @@ a { color: inherit; }
 .nav-chip:hover { color: var(--ink); border-color: var(--warn-line); }
 .nav-chip.is-on { color: var(--ink); }
 .nav-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--good); flex: none; }
+
+/* "Get faucets" is an ACTION, not a status chip. In the muted chip style it sat
+   next to two connected wallets reading as disabled -- the same grey the CTA
+   uses for exactly that. Gold, like the primary CTA, because it is one. */
+.nav-chip.is-action {
+  background: linear-gradient(180deg, var(--gold-lift), var(--gold));
+  border-color: var(--gold-deep);
+  color: var(--on-gold);
+  font-weight: 680;
+}
+.nav-chip.is-action:hover:not(:disabled) {
+  filter: brightness(1.06);
+  color: var(--on-gold);
+}
+.nav-chip.is-action:disabled {
+  background: var(--panel-2); color: var(--faint);
+  border-color: var(--rule); cursor: not-allowed; filter: none;
+}
 @media (max-width: 720px) {
   .nav-chip { padding: 6px 9px; font-size: 11px; }
 }
