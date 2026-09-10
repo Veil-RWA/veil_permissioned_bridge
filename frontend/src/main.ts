@@ -58,6 +58,8 @@ type State = {
   token: { symbol: string; decimals: number };
   amount: string;
   recipient: string;
+  /// Wallets to choose between, when more than one is installed.
+  evmPicker?: evm.EvmWallet[];
   evmStatus?: evm.EvmStatus;
   mirror?: sn.MirrorStatus;
   claimableEvm: bigint;
@@ -180,9 +182,18 @@ function eligibilityCard(): string {
 
   const list = gates();
   const failing = list.filter((g) => g.ok === false);
+  // A check that could not be RUN is not a check that passed. Reads fail when
+  // an RPC is down or an address is wrong, and answering "cleared to bridge"
+  // because nothing came back is the one answer a compliance gate must never
+  // give. Unknown is its own state.
+  const unknown = list.filter((g) => g.ok === null);
   const onlyRecipient = failing.length > 0 && failing.every((g) => g.label.startsWith('Recipient'));
-  const tone = failing.length === 0 ? 'is-good' : onlyRecipient ? 'is-warn' : 'is-bad';
-  const head = failing.length === 0 ? 'Cleared to bridge' : onlyRecipient ? 'Will arrive held' : 'Blocked';
+  const tone = failing.length > 0
+    ? (onlyRecipient ? 'is-warn' : 'is-bad')
+    : unknown.length > 0 ? 'is-warn' : 'is-good';
+  const head = failing.length > 0
+    ? (onlyRecipient ? 'Will arrive held' : 'Blocked')
+    : unknown.length > 0 ? 'Could not check' : 'Cleared to bridge';
 
   const items = list.map((g) => {
     const mark = g.ok === null ? '<span class="mark idk">·</span>'
@@ -402,6 +413,16 @@ function ctaLabel(): { text: string; disabled: boolean; note: string } {
 
   if (toStarknet()) {
     const s = state.evmStatus;
+    // No status means the eligibility reads did not come back. Bridging anyway
+    // spends gas on an escrow the token will revert, and skips the approval
+    // step because the allowance is unknown too.
+    if (!s) {
+      return {
+        text: 'Cannot check eligibility',
+        disabled: true,
+        note: 'The source chain did not answer. Nothing is sent until it does.',
+      };
+    }
     if (s && !s.verified) return { text: 'Not eligible to bridge', disabled: true, note: 'Your address is not verified on the source registry.' };
     if (s && !s.lockboxRegistered) return { text: 'Bridge not approved by issuer', disabled: true, note: 'The lockbox must be a registered identity before any escrow can succeed.' };
     if (s && s.allowance < amount) return { text: `Approve ${state.token.symbol}`, disabled: false, note: 'One approval, then the transfer.' };
@@ -468,11 +489,24 @@ function transferView(): string {
   const destWallet = toStarknet() ? state.snSession?.address : state.evmSession?.address;
   const connectDest = destWallet
     ? `<div class="dest-wallet"><span class="dest-mark"></span><span class="mono">${esc(short(destWallet, 10, 8))}</span>
-         <span class="dest-note">your connected wallet</span></div>`
+         <button class="dest-disconnect" data-disconnect="${toStarknet() ? 'sn' : 'evm'}"
+           title="Disconnect">Disconnect</button></div>`
     : `<button id="connect-dest" class="max" style="margin-top:8px">Connect ${esc(toStarknet() ? starknetLabel : evmLabel)} wallet</button>`;
+
+  const walletPicker = state.evmPicker?.length
+    ? `<div class="wallet-picker">
+        <div class="picker-title">Choose a wallet</div>
+        ${state.evmPicker.map((w) => `
+          <button class="wallet-row" data-wallet="${esc(w.rdns)}">
+            ${w.icon ? `<img class="wallet-icon" src="${esc(w.icon)}" alt="" />` : '<span class="wallet-icon"></span>'}
+            <span>${esc(w.name)}</span>
+          </button>`).join('')}
+      </div>`
+    : '';
 
   return `
   ${banner}
+  ${walletPicker}
   <div class="card">
     <div class="leg">
       <div class="leg-head"><span>From</span><span class="leg-balance">${esc(balance)}</span></div>
@@ -628,6 +662,17 @@ function render(): void {
   const claimEvm = document.getElementById('claim-evm');
   if (claimEvm) claimEvm.onclick = () => void doClaimEvm();
 
+  document.querySelectorAll<HTMLButtonElement>('.wallet-row').forEach((row) => {
+    row.onclick = () => {
+      state.evmPicker = undefined;
+      void doConnectEvm(row.dataset.wallet!);
+    };
+  });
+
+  document.querySelectorAll<HTMLButtonElement>('[data-disconnect]').forEach((b) => {
+    b.onclick = () => void doDisconnect(b.dataset.disconnect as 'sn' | 'evm');
+  });
+
   const cta = document.getElementById('cta');
   if (cta) cta.onclick = () => void onCta();
 }
@@ -775,16 +820,23 @@ async function refreshAll(): Promise<void> {
 }
 
 
-async function doConnectEvm(): Promise<void> {
+async function doConnectEvm(rdns?: string): Promise<void> {
   state.busy = 'Connecting…'; paintCta();
   try {
-    state.evmSession = await evm.connectEvm();
+    state.evmSession = await evm.connectEvm(rdns);
+    watchEvm();
     state.token = await evm.tokenInfo(state.asset);
     // Bridging back, the destination is this wallet. Not a choice.
     if (!toStarknet()) state.recipient = state.evmSession.address;
     state.error = undefined;
   } catch (e: any) {
-    state.error = e?.message ?? String(e);
+    // More than one wallet installed: show the picker instead of guessing.
+    if (e?.name === 'PickEvmWalletError') {
+      state.evmPicker = e.wallets;
+      state.error = undefined;
+    } else {
+      state.error = e?.message ?? String(e);
+    }
   } finally {
     state.busy = undefined;
     await refreshAll();
@@ -883,7 +935,13 @@ async function doClaimStarknet(): Promise<void> {
     await sn.claimPending(state.snSession, state.asset, owner);
     state.notice = 'Released on ' + starknetLabel + '.';
   } catch (e: any) {
-    state.error = e?.message ?? String(e);
+    // More than one wallet installed: show the picker instead of guessing.
+    if (e?.name === 'PickEvmWalletError') {
+      state.evmPicker = e.wallets;
+      state.error = undefined;
+    } else {
+      state.error = e?.message ?? String(e);
+    }
   } finally {
     state.busy = undefined;
     await refreshAll();
@@ -1020,6 +1078,79 @@ async function boot(): Promise<void> {
   if (!state.asset.available) return;
   try { state.token = await evm.tokenInfo(state.asset); } catch { /* catalogue stands */ }
   render();
+
+  // Re-attach wallets the user already authorised HERE, without prompting, so a
+  // reload keeps the session instead of looking like a disconnect. Neither call
+  // throws: nothing to restore is the normal case.
+  const [snSession, evmSession] = await Promise.all([
+    sn.restoreStarknet(),
+    evm.restoreEvm(),
+  ]);
+  if (snSession) {
+    state.snSession = snSession;
+    if (toStarknet()) state.recipient = snSession.address;
+  }
+  if (evmSession) {
+    state.evmSession = evmSession;
+    if (!toStarknet()) state.recipient = evmSession.address;
+    watchEvm();
+  }
+  if (!snSession && !evmSession) return;
+
+  await refreshAll();
+  // A cached viewing key needs no signature, so the note comes back silently.
+  if (snSession && toStarknet() && state.asset.poolReady) await doFindNote();
+}
+
+async function doDisconnect(which: 'sn' | 'evm'): Promise<void> {
+  if (which === 'sn') {
+    const previous = state.snSession?.address;
+    await sn.disconnectStarknet();
+    // The viewing key decrypts every note this account owns, so it must not
+    // outlive the session -- especially on a shared machine.
+    if (previous) {
+      const chainId = (await sn.snProvider.getChainId()) as unknown as string;
+      forgetViewingKey(previous, chainId);
+    }
+    state.snSession = undefined;
+    state.noteCtx = undefined;
+    state.noteId = '';
+    state.noteSlot = undefined;
+    state.noteEmptySlot = undefined;
+    state.noteClaimedBy = undefined;
+    state.noteSearched = false;
+    state.mirror = undefined;
+    if (toStarknet()) state.recipient = '';
+  } else {
+    unwatchEvm?.();
+    unwatchEvm = undefined;
+    evm.disconnectEvm();
+    state.evmSession = undefined;
+    state.evmStatus = undefined;
+    state.claimableEvm = 0n;
+    if (!toStarknet()) state.recipient = '';
+  }
+  state.error = undefined;
+  await refreshAll();
+}
+
+/// The wallet can change account or network under the page. Without this the
+/// UI keeps showing the old address while the next signature comes from the new
+/// one -- which on a bridge means escrowing from an account the checks were
+/// never run against.
+let unwatchEvm: (() => void) | undefined;
+function watchEvm(): void {
+  unwatchEvm?.();
+  if (!state.evmSession) return;
+  unwatchEvm = evm.watchEvmWallet(state.evmSession, () => {
+    void (async () => {
+      const next = await evm.restoreEvm();
+      state.evmSession = next;
+      if (!toStarknet()) state.recipient = next?.address ?? '';
+      if (!next) state.notice = 'Wallet disconnected.';
+      await refreshAll();
+    })();
+  });
 }
 
 void boot();

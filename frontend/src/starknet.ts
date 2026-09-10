@@ -3,50 +3,130 @@
 //
 // starknet.js v10 is required, not preferred. Live Sepolia serves RPC spec
 // 0.10.x and v6 speaks 0.7 -- a v6 client cannot talk to the network at all.
-// v10 also ships its own `WalletAccount`, so wallet support needs no extra
-// dependency; the only thing it does not do is discover the injected object,
-// which is a dozen lines below.
+//
+// Wallet DISCOVERY is get-starknet's job, not ours. Enumerating
+// `window.starknet_*` by hand picks whichever wallet happens to enumerate
+// first, which is the wrong wallet as soon as someone has both Argent and
+// Braavos; get-starknet shows the picker, remembers the choice, and knows about
+// wallets that are installed but not yet injected. It is independent of the
+// starknet.js version -- it hands back a `StarknetWindowObject`, which v10's
+// own `WalletAccount` takes -- so the two compose exactly as they should.
+// (`@starknet-io/get-starknet` is the maintained package; plain `get-starknet`
+// is deprecated.)
+//
+// This mirrors veilx/app/src/main.ts, which is the reference for the flow.
 
+import { connect as pickWallet, disconnect as dropWallet } from '@starknet-io/get-starknet';
+import type { StarknetWindowObject } from '@starknet-io/get-starknet';
 import { RpcProvider, WalletAccount, CallData, uint256 } from 'starknet';
-import { STARKNET_RPC, DEFAULT_GAS_LIMIT } from './config';
+import { STARKNET_RPC, DEFAULT_GAS_LIMIT, deployment } from './config';
 import type { Asset } from './assets';
 
 export const snProvider = new RpcProvider({ nodeUrl: STARKNET_RPC });
 
 export type SnSession = { address: string; account: WalletAccount };
 
-type Injected = { id?: string; name?: string; icon?: string; version?: string };
+/// Chain ids as felts, so a wallet's answer can be compared whatever form it
+/// comes back in.
+const CHAIN_IDS: Record<string, string> = {
+  'starknet-sepolia': '0x534e5f5345504f4c4941', // SN_SEPOLIA
+  'starknet-mainnet': '0x534e5f4d41494e',       // SN_MAIN
+};
 
-/// Wallets inject themselves as `window.starknet_<id>`. This is what
-/// get-starknet does internally; doing it here keeps the dependency count at
-/// zero and avoids a library pinned to an older starknet.js.
-export function availableWallets(): Array<{ key: string; label: string; provider: unknown }> {
-  const found: Array<{ key: string; label: string; provider: unknown }> = [];
-  const w = window as unknown as Record<string, Injected>;
-  for (const key of Object.keys(w)) {
-    if (!key.startsWith('starknet')) continue;
-    const provider = w[key];
-    if (!provider || typeof provider !== 'object') continue;
-    // `window.starknet` is an alias for the last-used wallet; prefer the
-    // explicit `starknet_x` entries so the user sees real names.
-    if (key === 'starknet' && found.length) continue;
-    found.push({ key, label: provider.name ?? key.replace('starknet_', ''), provider });
-  }
-  return found;
+const expectedChainId = (): string | undefined =>
+  CHAIN_IDS[deployment.starknetNetwork ?? 'starknet-sepolia'];
+
+/// Ask the wallet which chain it is on. Wallets differ: newer ones answer
+/// `wallet_requestChainId`, older expose `chainId`, and the account can answer
+/// from its own provider. Try in that order.
+async function walletChainId(
+  wallet: StarknetWindowObject, account: WalletAccount | null
+): Promise<string | null> {
+  const w = wallet as unknown as {
+    request?: (a: { type: string }) => Promise<string>;
+    chainId?: string;
+  };
+  try { if (w?.request) return await w.request({ type: 'wallet_requestChainId' }); }
+  catch { /* fall through */ }
+  if (w?.chainId) return w.chainId;
+  // v10's WalletAccount has no getChainId of its own; the shared provider
+  // answers for the node this app is pointed at, which is the same question.
+  try { if (account) return (await snProvider.getChainId()) as unknown as string; }
+  catch { /* fall through */ }
+  return null;
 }
 
-export async function connectStarknet(preferred?: string): Promise<SnSession> {
-  const wallets = availableWallets();
-  if (!wallets.length) {
-    throw new Error('No Starknet wallet found. Install Argent X or Braavos.');
+const sameChain = (a: string, b: string): boolean => {
+  try { return BigInt(a) === BigInt(b); } catch { return a === b; }
+};
+
+/// Did the user explicitly connect in this browser before?
+///
+/// get-starknet keeps its own "last wallet" memory that is shared across sites
+/// and predates this app, so `neverAsk` alone will happily attach a wallet the
+/// user never approved HERE. Gate it on our own flag instead.
+const AUTOCONNECT = 'veil-bridge:autoconnect';
+const mayAutoConnect = (): boolean => {
+  try { return localStorage.getItem(AUTOCONNECT) === '1'; } catch { return false; }
+};
+const rememberConnect = (on: boolean): void => {
+  try {
+    if (on) localStorage.setItem(AUTOCONNECT, '1');
+    else localStorage.removeItem(AUTOCONNECT);
+  } catch { /* storage unavailable */ }
+};
+
+export class WrongChainError extends Error {
+  constructor(public readonly got: string, public readonly want: string) {
+    super(`Your wallet is on ${got}, but this deployment is on ${want}. Switch network and reconnect.`);
+    this.name = 'WrongChainError';
   }
-  const chosen = preferred ? wallets.find((w) => w.key === preferred) ?? wallets[0] : wallets[0];
-  const account = await WalletAccount.connect(
-    { nodeUrl: STARKNET_RPC },
-    chosen.provider as never
-  );
+}
+
+async function sessionFrom(wallet: StarknetWindowObject): Promise<SnSession> {
+  const account = await WalletAccount.connect({ nodeUrl: STARKNET_RPC }, wallet as never);
   if (!account.address) throw new Error('Wallet did not return an address.');
+
+  // A wallet on the wrong network is NOT connected. Showing it as connected
+  // invites signing for a chain where none of these contracts exist -- and on
+  // this bridge it would derive a viewing key against the wrong chain id, so
+  // the note ids would be silently wrong too.
+  const want = expectedChainId();
+  const got = await walletChainId(wallet, account);
+  if (want && got && !sameChain(got, want)) {
+    throw new WrongChainError(got, deployment.starknetNetwork ?? 'starknet-sepolia');
+  }
+
   return { address: account.address, account };
+}
+
+/// Open the picker and connect. `alwaysAsk` so the user chooses their wallet
+/// rather than getting whichever one enumerated first.
+export async function connectStarknet(): Promise<SnSession> {
+  const wallet = await pickWallet({ modalMode: 'alwaysAsk', modalTheme: 'dark' });
+  if (!wallet) throw new Error('No wallet selected.');
+  const session = await sessionFrom(wallet);
+  rememberConnect(true);
+  return session;
+}
+
+/// Re-attach to an already-authorised wallet on load, without a prompt, so a
+/// reload keeps the session instead of appearing to disconnect. Returns
+/// undefined when there is nothing to restore -- never throws.
+export async function restoreStarknet(): Promise<SnSession | undefined> {
+  if (!mayAutoConnect()) return undefined;
+  try {
+    const wallet = await pickWallet({ modalMode: 'neverAsk' });
+    if (!wallet) return undefined;
+    return await sessionFrom(wallet);
+  } catch {
+    return undefined;   // not authorised, locked, or on the wrong chain
+  }
+}
+
+export async function disconnectStarknet(): Promise<void> {
+  rememberConnect(false);
+  try { await dropWallet({ clearLastWallet: true }); } catch { /* already gone */ }
 }
 
 async function callFelts(

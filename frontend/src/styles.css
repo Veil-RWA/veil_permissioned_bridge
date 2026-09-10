@@ -447,7 +447,29 @@ a { color: inherit; }
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--good); flex: none;
 }
-.dest-note { margin-left: auto; font-size: 11px; color: var(--faint); }
+.dest-disconnect {
+  margin-left: auto; border: 0; background: transparent; cursor: pointer;
+  font: inherit; font-size: 11px; color: var(--faint); padding: 2px 4px;
+}
+.dest-disconnect:hover { color: var(--warn); }
+
+/* Which EVM wallet, when more than one announced itself. */
+.wallet-picker {
+  max-width: 420px; margin: 0 auto 14px; padding: 14px;
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 14px;
+}
+.picker-title {
+  font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--faint); margin-bottom: 10px;
+}
+.wallet-row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 10px 11px; margin-top: 6px; cursor: pointer;
+  background: var(--ground); border: 1px solid var(--rule); border-radius: 10px;
+  font: inherit; font-size: 13px; color: var(--ink); text-align: left;
+}
+.wallet-row:hover { border-color: var(--warn-line); }
+.wallet-icon { width: 20px; height: 20px; border-radius: 5px; flex: none; }
 
 .delivery { margin-top: 12px; }
 .delivery-head {

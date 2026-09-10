@@ -1,7 +1,15 @@
 // The EVM leg: wallet connection, reads, and the two writes (approve, bridgeOut).
+//
+// Discovery is EIP-6963, not `window.ethereum`. The legacy property is a single
+// slot that every installed wallet overwrites, so with more than one installed
+// the user gets whichever won that race rather than the one they meant. EIP-6963
+// replaces it with a handshake: the page dispatches `eip6963:requestProvider`,
+// each wallet answers with `eip6963:announceProvider` carrying its own provider
+// and identity, and the user picks. `window.ethereum` stays as the fallback for
+// wallets too old to announce.
 
 import { BrowserProvider, Contract, JsonRpcProvider, zeroPadValue, type Eip1193Provider } from 'ethers';
-import { evmChain, EVM_RPC, DEFAULT_GAS_LIMIT } from './config';
+import { evmChain, EVM_RPC, EXPLORER_EVM, DEFAULT_GAS_LIMIT } from './config';
 import type { Asset } from './assets';
 
 const LOCKBOX_ABI = [
@@ -10,7 +18,7 @@ const LOCKBOX_ABI = [
   'function totalEscrowed() view returns (uint256)',
   'function claimable(address) view returns (uint256)',
   'function claim(address recipient) returns (uint256)',
-  'event BridgedOut(address indexed sender, uint256 amount, uint64 seq, bytes32 guid, uint8 delivery)',
+  'event BridgedOut(address indexed sender, uint256 amount, uint64 seq, bytes32 guid)',
 ];
 
 const TOKEN_ABI = [
@@ -35,28 +43,163 @@ declare global {
 
 export const readProvider = new JsonRpcProvider(EVM_RPC);
 
-export type EvmSession = { address: string; provider: BrowserProvider };
+export type EvmSession = {
+  address: string;
+  provider: BrowserProvider;
+  /// Which wallet this is, so the UI can name it and a reload can find it again.
+  wallet: EvmWallet;
+};
 
-export async function connectEvm(): Promise<EvmSession> {
-  if (!window.ethereum) {
-    throw new Error('No EVM wallet found. Install MetaMask or another injected wallet.');
+/// One announced wallet. `rdns` is the stable identity (e.g. "io.metamask");
+/// `uuid` changes per page load, so it is not what we remember.
+export type EvmWallet = { rdns: string; name: string; icon: string };
+
+type ProviderDetail = { info: EvmWallet & { uuid: string }; provider: Eip1193Provider };
+
+const announced = new Map<string, ProviderDetail>();
+
+// Start listening immediately: a wallet may announce before anything calls
+// `discoverEvmWallets`, and the spec's whole point is that either order works.
+if (typeof window !== 'undefined') {
+  window.addEventListener('eip6963:announceProvider', (event: Event) => {
+    const detail = (event as CustomEvent<ProviderDetail>).detail;
+    if (detail?.info?.rdns) announced.set(detail.info.rdns, detail);
+  });
+  window.dispatchEvent(new Event('eip6963:requestProvider'));
+}
+
+/// Every wallet that has announced itself, plus the legacy injected one when
+/// nothing announced at all.
+export function discoverEvmWallets(): EvmWallet[] {
+  // Ask again: wallets injected after the first request still answer.
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('eip6963:requestProvider'));
   }
-  const provider = new BrowserProvider(window.ethereum);
-  await provider.send('eth_requestAccounts', []);
+  const list = [...announced.values()].map((d) => d.info);
+  if (!list.length && typeof window !== 'undefined' && window.ethereum) {
+    return [{ rdns: LEGACY_RDNS, name: 'Injected wallet', icon: '' }];
+  }
+  return list;
+}
 
-  // Prompt a switch rather than silently transacting on the wrong chain, which
-  // would fail deep inside the contract with an unhelpful revert.
+const LEGACY_RDNS = 'legacy.injected';
+
+function providerFor(rdns: string): Eip1193Provider | undefined {
+  if (rdns === LEGACY_RDNS) return window.ethereum;
+  return announced.get(rdns)?.provider;
+}
+
+/// Remember WHICH wallet, so a reload reconnects to the same one silently.
+const LAST_WALLET = 'veil-bridge:evm-wallet';
+const rememberWallet = (rdns: string | null): void => {
+  try {
+    if (rdns) localStorage.setItem(LAST_WALLET, rdns);
+    else localStorage.removeItem(LAST_WALLET);
+  } catch { /* storage unavailable */ }
+};
+const lastWallet = (): string | null => {
+  try { return localStorage.getItem(LAST_WALLET); } catch { return null; }
+};
+
+/// Put the wallet on the chain this deployment lives on.
+///
+/// A wallet that has never heard of the chain answers 4902, which is a request
+/// for the chain's details rather than a refusal -- so supply them and retry
+/// instead of telling the user to go and do it by hand.
+async function ensureChain(provider: BrowserProvider): Promise<void> {
+  if (!evmChain) return;
   const net = await provider.getNetwork();
-  if (evmChain && Number(net.chainId) !== evmChain.id) {
-    try {
-      await provider.send('wallet_switchEthereumChain', [{ chainId: evmChain.hex }]);
-    } catch {
+  if (Number(net.chainId) === evmChain.id) return;
+  try {
+    await provider.send('wallet_switchEthereumChain', [{ chainId: evmChain.hex }]);
+  } catch (e: any) {
+    const code = e?.code ?? e?.data?.originalError?.code;
+    if (code !== 4902) {
       throw new Error(`Switch your wallet to ${evmChain.label} and try again.`);
     }
+    await provider.send('wallet_addEthereumChain', [{
+      chainId: evmChain.hex,
+      chainName: evmChain.label,
+      nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+      rpcUrls: [EVM_RPC],
+      blockExplorerUrls: [EXPLORER_EVM],
+    }]);
   }
+}
 
+async function sessionFor(rdns: string, prompt: boolean): Promise<EvmSession | undefined> {
+  const injected = providerFor(rdns);
+  if (!injected) return undefined;
+  const provider = new BrowserProvider(injected);
+
+  // `eth_accounts` never prompts: it answers only for an already-authorised
+  // wallet, which is what a silent restore needs.
+  const accounts: string[] = prompt
+    ? await provider.send('eth_requestAccounts', [])
+    : await provider.send('eth_accounts', []);
+  if (!accounts?.length) return undefined;
+
+  await ensureChain(provider);
   const signer = await provider.getSigner();
-  return { address: await signer.getAddress(), provider };
+  const info = announced.get(rdns)?.info;
+  return {
+    address: await signer.getAddress(),
+    provider,
+    wallet: info ?? { rdns, name: 'Injected wallet', icon: '' },
+  };
+}
+
+export async function connectEvm(rdns?: string): Promise<EvmSession> {
+  const wallets = discoverEvmWallets();
+  if (!wallets.length) {
+    throw new Error('No EVM wallet found. Install MetaMask or another injected wallet.');
+  }
+  const chosen = rdns ?? (wallets.length === 1 ? wallets[0].rdns : undefined);
+  if (!chosen) throw new PickEvmWalletError(wallets);
+
+  const session = await sessionFor(chosen, true);
+  if (!session) throw new Error('Wallet did not return an account.');
+  rememberWallet(chosen);
+  return session;
+}
+
+/// More than one wallet is installed, so the user has to say which. Thrown
+/// rather than guessing -- picking one for them is how the wrong account signs.
+export class PickEvmWalletError extends Error {
+  constructor(public readonly wallets: EvmWallet[]) {
+    super('Choose a wallet');
+    this.name = 'PickEvmWalletError';
+  }
+}
+
+/// Reconnect on load without a prompt. Never throws.
+export async function restoreEvm(): Promise<EvmSession | undefined> {
+  const rdns = lastWallet();
+  if (!rdns) return undefined;
+  try { return await sessionFor(rdns, false); } catch { return undefined; }
+}
+
+export function disconnectEvm(): void {
+  rememberWallet(null);
+}
+
+/// Tell the app when the wallet switches account or network underneath it.
+/// Without this the page keeps showing the old address and signs with the new.
+export function watchEvmWallet(
+  session: EvmSession, onChange: () => void
+): () => void {
+  const injected = providerFor(session.wallet.rdns) as unknown as {
+    on?: (e: string, h: (...a: unknown[]) => void) => void;
+    removeListener?: (e: string, h: (...a: unknown[]) => void) => void;
+  };
+  if (!injected?.on) return () => {};
+  const handler = () => onChange();
+  injected.on('accountsChanged', handler);
+  injected.on('chainChanged', handler);
+  return () => {
+    injected.removeListener?.('accountsChanged', handler);
+    injected.removeListener?.('chainChanged', handler);
+  };
 }
 
 export type TokenInfo = { symbol: string; decimals: number };
