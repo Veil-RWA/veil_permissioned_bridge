@@ -32,6 +32,18 @@ const TOKEN_ABI = [
   'function isFrozen(address) view returns (bool)',
 ];
 
+const FAUCET_ABI = [
+  'function claim() returns (uint256)',
+  'function faucetAmount() view returns (uint256)',
+  'function lastClaimed(address) view returns (uint256)',
+  'function hasClaimed(address) view returns (bool)',
+  'function faucetCooldown() view returns (uint256)',
+];
+
+const ROUTER_ABI = [
+  'function claimAll(address[] tokens, address recipient) returns (uint256)',
+];
+
 const REGISTRY_ABI = [
   'function isVerified(address) view returns (bool)',
   'function investorCountry(address) view returns (uint16)',
@@ -299,6 +311,37 @@ export async function evmStatus(asset: Asset, account: string): Promise<EvmStatu
     ]);
 
   return { balance, allowance, verified, frozen, paused, lockboxRegistered, country };
+}
+
+/// Stock the connected wallet with every faucet asset, in ONE transaction.
+///
+/// An EOA cannot batch calls, so the router does it: `claimAll` calls
+/// `claimFor(recipient)` on each token and SKIPS any that refuses, which is what
+/// makes a second visit work when one asset is still on cooldown.
+///
+/// Falls back to a single `claim()` when no router is deployed -- one prompt for
+/// the selected asset is better than no faucet at all.
+export async function claimFaucets(
+  session: EvmSession, tokens: string[], router?: string
+): Promise<{ hash: string; batched: boolean }> {
+  const signer = await session.provider.getSigner();
+  if (router && tokens.length > 1) {
+    const contract = new Contract(router, ROUTER_ABI, signer);
+    const tx = await contract.claimAll(tokens, session.address);
+    await tx.wait();
+    return { hash: tx.hash, batched: true };
+  }
+  const contract = new Contract(tokens[0], FAUCET_ABI, signer);
+  const tx = await contract.claim();
+  await tx.wait();
+  return { hash: tx.hash, batched: false };
+}
+
+/// Is a faucet configured on this token at all? `faucetAmount` of 0 disables it,
+/// and a token that is not a faucet has no such function.
+export async function faucetAmount(token: string): Promise<bigint> {
+  const contract = new Contract(token, FAUCET_ABI, readProvider);
+  return await contract.faucetAmount().catch(() => 0n);
 }
 
 /// A release that arrived while the recipient was ineligible is held here.

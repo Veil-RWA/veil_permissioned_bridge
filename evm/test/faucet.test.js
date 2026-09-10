@@ -296,4 +296,90 @@ test('the lockbox can escrow once the issuer registers it', async () => {
   eq((await token.call('balanceOf', [lockbox.hex])).decoded[0], UNITS(10), 'escrowed');
 });
 
+// ── The router: one transaction for every asset ──────────────────────────────
+
+async function multiAsset(chain, registry, count = 3) {
+  const tokens = [];
+  for (let i = 0; i < count; i++) {
+    const compliance = await chain.deploy('FaucetCompliance', [addr(OWNER)]);
+    const token = await chain.deploy('FaucetERC3643', [
+      `Asset ${i}`, `A${i}`, addr(OWNER), registry.hex, compliance.hex,
+    ]);
+    await registry.call('addAgent', [token.hex], OWNER);
+    await compliance.call('bindToken', [token.hex], OWNER);
+    await token.call('configureFaucet', [UNITS(1000), 840, 0], OWNER);
+    tokens.push(token);
+  }
+  return tokens;
+}
+
+test('claimFor credits the recipient, not the caller', async () => {
+  const { token } = await setup();
+  succeeds(await token.call('claimFor', [addr(BOB)], ALICE), 'claimFor');
+  eq((await token.call('balanceOf', [addr(BOB)])).decoded[0], UNITS(1000), 'recipient paid');
+  eq((await token.call('balanceOf', [addr(ALICE)])).decoded[0], 0n, 'caller not paid');
+});
+
+test('the cooldown follows the recipient, not the caller', async () => {
+  // Otherwise claiming through the router would bypass it.
+  const { token } = await setup();
+  await token.call('configureFaucet', [UNITS(1000), 840, 3600], OWNER);
+  succeeds(await token.call('claimFor', [addr(BOB)], ALICE), 'first');
+  reverts(await token.call('claimFor', [addr(BOB)], MALLORY), 'FaucetCooldown');
+});
+
+test('the router stocks every asset in one call', async () => {
+  const chain = await Chain_.create();
+  const registry = await chain.deploy('FaucetIdentityRegistry', [addr(OWNER)]);
+  const tokens = await multiAsset(chain, registry);
+  const router = await chain.deploy('FaucetRouter');
+
+  const res = await router.call('claimAll', [tokens.map((t) => t.hex), addr(ALICE)], ALICE);
+  succeeds(res, 'claimAll');
+  eq(res.decoded[0], 3n, 'all three claimed');
+  for (const t of tokens) {
+    eq((await t.call('balanceOf', [addr(ALICE)])).decoded[0], UNITS(1000), 'balance');
+  }
+});
+
+test('one asset on cooldown does not deny the others', async () => {
+  // The second visit: without skipping, a single cooled-down asset would revert
+  // the whole batch and the tester would get nothing.
+  const chain = await Chain_.create();
+  const registry = await chain.deploy('FaucetIdentityRegistry', [addr(OWNER)]);
+  const tokens = await multiAsset(chain, registry);
+  const router = await chain.deploy('FaucetRouter');
+
+  await tokens[0].call('configureFaucet', [UNITS(1000), 840, 3600], OWNER);
+  await tokens[0].call('claimFor', [addr(ALICE)], ALICE);   // now on cooldown
+
+  const res = await router.call('claimAll', [tokens.map((t) => t.hex), addr(ALICE)], ALICE);
+  succeeds(res, 'claimAll with one refusing');
+  eq(res.decoded[0], 2n, 'the other two still claimed');
+  eq((await tokens[1].call('balanceOf', [addr(ALICE)])).decoded[0], UNITS(1000), 'second');
+  eq((await tokens[2].call('balanceOf', [addr(ALICE)])).decoded[0], UNITS(1000), 'third');
+});
+
+test('the router keeps nothing for itself', async () => {
+  const chain = await Chain_.create();
+  const registry = await chain.deploy('FaucetIdentityRegistry', [addr(OWNER)]);
+  const tokens = await multiAsset(chain, registry, 2);
+  const router = await chain.deploy('FaucetRouter');
+  await router.call('claimAll', [tokens.map((t) => t.hex), addr(ALICE)], ALICE);
+  for (const t of tokens) {
+    eq((await t.call('balanceOf', [router.hex])).decoded[0], 0n, 'router holds nothing');
+  }
+});
+
+test('a non-faucet address in the list is skipped, not fatal', async () => {
+  const chain = await Chain_.create();
+  const registry = await chain.deploy('FaucetIdentityRegistry', [addr(OWNER)]);
+  const tokens = await multiAsset(chain, registry, 2);
+  const router = await chain.deploy('FaucetRouter');
+  const list = [tokens[0].hex, addr(0xdead), tokens[1].hex];
+  const res = await router.call('claimAll', [list, addr(ALICE)], ALICE);
+  succeeds(res, 'claimAll with a bogus entry');
+  eq(res.decoded[0], 2n, 'the two real ones claimed');
+});
+
 run('faucet: deployable ERC-3643 assets for Ethereum Sepolia');

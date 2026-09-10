@@ -127,6 +127,14 @@ function resolve(meta: AssetMeta): Asset {
 
 export const assets: Asset[] = CATALOGUE.map(resolve);
 
+/// Faucet tokens on the source chain, for "Get faucets". Only assets that are
+/// actually deployed: claiming one that is not would revert on a dead address.
+export const faucetTokens = (): string[] =>
+  assets.filter((a) => a.available && a.addresses.evm?.token)
+        .map((a) => a.addresses.evm!.token!);
+
+export const faucetRouter = (): string | undefined => deployment.faucet?.router;
+
 export const availableAssets = (): Asset[] => assets.filter((a) => a.available);
 
 export function assetById(id: string): Asset {

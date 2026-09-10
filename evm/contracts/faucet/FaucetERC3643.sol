@@ -161,19 +161,36 @@ contract FaucetERC3643 {
     /// (`registry.addAgent(token)`). Without that the call reverts inside the
     /// registry rather than here.
     function claim() external returns (uint256) {
+        return _claimFor(msg.sender);
+    }
+
+    /// Claim on someone else's behalf, crediting THEM.
+    ///
+    /// This is what lets one transaction stock a tester with every asset: an
+    /// EOA cannot batch calls, so `FaucetRouter` calls this once per token with
+    /// the tester as `recipient`. Open to anyone, which costs nothing here --
+    /// claiming for a stranger only gives them test tokens, and the cooldown is
+    /// keyed on the RECIPIENT, so it cannot be used to drain the faucet faster
+    /// than they could themselves.
+    function claimFor(address recipient) external returns (uint256) {
+        return _claimFor(recipient);
+    }
+
+    function _claimFor(address recipient) private returns (uint256) {
         if (faucetAmount == 0) revert FaucetDisabled();
-        uint256 next = lastClaimed[msg.sender] + faucetCooldown;
-        if (hasClaimed[msg.sender] && block.timestamp < next) {
+        if (recipient == address(0)) revert ZeroAddress();
+        uint256 next = lastClaimed[recipient] + faucetCooldown;
+        if (hasClaimed[recipient] && block.timestamp < next) {
             revert FaucetCooldown(next);
         }
-        hasClaimed[msg.sender] = true;
-        lastClaimed[msg.sender] = block.timestamp;
+        hasClaimed[recipient] = true;
+        lastClaimed[recipient] = block.timestamp;
 
-        if (!IRegistry(identityRegistry).isVerified(msg.sender)) {
-            IRegistry(identityRegistry).registerIdentity(msg.sender, faucetCountry);
+        if (!IRegistry(identityRegistry).isVerified(recipient)) {
+            IRegistry(identityRegistry).registerIdentity(recipient, faucetCountry);
         }
-        _mint(msg.sender, faucetAmount);
-        emit FaucetClaimed(msg.sender, faucetAmount);
+        _mint(recipient, faucetAmount);
+        emit FaucetClaimed(recipient, faucetAmount);
         return faucetAmount;
     }
 

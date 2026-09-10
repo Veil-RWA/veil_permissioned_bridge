@@ -20,7 +20,7 @@ import {
   isDeployed, evmLabel, starknetLabel, EXPLORER_EVM, EXPLORER_SN, LZ_SCAN, STARKNET_FEE_TOKEN,
   PROVER_ENDPOINT, PROVER_MASTER_ADDRESS,
 } from './config';
-import { assets, defaultAsset, type Asset } from './assets';
+import { assets, defaultAsset, faucetTokens, faucetRouter, type Asset } from './assets';
 import { short, units, parseUnits, duration, ago } from './format';
 import * as evm from './evm';
 import * as sn from './starknet';
@@ -751,9 +751,21 @@ function paintNavWallets(): void {
        </button>`
     : `<button class="nav-chip" data-nav-wallet="${chain}">Connect ${esc(label)}</button>`;
 
+  // Only when an EVM wallet is connected and there is something to claim:
+  // a faucet button with nowhere to send the tokens is just a dead control.
+  const faucet = state.evmSession && faucetTokens().length
+    ? `<button class="nav-chip" id="get-faucets" ${state.busy ? 'disabled' : ''}>
+         ${state.busy === FAUCET_BUSY ? 'Claiming…' : 'Get faucets'}
+       </button>`
+    : '';
+
   host.innerHTML =
+    faucet +
     chip('evm', evmLabel, state.evmSession?.address) +
     chip('sn', starknetLabel, state.snSession?.address);
+
+  const getFaucets = document.getElementById('get-faucets');
+  if (getFaucets) getFaucets.onclick = () => void doGetFaucets();
 
   host.querySelectorAll<HTMLButtonElement>('[data-nav-wallet]').forEach((b) => {
     const chain = b.dataset.navWallet as 'evm' | 'sn';
@@ -762,6 +774,40 @@ function paintNavWallets(): void {
       ? doDisconnect(chain === 'evm' ? 'evm' : 'sn')
       : chain === 'evm' ? doConnectEvm() : doConnectStarknet());
   });
+}
+
+const FAUCET_BUSY = 'Claiming test tokens…';
+
+/// Stock the connected wallet with every faucet asset.
+///
+/// One transaction through the router when there is one. These are TESTNET
+/// assets with a public claim, so this mints to the connected address and
+/// registers it -- neither of which a real issuer would ever let an app do.
+async function doGetFaucets(): Promise<void> {
+  if (!state.evmSession) return doConnectEvm();
+  const tokens = faucetTokens();
+  if (!tokens.length) {
+    state.error = 'No faucet assets are deployed on this route.';
+    render();
+    return;
+  }
+  state.busy = FAUCET_BUSY; paintCta(); render();
+  try {
+    const { batched } = await evm.claimFaucets(state.evmSession, tokens, faucetRouter());
+    state.notice = batched
+      ? `Claimed test tokens for all ${tokens.length} assets.`
+      : 'Claimed test tokens.';
+    state.error = undefined;
+  } catch (e: any) {
+    // A repeat visit hits the cooldown, which is not a failure worth a red banner.
+    const message = e?.shortMessage ?? e?.message ?? String(e);
+    state.error = /cooldown/i.test(message)
+      ? 'Already claimed recently — the faucet has a cooldown.'
+      : message;
+  } finally {
+    state.busy = undefined;
+    await refreshAll();
+  }
 }
 
 function paintCta(): void {

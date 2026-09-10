@@ -36,6 +36,15 @@ export type Deployment = {
   /// cannot reach another's holders. The Veil pool below is shared, which is a
   /// different thing: a pool holds many assets without mixing their books.
   assets?: Record<string, AssetDeployment>;
+  /// Testnet faucet infrastructure, when the assets were deployed by
+  /// `deploy-faucet.js` rather than by an issuer.
+  faucet?: {
+    /// Shared identity registry.
+    registry?: string;
+    /// Batches claimFor across every token, so "Get faucets" is one
+    /// transaction rather than one per asset.
+    router?: string;
+  };
   /// Veil itself, which is not per-asset.
   veil?: {
     /// The main Veil pool. Where bridged assets land unless the user names
