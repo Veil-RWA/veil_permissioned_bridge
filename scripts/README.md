@@ -97,7 +97,31 @@ Read the report before applying. It names any module it could **not** mirror,
 and flags the max balance as event-derived — the only field with no getter to
 confirm against.
 
-## 6. Bridge one, for real
+## 6. Pool delivery (optional)
+
+Only needed if transfers should land in a Veil pool note rather than a wallet.
+Three things, and the first two are on the POOL's side:
+
+1. The pool allow-lists the gateway: `set_adapter_allowed(<gateway>, true)`.
+   Without it every fill is declined and the amount lands in the wallet.
+2. The gateway registers the pool as an eligible holder of the twin — the pool
+   is a Starknet contract with no EVM identity, so it cannot receive one
+   otherwise:
+
+```bash
+node wire.js --asset gold --pool 0x<veil-pool> --holder 0x<veil-pool>
+```
+
+3. Each holder needs an **open note** to fill. The bridge does not create one —
+   that is the pool's proven `create_open_note` path. The app derives the
+   holder's note id from their viewing key, finds one that is still fillable,
+   and says so when there is none.
+
+Then the holder claims it on the gateway (`register_note`, one transaction from
+the app) so nobody else can name it. `fill_open_note` is one-shot and note ids
+are public, so without a claim anyone could burn a note with dust.
+
+## 7. Bridge one, for real
 
 ```bash
 cd ../scripts
