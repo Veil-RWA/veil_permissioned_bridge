@@ -8,6 +8,8 @@ echo "=== evm: build + tests ==="
 (cd evm/script && bash test.sh)
 echo "=== tools: spec encoding ==="
 (cd tools && node spec.test.js)
+echo "=== note derivation: SDK vs the pool formula ==="
+(cd frontend && node src/notes.test.mjs)
 echo "=== compliance export: live token -> spec -> calldata ==="
 (cd tools && node compliance-export.test.js)
 echo

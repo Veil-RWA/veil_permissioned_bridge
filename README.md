@@ -18,13 +18,13 @@ linking against it.
 bridge/
   cairo/          Starknet side — own Scarb package (veil_bridge)
     src/          mirrored_registry, bridged_token, gateway, compliance/rules
-    tests/        97 tests (incl. 26 attack, 14 pool delivery)
+    tests/        101 tests (incl. 26 attack, 14 pool delivery)
   evm/            EVM side — own solc build + harness
     contracts/    VeilERC3643Lockbox, ComplianceReader, BridgeMsgCodec, lz/
     test/         44 tests (incl. 15 attack tests) + a JSON-RPC test node
   tools/          export/apply the compliance rule set — 7 unit + 11 integration
   scripts/        testnet deployment: deploy, wire, bridge one for real
-  frontend/       the bridge app (Vite + TypeScript)
+  frontend/       the bridge app (Vite + TypeScript), vendoring the Veil SDK
 ```
 
 ## Contracts
@@ -262,17 +262,31 @@ rather than paying the attacker), and `admin_rebind` undoes it. Preventing it
 outright would mean pre-registering every recipient, which breaks first-time
 bridging entirely. See `binding_capture_is_griefing_only_and_the_owner_can_undo_it`.
 
-## Does the app need the Veil SDK?
+## The Veil SDK
 
-**No.** The bridge touches the lockbox, the gateway, the mirror and the twin —
-plain contract calls over ethers and starknet.js. The SDK (`sdk/` in the pool
-repo) is proof machinery: notes, viewing keys, nullifiers, DvP, the prover.
-None of it is on a bridging path, and the app has no dependency on it.
+The app vendors it (`frontend/vendor/veil-sdk`, refreshed by `npm run sync-sdk`)
+and needs it for one thing: **deriving the holder's open-note id**.
 
-Depositing the bridged tokens into a Veil pool afterwards **does** need the SDK
-— proofs, viewing keys, the derive/settle pair. That belongs in the pool's own
-app, which already exists, rather than being reimplemented here. This app stops
-at the wallet.
+A note id is not a handle a user can type. It is
+
+```
+note_id     = H(NOTE_ID, channel_key, token, index)
+channel_key = H(DERIVE_CHANNEL_KEY, owner, scalar(k), owner, pub(k))
+```
+
+where `k` is the holder's private viewing key, recovered from a wallet signature
+over fixed typed data and never leaving the device. So the id is bound to the
+holder by construction — nobody else can derive it, and only that key can spend
+the note. The app derives it, walks the holder's slots for one that is still
+fillable, and uses that.
+
+The derivation crosses a language boundary — TypeScript in the SDK, Cairo in the
+pool — so both sides are pinned against the same fixed vectors
+(`cairo/tests/test_note_derivation.cairo`, `frontend/src/notes.test.mjs`). A
+drift there would have the app naming a note the pool has never seen, every pool
+delivery falling back to the wallet, and nothing erroring.
+
+Wallet delivery uses none of it: that path is plain contract calls.
 
 ## The app
 
@@ -339,11 +353,12 @@ supported` hint error rather than anything that points at the cause.
 
 ```bash
 bash setup.sh                       # npm install + link node_modules
-bash test.sh                        # everything, 159 tests
-(cd cairo && snforge test)          # 97
+bash test.sh                        # everything, 169 tests
+(cd cairo && snforge test)          # 101
 (cd evm/script && bash test.sh)     # 44
 (cd tools && node spec.test.js)     # 7
 (cd tools && node compliance-export.test.js)  # 11
+(cd frontend && node src/notes.test.mjs)      # 6
 ```
 
 **Behaviour:** wire-format vectors pinned from both chains; sequence ordering and

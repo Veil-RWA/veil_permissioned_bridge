@@ -1,0 +1,111 @@
+// Open notes, derived rather than typed.
+//
+// A note id is not an arbitrary handle. It is
+//
+//   note_id = H(DOMAIN.NOTE_ID, channel_key, token, index)
+//   channel_key = H(DOMAIN.DERIVE_CHANNEL_KEY, owner, k, owner, pub(k))
+//
+// where `k` is the owner's private viewing key. So the id is bound to the owner
+// by construction: nobody else can derive it, and only the key it came from can
+// spend the note. Asking a user to paste one was wrong twice over -- it cannot
+// be produced by hand, and a pasted id that is not yours sends your tokens into
+// someone else's note.
+//
+// Everything here happens on the device. The viewing key is recovered from a
+// wallet signature over fixed typed data (STRK20 §5.4) and never leaves.
+
+import {
+  deriveViewingKey, deriveChannelKey, computeNoteId, TWO_POW_128,
+} from 'veil-sdk';
+import { snProvider } from './starknet';
+import type { SnSession } from './starknet';
+import type { Asset } from './assets';
+
+export type NoteContext = {
+  owner: bigint;
+  viewingKey: bigint;
+  publicViewingKey: bigint;
+  channelKey: bigint;
+};
+
+/// Recover the owner's viewing key and self-channel key.
+///
+/// Signing is idempotent: the typed data is fixed, so the same wallet always
+/// produces the same key. Nothing is stored -- rederive it per session rather
+/// than keeping a secret in browser storage.
+export async function deriveNoteContext(session: SnSession): Promise<NoteContext> {
+  const chainId = await snProvider.getChainId();
+  const { privateKey, publicKey } = await deriveViewingKey(
+    session.account as never, chainId as unknown as string
+  );
+  const owner = BigInt(session.address);
+  // The SELF channel: owner -> owner, which is where a holder's own notes live.
+  const channelKey = deriveChannelKey(owner, privateKey, owner, publicKey);
+  return { owner, viewingKey: privateKey, publicViewingKey: publicKey, channelKey };
+}
+
+export type NoteSlot = {
+  noteId: string;
+  index: number;
+  /// The pool has this note recorded as an open note awaiting a fill.
+  exists: boolean;
+  /// Still empty, so it can still be filled. A filled note is one-shot.
+  fillable: boolean;
+};
+
+const felt = (v: bigint): string => '0x' + v.toString(16);
+
+async function readNote(pool: string, noteId: string): Promise<{ raw: bigint; token: bigint }> {
+  const [notes, record] = await Promise.all([
+    snProvider.callContract({
+      contractAddress: pool, entrypoint: 'get_notes_batch', calldata: ['1', noteId],
+    }).catch(() => ['0', '0'] as string[]),
+    snProvider.callContract({
+      contractAddress: pool, entrypoint: 'get_open_note', calldata: [noteId],
+    }).catch(() => ['0'] as string[]),
+  ]);
+  const n = notes as string[];
+  return { raw: BigInt(n[1] ?? n[0] ?? 0), token: BigInt((record as string[])[0] ?? 0) };
+}
+
+/// Walk this owner's note slots and report the first that can still be filled,
+/// mirroring the pool's own `next_note_slot_internal`.
+///
+/// An open note is encoded as `2^128` while empty and `2^128 + amount` once
+/// filled, so "exists and still empty" is exactly `raw == 2^128`.
+export async function findFillableNote(
+  asset: Asset, ctx: NoteContext, maxIndex = 12
+): Promise<NoteSlot | undefined> {
+  const pool = asset.addresses.starknet?.pool;
+  const token = asset.addresses.starknet?.token;
+  if (!pool || !token) return undefined;
+
+  for (let index = 0; index < maxIndex; index++) {
+    const noteId = felt(computeNoteId(ctx.channelKey, BigInt(token), index));
+    const { raw, token: recorded } = await readNote(pool, noteId);
+    if (recorded !== 0n && raw === TWO_POW_128) {
+      return { noteId, index, exists: true, fillable: true };
+    }
+  }
+  return undefined;
+}
+
+/// The next slot that holds nothing at all — where a new open note would be
+/// created. Reported so the UI can say what to create rather than only that
+/// nothing was found.
+export async function nextEmptySlot(
+  asset: Asset, ctx: NoteContext, maxIndex = 12
+): Promise<NoteSlot | undefined> {
+  const pool = asset.addresses.starknet?.pool;
+  const token = asset.addresses.starknet?.token;
+  if (!pool || !token) return undefined;
+
+  for (let index = 0; index < maxIndex; index++) {
+    const noteId = felt(computeNoteId(ctx.channelKey, BigInt(token), index));
+    const { raw, token: recorded } = await readNote(pool, noteId);
+    if (raw === 0n && recorded === 0n) {
+      return { noteId, index, exists: false, fillable: false };
+    }
+  }
+  return undefined;
+}

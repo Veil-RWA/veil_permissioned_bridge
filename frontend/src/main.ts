@@ -24,6 +24,7 @@ import { short, units, parseUnits, duration, ago } from './format';
 import * as evm from './evm';
 import * as sn from './starknet';
 import { load as loadHistory, record, update, type Transfer } from './history';
+import { deriveNoteContext, findFillableNote, nextEmptySlot, type NoteContext, type NoteSlot } from './notes';
 
 type View = 'transfer' | 'history';
 type Direction = 'toStarknet' | 'toEvm';
@@ -36,6 +37,10 @@ type State = {
   delivery: evm.Delivery;
   noteId: string;
   noteClaimedBy?: string;
+  noteCtx?: NoteContext;
+  noteSlot?: NoteSlot;
+  noteEmptySlot?: NoteSlot;
+  noteSearched: boolean;
   evmSession?: evm.EvmSession;
   snSession?: sn.SnSession;
   token: { symbol: string; decimals: number };
@@ -59,6 +64,7 @@ const state: State = {
   pickerOpen: false,
   delivery: 'wallet',
   noteId: '',
+  noteSearched: false,
   token: { symbol: initial.symbol, decimals: initial.decimals },
   amount: '',
   recipient: '',
@@ -228,30 +234,52 @@ function deliveryControls(): string {
     BigInt(claimed) === BigInt(state.snSession.address);
   const unclaimed = claimed !== undefined && BigInt(claimed) === 0n;
 
-  let noteState = '';
-  if (pool && state.noteId) {
-    if (claimed === undefined) noteState = '';
-    else if (mine) noteState = `<p class="delivery-note is-ok">Claimed by you. Ready to fill.</p>`;
-    else if (unclaimed) {
-      noteState = `<p class="delivery-note is-warn">Not claimed yet. Claim it, or the transfer lands in the wallet above.</p>
-        <button id="claim-note" class="max" style="margin-top:8px" ${state.snSession ? '' : 'disabled'}>
-          ${state.snSession ? 'Claim this note' : 'Connect Starknet wallet'}</button>`;
-    } else {
-      noteState = `<p class="delivery-note is-warn">Claimed by another address, so it cannot be filled for you. The transfer would land in the wallet above.</p>`;
-    }
-  }
-
   return `<div class="delivery">
     <div class="seg" role="radiogroup" aria-label="Where it lands">
       <button class="seg-btn${pool ? '' : ' is-on'}" data-delivery="wallet" role="radio" aria-checked="${!pool}">Wallet</button>
       <button class="seg-btn${pool ? ' is-on' : ''}" data-delivery="pool" role="radio" aria-checked="${pool}">Veil pool</button>
     </div>
-    ${pool
-      ? `<input id="note" class="recipient" placeholder="0x… open note id" value="${esc(state.noteId)}" />
-         ${noteState}
-         <p class="delivery-note">Filled into your open note, so the position arrives in the pool rather than as a public balance. If it cannot be filled it lands in the wallet above — never lost.</p>`
-      : `<p class="delivery-note">Arrives as a public balance on ${esc(starknetLabel)}.</p>`}
+    ${pool ? noteSection(claimed, Boolean(mine), Boolean(unclaimed)) :
+      `<p class="delivery-note">Arrives as a public balance on ${esc(starknetLabel)}.</p>`}
   </div>`;
+}
+
+/// The note is DERIVED from the holder's viewing key, never typed. A pasted id
+/// cannot be produced by hand, and one that is not yours sends your tokens into
+/// somebody else's note.
+function noteSection(claimed: string | undefined, mine: boolean, unclaimed: boolean): string {
+  if (!state.snSession) {
+    return `<p class="delivery-note">Connect your ${esc(starknetLabel)} wallet to find your open note.</p>
+      <button id="derive-note" class="max" style="margin-top:8px" disabled>Connect wallet first</button>`;
+  }
+  if (!state.noteCtx) {
+    return `<p class="delivery-note">Your note is derived from your viewing key, which never leaves this device. One signature, no transaction.</p>
+      <button id="derive-note" class="max" style="margin-top:8px">Find my open note</button>`;
+  }
+  if (!state.noteId) {
+    const empty = state.noteEmptySlot;
+    return `<p class="delivery-note is-warn">No fillable open note found for this asset.
+      ${empty ? `The next slot would be index ${empty.index}.` : ''}
+      Create one in the Veil app, then look again.</p>
+      <button id="derive-note" class="max" style="margin-top:8px">Look again</button>`;
+  }
+
+  const state_line = mine
+    ? `<p class="delivery-note is-ok">Claimed by you. Ready to fill.</p>`
+    : unclaimed
+      ? `<p class="delivery-note is-warn">Claim it first, or the transfer lands in the wallet above.</p>
+         <button id="claim-note" class="max" style="margin-top:8px">Claim this note</button>`
+      : claimed !== undefined
+        ? `<p class="delivery-note is-warn">Claimed by another address, so it cannot be filled for you.</p>`
+        : '';
+
+  return `<div class="note-found">
+      <span class="note-label">Your open note</span>
+      <span class="note-id mono">${esc(short(state.noteId, 10, 8))}</span>
+      <span class="note-index">slot ${state.noteSlot?.index ?? 0}</span>
+    </div>
+    ${state_line}
+    <p class="delivery-note">Derived from your viewing key, so only you can spend it. If it cannot be filled the amount lands in the wallet above — never lost.</p>`;
 }
 
 /// A note id must be a non-zero felt. Refusing an empty one saves a message
@@ -458,15 +486,14 @@ function render(): void {
   document.querySelectorAll<HTMLButtonElement>('.seg-btn').forEach((b) => {
     b.onclick = () => {
       state.delivery = b.dataset.delivery as evm.Delivery;
-      if (state.delivery === 'wallet') { state.noteId = ''; state.noteClaimedBy = undefined; }
+      if (state.delivery === 'wallet') {
+        state.noteId = ''; state.noteClaimedBy = undefined; state.noteSearched = false;
+      }
       render();
     };
   });
-  const note = document.getElementById('note') as HTMLInputElement | null;
-  if (note) {
-    note.oninput = () => { state.noteId = note.value.trim(); state.noteClaimedBy = undefined; paintCta(); };
-    note.onchange = () => void refreshNoteOwner();
-  }
+  const deriveNote = document.getElementById('derive-note');
+  if (deriveNote) deriveNote.onclick = () => void doFindNote();
   const claimNote = document.getElementById('claim-note');
   if (claimNote) claimNote.onclick = () => void doClaimNote();
 
@@ -612,6 +639,27 @@ async function doConnectStarknet(destOnly = false): Promise<void> {
     state.error = e?.message ?? String(e);
   }
   await refreshAll();
+}
+
+/// Derive the viewing key, find this holder's fillable note, and read who has
+/// claimed it. One signature; no transaction and nothing stored.
+async function doFindNote(): Promise<void> {
+  if (!state.snSession) return doConnectStarknet();
+  state.busy = 'Check your wallet…'; paintCta();
+  try {
+    if (!state.noteCtx) state.noteCtx = await deriveNoteContext(state.snSession);
+    const slot = await findFillableNote(state.asset, state.noteCtx);
+    state.noteSlot = slot;
+    state.noteId = slot?.noteId ?? '';
+    state.noteSearched = true;
+    if (!slot) state.noteEmptySlot = await nextEmptySlot(state.asset, state.noteCtx);
+    state.error = undefined;
+  } catch (e: any) {
+    state.error = e?.message ?? String(e);
+  } finally {
+    state.busy = undefined;
+    if (state.noteId) await refreshNoteOwner(); else render();
+  }
 }
 
 async function refreshNoteOwner(): Promise<void> {

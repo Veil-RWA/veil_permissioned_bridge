@@ -453,3 +453,12 @@ a { color: inherit; }
 .delivery-note.is-ok { color: var(--good); }
 .delivery-note.is-warn { color: var(--warn); }
 .delivery .recipient { margin-top: 9px; }
+
+.note-found {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin-top: 9px; padding: 9px 11px;
+  background: var(--ground); border: 1px solid var(--rule); border-radius: 10px;
+}
+.note-label { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--faint); }
+.note-id { font-size: 13px; color: var(--ink); }
+.note-index { font-size: 11px; color: var(--muted); margin-left: auto; }

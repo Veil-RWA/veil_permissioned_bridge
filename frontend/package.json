@@ -5,14 +5,17 @@
   "type": "module",
   "description": "Bridge permissioned ERC-3643 assets between EVM chains and Starknet.",
   "scripts": {
-    "dev": "node scripts/pull-deployment.mjs && vite",
-    "build": "node scripts/pull-deployment.mjs && node scripts/typecheck.mjs && vite build",
+    "dev": "node scripts/sync-sdk.mjs --if-present && node scripts/pull-deployment.mjs && vite",
+    "build": "node scripts/sync-sdk.mjs --if-present && node scripts/pull-deployment.mjs && node scripts/typecheck.mjs && vite build",
     "preview": "vite preview",
-    "typecheck": "node scripts/typecheck.mjs"
+    "typecheck": "node scripts/typecheck.mjs",
+    "sync-sdk": "node scripts/sync-sdk.mjs",
+    "test": "node src/notes.test.mjs"
   },
   "dependencies": {
     "ethers": "^6.13.0",
-    "starknet": "^10.0.2"
+    "starknet": "^10.0.2",
+    "veil-sdk": "file:./vendor/veil-sdk"
   },
   "devDependencies": {
     "typescript": "^5.4.0",
