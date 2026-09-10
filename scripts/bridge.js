@@ -19,7 +19,9 @@ const { ethers } = require('ethers');
 const { RpcProvider } = require('starknet');
 const { compile } = require('../evm/test/harness');
 const { network } = require('./config');
-const { parseArgs, loadDeployment, requireEnv, assetSlot, step, done } = require('./lib');
+const {
+  parseArgs, loadDeployment, requireEnv, assetSlot, u256FromFelts, httpFetch, step, done,
+} = require('./lib');
 
 const ERC3643_ABI = [
   'function identityRegistry() view returns (address)',
@@ -168,25 +170,29 @@ async function main() {
   process.exit(1);
 }
 
+function snProvider(rpc) {
+  const options = { nodeUrl: rpc };
+  if (process.env.STARKNET_HTTP_FETCH === '1') options.baseFetch = httpFetch;
+  return new RpcProvider(options);
+}
+
 async function starknetSupply(rpc, token) {
-  const provider = new RpcProvider({ nodeUrl: rpc });
+  const provider = snProvider(rpc);
   try {
     const r = await provider.callContract({ contractAddress: token, entrypoint: 'total_supply', calldata: [] });
-    const arr = Array.isArray(r) ? r : r.result;
-    return BigInt(arr[0]) + (BigInt(arr[1] || 0) << 128n);
+    return u256FromFelts(r);
   } catch (_) {
     return 0n;
   }
 }
 
 async function starknetPending(rpc, gateway, recipient) {
-  const provider = new RpcProvider({ nodeUrl: rpc });
+  const provider = snProvider(rpc);
   try {
     const r = await provider.callContract({
       contractAddress: gateway, entrypoint: 'pending_of', calldata: [recipient],
     });
-    const arr = Array.isArray(r) ? r : r.result;
-    return BigInt(arr[0]) + (BigInt(arr[1] || 0) << 128n);
+    return u256FromFelts(r);
   } catch (_) {
     return 0n;
   }

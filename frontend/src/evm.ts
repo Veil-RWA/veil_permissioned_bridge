@@ -9,6 +9,7 @@ const LOCKBOX_ABI = [
   'function bridgeOut(uint256 amount, bytes32 snRecipient, uint128 gasLimit, address refundAddress) payable returns (bytes32)',
   'function totalEscrowed() view returns (uint256)',
   'function claimable(address) view returns (uint256)',
+  'function claim(address recipient) returns (uint256)',
   'event BridgedOut(address indexed sender, uint256 amount, uint64 seq, bytes32 guid)',
 ];
 
@@ -104,6 +105,26 @@ export async function evmStatus(asset: Asset, account: string): Promise<EvmStatu
     ]);
 
   return { balance, allowance, verified, frozen, paused, lockboxRegistered, country };
+}
+
+/// A release that arrived while the recipient was ineligible is held here.
+/// Nothing is lost; it stays claimable once the registry accepts them again.
+export async function claimableOf(asset: Asset, account: string): Promise<bigint> {
+  if (!asset.available) return 0n;
+  const lockbox = new Contract(asset.addresses.evm!.lockbox!, LOCKBOX_ABI, readProvider);
+  return await lockbox.claimable(account).catch(() => 0n);
+}
+
+/// Permissionless: the funds can only go to the recipient the message named,
+/// so anyone may pay the gas to release them.
+export async function claimHeld(
+  session: EvmSession, asset: Asset, recipient: string
+): Promise<string> {
+  const signer = await session.provider.getSigner();
+  const lockbox = new Contract(asset.addresses.evm!.lockbox!, LOCKBOX_ABI, signer);
+  const tx = await lockbox.claim(recipient);
+  await tx.wait();
+  return tx.hash;
 }
 
 export const snRecipientWord = (starknetAddress: string): string =>

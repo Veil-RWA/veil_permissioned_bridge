@@ -297,6 +297,18 @@ rather than paying the attacker), and `admin_rebind` undoes it. Preventing it
 outright would mean pre-registering every recipient, which breaks first-time
 bridging entirely. See `binding_capture_is_griefing_only_and_the_owner_can_undo_it`.
 
+## Does the app need the Veil SDK?
+
+**No.** The bridge touches the lockbox, the gateway, the mirror and the twin —
+plain contract calls over ethers and starknet.js. The SDK (`sdk/` in the pool
+repo) is proof machinery: notes, viewing keys, nullifiers, DvP, the prover.
+None of it is on a bridging path, and the app has no dependency on it.
+
+Depositing the bridged tokens into a Veil pool afterwards **does** need the SDK
+— proofs, viewing keys, the derive/settle pair. That belongs in the pool's own
+app, which already exists, rather than being reimplemented here. This app stops
+at the wallet.
+
 ## The app
 
 `frontend/` is a Vite + TypeScript app in the shape of a bridge UI: sticky
@@ -329,6 +341,27 @@ cd frontend && npm run dev      # reads ../deployments/<pair>.json
 
 With no deployment present it renders a "not deployed" state rather than failing
 to build, so the UI can be worked on before anything is on chain.
+
+## Toolchain requirements, learned the hard way
+
+**starknet.js v10 is mandatory.** Live Sepolia serves RPC spec 0.10.x; v6 speaks
+0.7 and cannot talk to the network at all. Both the scripts and the app are on
+v10. Its `Account` constructor takes an options object — passing the old
+positional form silently reads the provider as the options bag and fails later
+with `Cannot read properties of undefined`.
+
+`get-starknet` is gone: v10 ships `WalletAccount`, and wallet discovery is a
+dozen lines over `window.starknet_*`. One less dependency pinned to an older
+starknet.js.
+
+**The old Blast API endpoints are discontinued** and return an error telling you
+to migrate. Anything defaulting to them fails immediately. The defaults now
+point at `starknet-sepolia.drpc.org`, verified serving 0.10.3.
+
+**starknet-devnet cannot run these contracts.** 0.7.1 and 0.9.1 both reject
+Sierra 1.8.0 (`No matching CasmContractClass found`). Sepolia accepts it —
+verified against a live scarb-2.17 class on chain. Devnet is only useful here
+for exercising the scripts up to the declare.
 
 ## Deploying
 

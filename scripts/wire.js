@@ -13,12 +13,12 @@
 // one side and bridging immediately is the classic way to strand a message.
 
 const { ethers } = require('ethers');
-const { Account, RpcProvider, Contract, CallData } = require('starknet');
+
 const { compile } = require('../evm/test/harness');
 const { network } = require('./config');
 const {
   parseArgs, loadDeployment, saveDeployment, requireEnv, assetSlot, starknetPeer, evmPeer,
-  peerCalldata, step, done,
+  peerCalldata, starknetAccount, feltToBigInt, step, done,
 } = require('./lib');
 
 const GATEWAY_ABI = [
@@ -52,8 +52,7 @@ async function main() {
   const wallet = new ethers.Wallet(evmKey, provider);
   const lockbox = new ethers.Contract(slot.evm.lockbox, compile()['VeilERC3643Lockbox'].abi, wallet);
 
-  const snProvider = new RpcProvider({ nodeUrl: snRpc });
-  const account = new Account(snProvider, snAccount, snKey);
+  const { provider: snProvider, account } = starknetAccount(snRpc, snAccount, snKey);
 
   slot.wired = slot.wired || {};
 
@@ -67,7 +66,7 @@ async function main() {
     return snProvider.callContract({ contractAddress, entrypoint, calldata });
   }
 
-  const asFelt = (r) => BigInt(Array.isArray(r) ? r[0] : r.result ? r.result[0] : r);
+  const asFelt = feltToBigInt;
 
   // ---- Starknet internal links -------------------------------------------
   step(1, 6, 'registry.set_gateway');

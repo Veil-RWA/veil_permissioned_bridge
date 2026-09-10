@@ -25,6 +25,21 @@ shared lockbox would let one issuer's pause or compromise reach another issuer's
 holders, and would blur the escrow invariant. So run the sequence below once per
 asset. Class declarations are cached across assets, so the second one is cheaper.
 
+## Already deployed? Skip to the addresses
+
+If the contracts exist and you just have their addresses:
+
+```bash
+node set-addresses.js --asset gold \
+  --lockbox 0x... --token 0x... \
+  --registry 0x... --gateway 0x... --compliance 0x... --twin 0x...
+```
+
+It writes the same deployment file the deploy scripts produce, so `wire.js`,
+`bridge.js` and the app pick it up with no further steps. Shapes are validated:
+a Starknet address in an EVM slot is rejected rather than failing later inside a
+contract call.
+
 ## 1. EVM side
 
 ```bash

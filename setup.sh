@@ -13,7 +13,7 @@ ln -sfn ../evm/script/node_modules tools/node_modules
 echo "== deployment scripts =="
 (cd scripts && npm install)
 
-echo "== app =="
+echo "== app (starknet.js v10; v6 cannot reach live Sepolia) =="
 (cd frontend && npm install)
 
 echo

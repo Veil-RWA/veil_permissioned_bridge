@@ -64,7 +64,7 @@ export const starknetLabel = STARKNET_LABELS[deployment.starknetNetwork ?? 'star
 export const EVM_RPC = import.meta.env.VITE_EVM_RPC_URL
   ?? 'https://ethereum-sepolia-rpc.publicnode.com';
 export const STARKNET_RPC = import.meta.env.VITE_STARKNET_RPC_URL
-  ?? 'https://starknet-sepolia.public.blastapi.io/rpc/v0_7';
+  ?? 'https://starknet-sepolia.drpc.org';
 
 const testnet = (deployment.evmNetwork ?? '').includes('sepolia');
 export const EXPLORER_EVM = testnet ? 'https://sepolia.etherscan.io' : 'https://etherscan.io';
@@ -75,3 +75,9 @@ export const LZ_SCAN = testnet ? 'https://testnet.layerzeroscan.com' : 'https://
 /// cross-contract calls (mirror write, binding, compliance check, mint), so it
 /// needs materially more than a bare message.
 export const DEFAULT_GAS_LIMIT = 400_000n;
+
+/// STRK, the token the Starknet endpoint charges message fees in. Same address
+/// on mainnet and Sepolia. `bridge_back` approves the GATEWAY for this, not the
+/// endpoint: the gateway pays the endpoint on the caller's behalf.
+export const STARKNET_FEE_TOKEN =
+  '0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d';

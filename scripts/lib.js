@@ -57,6 +57,72 @@ function assetSlot(deployment, id) {
   return slot;
 }
 
+/// A `fetch` built on Node's http/https modules.
+///
+/// starknet.js calls global `fetch`. Some sandboxes and CI images have it
+/// disabled or unroutable while the http module still works (ethers uses http,
+/// which is why it keeps working where starknet.js does not). Set
+/// STARKNET_HTTP_FETCH=1 to route RPC through http instead. Harmless anywhere
+/// global fetch already works, so it is opt-in rather than automatic.
+function httpFetch(url, init = {}) {
+  const { request } = require(String(url).startsWith('https') ? 'https' : 'http');
+  return new Promise((resolve, reject) => {
+    const req = request(
+      url,
+      { method: init.method || 'GET', headers: init.headers || {} },
+      (res) => {
+        let body = '';
+        res.on('data', (c) => (body += c));
+        res.on('end', () =>
+          resolve({
+            ok: res.statusCode >= 200 && res.statusCode < 300,
+            status: res.statusCode,
+            statusText: res.statusMessage || '',
+            headers: { get: (k) => res.headers[String(k).toLowerCase()] },
+            text: async () => body,
+            json: async () => JSON.parse(body),
+          })
+        );
+      }
+    );
+    req.on('error', reject);
+    if (init.body) req.write(init.body);
+    req.end();
+  });
+}
+
+/// Build a Starknet provider + account.
+///
+/// starknet.js v10 takes an options OBJECT here; v6 took positional arguments.
+/// Passing the old positional form silently reads the provider as the options
+/// bag, so `nodeUrl` comes back undefined ("Using default public node url") and
+/// the address is undefined a moment later. One helper so that mistake cannot
+/// be made three times.
+///
+/// v10 is required, not preferred: live Sepolia serves RPC spec 0.10.x and
+/// starknet.js v6 speaks 0.7. A v6 client cannot talk to the network at all.
+function starknetAccount(rpcUrl, address, privateKey) {
+  const { Account, RpcProvider } = require('starknet');
+  const options = { nodeUrl: rpcUrl };
+  if (process.env.STARKNET_HTTP_FETCH === '1') options.baseFetch = httpFetch;
+  const provider = new RpcProvider(options);
+  const account = new Account({ provider, address, signer: privateKey });
+  return { provider, account };
+}
+
+/// `provider.callContract` returns a flat felt array in v10.
+function asFelts(result) {
+  return Array.isArray(result) ? result : result.result ?? [];
+}
+
+const feltToBigInt = (result) => BigInt(asFelts(result)[0] ?? 0);
+
+/// Starknet u256 is two felts, low first.
+const u256FromFelts = (result) => {
+  const f = asFelts(result);
+  return BigInt(f[0] ?? 0) + (BigInt(f[1] ?? 0) << 128n);
+};
+
 function requireEnv(...names) {
   const missing = names.filter((n) => !process.env[n]);
   if (missing.length) {
@@ -92,6 +158,11 @@ function done(label, value, explorer) {
 module.exports = {
   parseArgs,
   assetSlot,
+  starknetAccount,
+  httpFetch,
+  asFelts,
+  feltToBigInt,
+  u256FromFelts,
   loadDeployment,
   saveDeployment,
   requireEnv,

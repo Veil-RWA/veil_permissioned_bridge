@@ -29,6 +29,17 @@ const NETWORKS = {
     nativeToken: '0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d',
     explorer: 'https://sepolia.voyager.online',
   },
+  // Local starknet-devnet, for smoke-testing the deploy scripts before spending
+  // testnet gas. There is no LayerZero endpoint on devnet, so `endpoint` is a
+  // placeholder: contracts deploy and wire, but no message can cross.
+  'starknet-devnet': {
+    kind: 'starknet',
+    eid: 40500,
+    endpoint: '0x0316d70a6e0445a58c486215fac8ead48d3db985acde27efca9130da4c675878',
+    nativeToken: '0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d',
+    explorer: 'http://127.0.0.1:5050',
+    local: true,
+  },
   'starknet-mainnet': {
     kind: 'starknet',
     eid: 30500,

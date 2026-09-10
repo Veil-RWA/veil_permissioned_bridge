@@ -13,10 +13,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const { Account, RpcProvider, CallData, hash, byteArray } = require('starknet');
+const { CallData, hash, byteArray } = require('starknet');
 const { network } = require('./config');
 const {
-  parseArgs, loadDeployment, saveDeployment, requireEnv, assetSlot, step, done,
+  parseArgs, loadDeployment, saveDeployment, requireEnv, assetSlot, starknetAccount, step, done,
 } = require('./lib');
 
 const TARGET = path.join(__dirname, '..', 'cairo', 'target', 'dev');
@@ -40,14 +40,15 @@ async function declareIfNeeded(account, contract, deployment) {
   }
   const { sierra, casm } = artifact(contract);
   const classHash = hash.computeContractClassHash(sierra);
-  try {
-    await account.getClassByHash(classHash);
-    console.log(`      class already declared  ${classHash}`);
-  } catch (_) {
+  // `declareIfNot` is a no-op (empty tx hash) when the class is already on
+  // chain, which is the common case for the second asset onward.
+  const res = await account.declareIfNot({ contract: sierra, casm });
+  if (res.transaction_hash) {
     console.log(`      declaring...`);
-    const res = await account.declare({ contract: sierra, casm });
     await account.waitForTransaction(res.transaction_hash);
     console.log(`      declared                ${classHash}`);
+  } else {
+    console.log(`      class already declared  ${classHash}`);
   }
   deployment.classes[contract] = classHash;
   return classHash;
@@ -67,8 +68,7 @@ async function main() {
   const [rpc, accountAddress, key] = requireEnv(
     'STARKNET_RPC_URL', 'STARKNET_ACCOUNT_ADDRESS', 'STARKNET_PRIVATE_KEY'
   );
-  const provider = new RpcProvider({ nodeUrl: rpc });
-  const account = new Account(provider, accountAddress, key);
+  const { provider, account } = starknetAccount(rpc, accountAddress, key);
 
   const deployment = loadDeployment(args);
   const slot = assetSlot(deployment, args.asset);
