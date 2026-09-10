@@ -4,28 +4,20 @@
 // starknet.js v10 is required, not preferred. Live Sepolia serves RPC spec
 // 0.10.x and v6 speaks 0.7 -- a v6 client cannot talk to the network at all.
 //
-// Wallet DISCOVERY is get-starknet-CORE's job. Enumerating `window.starknet_*`
-// by hand picks whichever wallet enumerated first, which is the wrong wallet as
-// soon as someone has both Argent and Braavos.
+// Wallet DISCOVERY is get-starknet's job, not ours. Enumerating
+// `window.starknet_*` by hand picks whichever wallet happens to enumerate
+// first, which is the wrong wallet as soon as someone has both Argent and
+// Braavos; get-starknet shows the picker, remembers the choice, and knows about
+// wallets that are installed but not yet injected. It is independent of the
+// starknet.js version -- it hands back a `StarknetWindowObject`, which v10's
+// own `WalletAccount` takes -- so the two compose exactly as they should.
+// (`@starknet-io/get-starknet` is the maintained package; plain `get-starknet`
+// is deprecated.)
 //
-// The `core` package, NOT the `get-starknet` modal wrapper. The wrapper ships
-// its own picker backed by a hardcoded discovery list -- Argent X, Braavos,
-// Fordefi, Keplr, the MetaMask Snap, OKX, Xverse -- and renders "Install X" rows
-// for every one of them whether or not it is installed, whether or not it suits
-// this app. Those rows are the library's opinion, not a detection result, and
-// shipping them would be telling users to install wallets nobody here has
-// checked. `getAvailableWallets()` answers a narrower and honest question:
-// which Starknet wallets are actually present in this browser right now. We
-// render those, and nothing else -- the same shape as the EIP-6963 picker on
-// the EVM side.
-//
-// It is independent of the starknet.js version: it hands back a
-// `StarknetWindowObject`, which v10's own `WalletAccount` takes.
-//
-// The connect/restore/disconnect FLOW mirrors veilx/app/src/main.ts.
+// This mirrors veilx/app/src/main.ts, which is the reference for the flow.
 
-import wallets from '@starknet-io/get-starknet-core';
-import type { StarknetWindowObject } from '@starknet-io/get-starknet-core';
+import { connect as pickWallet, disconnect as dropWallet } from '@starknet-io/get-starknet';
+import type { StarknetWindowObject } from '@starknet-io/get-starknet';
 import { RpcProvider, WalletAccount, CallData, uint256 } from 'starknet';
 import { STARKNET_RPC, DEFAULT_GAS_LIMIT, deployment } from './config';
 import type { Asset } from './assets';
@@ -108,45 +100,11 @@ async function sessionFrom(wallet: StarknetWindowObject): Promise<SnSession> {
   return { address: account.address, account };
 }
 
-/// One installed Starknet wallet. `id` is what identifies it to the library.
-export type SnWallet = { id: string; name: string; icon: string };
-
-const injected = new Map<string, StarknetWindowObject>();
-
-/// Starknet wallets actually present in this browser. Never a suggestion to
-/// install something: if the list is empty, that is the honest answer.
-export async function availableWallets(): Promise<SnWallet[]> {
-  const found = await wallets.getAvailableWallets();
-  injected.clear();
-  const out: SnWallet[] = [];
-  for (const w of found) {
-    if (!w?.id) continue;
-    injected.set(w.id, w);
-    out.push({ id: w.id, name: w.name ?? w.id, icon: typeof w.icon === 'string' ? w.icon : '' });
-  }
-  return out;
-}
-
-/// More than one wallet is installed, so the user has to say which.
-export class PickSnWalletError extends Error {
-  constructor(public readonly wallets: SnWallet[]) {
-    super('Choose a wallet');
-    this.name = 'PickSnWalletError';
-  }
-}
-
-export async function connectStarknet(id?: string): Promise<SnSession> {
-  const list = await availableWallets();
-  if (!list.length) {
-    throw new Error('No Starknet wallet detected. Install one and reload.');
-  }
-  const chosen = id ?? (list.length === 1 ? list[0].id : undefined);
-  if (!chosen) throw new PickSnWalletError(list);
-
-  const wallet = injected.get(chosen);
-  if (!wallet) throw new Error('That wallet is no longer available.');
-
-  await wallets.enable(wallet);
+/// Open the picker and connect. `alwaysAsk` so the user chooses their wallet
+/// rather than getting whichever one enumerated first.
+export async function connectStarknet(): Promise<SnSession> {
+  const wallet = await pickWallet({ modalMode: 'alwaysAsk', modalTheme: 'dark' });
+  if (!wallet) throw new Error('No wallet selected.');
   const session = await sessionFrom(wallet);
   rememberConnect(true);
   return session;
@@ -158,11 +116,9 @@ export async function connectStarknet(id?: string): Promise<SnSession> {
 export async function restoreStarknet(): Promise<SnSession | undefined> {
   if (!mayAutoConnect()) return undefined;
   try {
-    const last = await wallets.getLastConnectedWallet();
-    if (!last) return undefined;
-    // Authorised already, so this does not prompt.
-    await wallets.enable(last);
-    return await sessionFrom(last);
+    const wallet = await pickWallet({ modalMode: 'neverAsk' });
+    if (!wallet) return undefined;
+    return await sessionFrom(wallet);
   } catch {
     return undefined;   // not authorised, locked, or on the wrong chain
   }
@@ -170,7 +126,7 @@ export async function restoreStarknet(): Promise<SnSession | undefined> {
 
 export async function disconnectStarknet(): Promise<void> {
   rememberConnect(false);
-  try { await wallets.disconnect({ clearLastWallet: true }); } catch { /* already gone */ }
+  try { await dropWallet({ clearLastWallet: true }); } catch { /* already gone */ }
 }
 
 async function callFelts(
