@@ -1,4 +1,6 @@
 node_modules
-dist
+# The app's own build output only. NOT vendor/*/dist -- the vendored SDK is
+# committed on purpose, so a clone without the pool repo still builds.
+/dist
 src/deployment.json
 .env
