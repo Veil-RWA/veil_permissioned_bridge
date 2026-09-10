@@ -22,7 +22,7 @@ bridge/
   evm/            EVM side — own solc build + harness
     contracts/    VeilERC3643Lockbox, ComplianceReader, BridgeMsgCodec, lz/
     test/         41 tests (incl. 15 attack tests) + a JSON-RPC test node
-  tools/          export/apply the compliance rule set — 7 unit + 11 e2e
+  tools/          export/apply the compliance rule set — 7 unit + 11 integration
   scripts/        testnet deployment: deploy, wire, bridge one for real
   frontend/       the bridge app (Vite + TypeScript)
 ```
@@ -166,16 +166,15 @@ not the entry.
 
 ## Contracts holding the twin
 
-Eligibility is derived from an EVM binding, and a Starknet **contract** — a Veil
-pool, an AMM, a lending market — has no EVM counterpart. Left there, the twin
-could only ever move between bridged wallets, which makes it useless in any
-protocol.
+Eligibility is derived from an EVM binding, and a **Veil pool** is a Starknet
+contract with no EVM counterpart. Left there, the twin could only move between
+bridged wallets and could never reach a pool — the reason for bridging it.
 
 So infrastructure is registered directly with `set_local_identity`, exactly as a
 T-REX agent registers a pool in an identity registry on its own chain:
 
 ```bash
-node wire.js --asset gold --holder 0x<pool> --holder 0x<router>
+node wire.js --asset gold --holder 0x<veil-pool>
 ```
 
 It is deliberately **not** subject to the staleness window: there is no source
@@ -294,6 +293,18 @@ and every other contract are unaffected.
 now carries an `openzeppelin_utils` requiring Cairo ^2.18, which a fresh resolve
 would pick and then refuse to build on 2.17.
 
+## What has never been tested
+
+Stated plainly so a green suite is not mistaken for a working bridge:
+
+- **No LayerZero message has ever crossed.** Every test on both sides uses a
+  mock endpoint written for this repo.
+- **The deploy scripts have never completed against a chain.** They reach
+  `starknet_estimateFee` with a well-formed declare on devnet, which then
+  rejects Sierra 1.8; Sepolia accepts it, but declare, deploy and wire are
+  unproven.
+- **The app has never run against real wallets or real contracts.**
+
 ## Threat model
 
 **Assumed honest:** the owner (who wires contracts and applies rule specs), the
@@ -405,7 +416,7 @@ bash test.sh                        # everything, 141 tests
 (cd cairo && snforge test)          # 82
 (cd evm/script && bash test.sh)     # 41
 (cd tools && node spec.test.js)     # 7
-(cd tools && node e2e.test.js)      # 11
+(cd tools && node compliance-export.test.js)  # 11
 ```
 
 **Behaviour:** wire-format vectors pinned from both chains; sequence ordering and
@@ -424,8 +435,10 @@ fresh EVM account; a revoked holder's every exit route; parking tokens on an
 unmirrored wallet; replaying a stale record to undo a revocation; and every
 privilege escalation the contracts expose.
 
-**End to end** (`tools/e2e.test.js`): the real export tool, spawned as a
-subprocess, against a real HTTP JSON-RPC endpoint serving real EVM bytecode.
+**Compliance export** (`tools/compliance-export.test.js`): the real export tool,
+spawned as a subprocess, against a real HTTP JSON-RPC endpoint serving real EVM
+bytecode. **This is not an end-to-end test of the bridge** — it never touches
+LayerZero, the gateway, or a message.
 Covers the two cases no unit test can reach, because they exist only as the
 difference between a chain's history and its current state — a country allowed
 then withdrawn, and the max balance that has no getter anywhere and can only be

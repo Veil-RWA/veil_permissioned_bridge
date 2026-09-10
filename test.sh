@@ -8,7 +8,7 @@ echo "=== evm: build + tests ==="
 (cd evm/script && bash test.sh)
 echo "=== tools: spec encoding ==="
 (cd tools && node spec.test.js)
-echo "=== end-to-end: live chain -> export -> apply_spec calldata ==="
-(cd tools && node e2e.test.js)
+echo "=== compliance export: live token -> spec -> calldata ==="
+(cd tools && node compliance-export.test.js)
 echo
 echo "all bridge suites passed"

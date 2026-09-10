@@ -3,7 +3,7 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "test": "node spec.test.js && node e2e.test.js"
+    "test": "node spec.test.js && node compliance-export.test.js"
   },
   "dependencies": {
     "ethers": "^6"

@@ -42,12 +42,12 @@ use starknet::ContractAddress;
 
 /// An address registered HERE rather than mirrored from the source chain.
 ///
-/// Every mirrored record describes an investor with an EVM counterpart. A
-/// Starknet CONTRACT -- a Veil pool, an AMM, a lending market -- has none, so it
-/// can never satisfy the binding and could never receive the twin. That would
-/// make the asset unusable in any protocol, which defeats the point of bridging
-/// it. Infrastructure is therefore registered directly, exactly as a T-REX agent
-/// registers a pool in an identity registry on its own chain.
+/// Every mirrored record describes an investor with an EVM counterpart. A Veil
+/// pool is a Starknet contract with none, so it can never satisfy the binding
+/// and could never receive the twin -- which would make the bridged asset
+/// unusable in Veil, the reason for bridging it. The pool is therefore
+/// registered directly, exactly as a T-REX agent registers a pool in an
+/// identity registry on its own chain.
 ///
 /// Deliberately NOT subject to the staleness window: there is no source record
 /// to go stale. Borrowing an investor's binding instead (via `admin_rebind`)

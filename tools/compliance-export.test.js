@@ -1,8 +1,14 @@
 #!/usr/bin/env node
-// End-to-end test of the compliance replication path.
+// Integration test for ONE workflow: reading an ERC-3643 token's compliance
+// rules and turning them into apply_spec calldata.
 //
-// Everything else in this repo tests pieces. This runs the workflow an operator
-// actually runs when an asset is allowed onto the bridge:
+// This is NOT an end-to-end test of the bridge. It never touches LayerZero, the
+// gateway, or a message. It was called "e2e" and that was wrong: it passed
+// while the app was half-wired, while starknet.js could not reach Sepolia, and
+// while no contract could hold the twin. A green run here says the export tool
+// works, and nothing else.
+//
+// What it does cover, with real bytecode over real HTTP JSON-RPC:
 //
 //   a real T-REX deployment, real EVM bytecode
 //     -> export-compliance.js, over real HTTP JSON-RPC (eth_call + eth_getLogs)
@@ -119,7 +125,7 @@ async function runExport(rig, extra = []) {
 }
 
 async function main() {
-  console.log('E2E: export -> spec -> apply_spec calldata\n');
+  console.log('compliance export: live token -> spec -> apply_spec calldata\n');
   const rig = await setupChain();
   let exported;
 

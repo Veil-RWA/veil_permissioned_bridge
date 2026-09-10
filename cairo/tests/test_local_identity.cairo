@@ -1,10 +1,10 @@
 // Contracts holding the twin.
 //
-// Every mirrored record describes an investor with an EVM counterpart. A
-// Starknet CONTRACT -- a Veil pool, an AMM, a lending market -- has none, so
-// without a path of its own it could never satisfy `is_verified` and could
-// never receive the twin. A permissioned asset that only moves between bridged
-// EOAs is not usable in any protocol, which defeats the point of bridging it.
+// Every mirrored record describes an investor with an EVM counterpart. A Veil
+// pool is a Starknet contract with none, so without a path of its own it could
+// never satisfy `is_verified` and could never receive the twin. A bridged asset
+// that only moves between wallets can never reach a Veil pool, which is the
+// reason for bridging it.
 //
 // So infrastructure is registered directly, as a T-REX agent registers a pool in
 // an identity registry on its own chain. The tests that matter are the
@@ -31,7 +31,7 @@ fn owner() -> ContractAddress { 1000.try_into().unwrap() }
 fn gateway() -> ContractAddress { 2000.try_into().unwrap() }
 fn alice() -> ContractAddress { 101.try_into().unwrap() }
 fn mallory() -> ContractAddress { 666.try_into().unwrap() }
-/// Stands in for a Veil pool: a contract, with no EVM counterpart.
+/// The Veil pool: a Starknet contract, with no EVM counterpart.
 fn pool() -> ContractAddress { 7777.try_into().unwrap() }
 fn evm_alice() -> felt252 { 0xA11CE }
 fn amt(n: u128) -> u256 { u256 { low: n, high: 0 } }
