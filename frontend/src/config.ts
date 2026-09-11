@@ -27,6 +27,10 @@ export type AssetDeployment = {
 
 export type Deployment = {
   missing?: boolean;
+  /// A stand-in deployment for looking at the app before anything is on chain.
+  /// The bridge contracts in it are placeholders, so every read of one has no
+  /// answer -- which the UI must render as unknown, never as a negative fact.
+  demo?: boolean;
   evmNetwork?: string;
   starknetNetwork?: string;
   evmEid?: number;
@@ -75,6 +79,10 @@ export const isDeployed = Boolean(
   ((deployment.assets && Object.keys(deployment.assets).length > 0) ||
     (deployment.evm?.lockbox && deployment.starknet?.gateway))
 );
+
+/// True when the loaded deployment is the demo stand-in. The bridge's own
+/// contracts do not exist in it, so nothing may claim to have read one.
+export const IS_DEMO = deployment.demo === true;
 
 /// Chain ids the EVM wallet must be on for each supported deployment.
 const EVM_CHAIN_IDS: Record<string, { id: number; hex: string; label: string }> = {
@@ -125,10 +133,20 @@ export const EXPLORER_EVM = testnet ? 'https://sepolia.etherscan.io' : 'https://
 export const EXPLORER_SN = testnet ? 'https://sepolia.voyager.online' : 'https://voyager.online';
 export const LZ_SCAN = testnet ? 'https://testnet.layerzeroscan.com' : 'https://layerzeroscan.com';
 
-/// Executor gas for lz_receive on Starknet. The mint path does a handful of
-/// cross-contract calls (mirror write, binding, compliance check, mint), so it
-/// needs materially more than a bare message.
-export const DEFAULT_GAS_LIMIT = 400_000n;
+/// Executor gas for lz_receive on Starknet.
+///
+/// MEASURED, not guessed. A delivery writes the mirror record, binds the
+/// wallet, runs the compliance gate, mints, approves, and then calls the Veil
+/// pool's `fill_open_note` -- which hashes and writes pool storage. A real
+/// delivery on Sepolia consumed 33,520,640 L2 gas.
+///
+/// This was 400_000, which is not a tight limit but an impossible one: the
+/// executor's simulation ran out and reverted, LayerZero Scan reported only
+/// "Executor transaction simulation reverted", and the message sat undelivered
+/// with the tokens escrowed. Starknet L2 gas is not EVM gas and an EVM-shaped
+/// number here is meaningless. Over-provisioning costs a slightly larger quoted
+/// fee; under-provisioning costs the whole transfer.
+export const DEFAULT_GAS_LIMIT = 80_000_000n;
 
 /// STRK, the token the Starknet endpoint charges message fees in. Same address
 /// on mainnet and Sepolia. `bridge_back` approves the GATEWAY for this, not the

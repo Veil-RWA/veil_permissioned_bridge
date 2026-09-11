@@ -2,7 +2,7 @@
 // Bridge one amount across for real, then watch the far side until it lands.
 //
 //   node bridge.js --asset gold --amount 1000000000000000000 --to 0x<starknet address>
-//                  [--gas-limit 400000] [--watch 900]
+//                  [--gas-limit 80000000] [--watch 900]
 //                  --note 0x<open note id> [--pool 0x<veil pool>]
 //
 // --note is REQUIRED. Every bridge-in lands in a Veil pool open note; there is
@@ -70,7 +70,7 @@ async function main() {
   const token = new ethers.Contract(slot.evm.token, ERC3643_ABI, wallet);
 
   const amount = BigInt(args.amount);
-  const gasLimit = BigInt(args.gasLimit || 400000);
+  const gasLimit = BigInt(args.gasLimit || 80_000_000);
   const recipient = ethers.zeroPadValue(
     '0x' + BigInt(args.to).toString(16).padStart(64, '0'), 32
   );

@@ -38,7 +38,7 @@ const { ethers } = require('ethers');
 const { compile } = require('../evm/test/harness');
 const { network, ASSET_IDS } = require('./config');
 const {
-  parseArgs, loadDeployment, saveDeployment, requireEnv, assetSlot, step, done,
+  parseArgs, assetsRequested, loadDeployment, saveDeployment, requireEnv, assetSlot, step, done,
 } = require('./lib');
 
 /// Catalogue defaults, so `--asset silver` produces a silver-looking token
@@ -56,7 +56,7 @@ async function main() {
   const net = network(args.evm);
   if (net.kind !== 'evm') throw new Error(`${args.evm} is not an EVM network`);
 
-  const ids = args.asset ? [args.asset] : ASSET_IDS;
+  const ids = assetsRequested(process.argv, ASSET_IDS);
   for (const id of ids) {
     if (!NAMES[id]) throw new Error(`unknown asset "${id}" (expected one of ${ASSET_IDS.join(', ')})`);
   }

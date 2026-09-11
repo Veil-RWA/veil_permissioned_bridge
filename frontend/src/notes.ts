@@ -42,8 +42,21 @@ export type NoteContext = {
 /// is dropped on disconnect.
 const keyCache = new Map<string, { privateKey: bigint; publicKey: bigint }>();
 
+/// Cache keys must be CANONICAL, not whatever the wallet happened to return.
+///
+/// A Starknet address is a felt, and the same account comes back as
+/// `0x07f69f…` from one wallet call and `0x7f69f…` from another -- same value,
+/// different string. Keying storage on the raw string means a reload misses its
+/// own entry and re-prompts for a signature the holder already gave, which
+/// looks exactly like the cache not working at all. Chain ids vary the same way.
+const canon = (v: string): string => {
+  try { return '0x' + BigInt(v).toString(16); } catch { return v.trim().toLowerCase(); }
+};
+
+const cacheKey = (address: string, chainId: string) => `${canon(address)}:${canon(chainId)}`;
+
 const storageKey = (address: string, chainId: string) =>
-  `veil:vk:${chainId}:${address.toLowerCase()}`;
+  `veil:vk:${canon(chainId)}:${canon(address)}`;
 
 function loadCachedKey(address: string, chainId: string) {
   try {
@@ -71,19 +84,19 @@ function storeKey(
 /// Is a key already available without prompting? Lets the app derive the note
 /// on connect without a second signature after a reload.
 export function hasCachedViewingKey(address: string, chainId: string): boolean {
-  return keyCache.has(`${address}:${chainId}`) || loadCachedKey(address, chainId) !== null;
+  return keyCache.has(cacheKey(address, chainId)) || loadCachedKey(address, chainId) !== null;
 }
 
 /// Drop the cached key. Called on disconnect, so switching accounts or walking
 /// away from a shared machine does not leave it behind.
 export function forgetViewingKey(address: string, chainId: string): void {
-  keyCache.delete(`${address}:${chainId}`);
+  keyCache.delete(cacheKey(address, chainId));
   try { localStorage.removeItem(storageKey(address, chainId)); } catch { /* ignore */ }
 }
 
 export async function deriveNoteContext(session: SnSession): Promise<NoteContext> {
   const chainId = (await snProvider.getChainId()) as unknown as string;
-  const id = `${session.address}:${chainId}`;
+  const id = cacheKey(session.address, chainId);
   const cached = keyCache.get(id) ?? loadCachedKey(session.address, chainId);
   const { privateKey, publicKey } = cached ?? await deriveViewingKey(
     session.account as never, chainId
@@ -216,6 +229,12 @@ export function buildCreateOpenNoteCalldata(
 export type CreateNoteResult = { ok: true; slot: NoteSlot } | { ok: false; reason: string };
 
 /// Create an empty open note for this asset, then find it.
+/// How long to wait for a freshly settled note to become readable. Starknet
+/// Sepolia blocks land in a few seconds, but an RPC can trail a block or two,
+/// so this covers roughly a minute rather than giving up on the first read.
+const NOTE_VISIBLE_ATTEMPTS = 20;
+const NOTE_VISIBLE_DELAY_MS = 3000;
+
 export async function createOpenNote(
   asset: Asset, ctx: NoteContext, onProgress?: (line: string) => void
 ): Promise<CreateNoteResult> {
@@ -250,12 +269,22 @@ export async function createOpenNote(
     return { ok: false, reason: e?.message ?? String(e) };
   }
 
+  // The settle succeeded, so the note EXISTS. It is simply not readable yet:
+  // the prover's transaction has to be included and this RPC has to have seen
+  // that block. Handing that back as a failure told the holder their note was
+  // lost and sent them to press a button for a state the app could just wait
+  // for -- so wait for it, and only give up after the block time it actually
+  // takes. A read that lags is not an error.
   onProgress?.('finding the note');
-  const slot = await findFillableNote(asset, ctx);
-  if (!slot) {
-    // The settle reported success but the note is not readable yet. Usually the
-    // block has not been seen by this RPC; saying so beats "no note found".
-    return { ok: false, reason: 'The note was created but is not visible yet. Try "Look again" in a moment.' };
+  for (let attempt = 0; ; attempt++) {
+    const slot = await findFillableNote(asset, ctx);
+    if (slot) return { ok: true, slot };
+    if (attempt >= NOTE_VISIBLE_ATTEMPTS) break;
+    onProgress?.(`waiting for the note to confirm (${attempt + 1}/${NOTE_VISIBLE_ATTEMPTS})`);
+    await new Promise((r) => setTimeout(r, NOTE_VISIBLE_DELAY_MS));
   }
-  return { ok: true, slot };
+  return {
+    ok: false,
+    reason: 'Your note was created, but this RPC still cannot see it. It is not lost — press Bridge again in a moment and it will be used.',
+  };
 }

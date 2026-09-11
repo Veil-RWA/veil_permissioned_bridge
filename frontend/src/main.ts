@@ -18,13 +18,14 @@
 
 import {
   isDeployed, evmLabel, starknetLabel, EXPLORER_EVM, EXPLORER_SN, LZ_SCAN, STARKNET_FEE_TOKEN,
-  PROVER_ENDPOINT, PROVER_MASTER_ADDRESS,
+  PROVER_ENDPOINT, PROVER_MASTER_ADDRESS, IS_DEMO,
 } from './config';
 import { assets, defaultAsset, faucetTokens, faucetRouter, type Asset } from './assets';
-import { short, units, parseUnits, duration, ago } from './format';
+import { short, units, parseUnits, ago } from './format';
 import * as evm from './evm';
 import * as sn from './starknet';
 import { load as loadHistory, record, update, type Transfer } from './history';
+import { recipientGate, mirrorRefusal, mirrorUnreadable, type Gate } from './eligibility';
 import {
   deriveNoteContext, findFillableNote, forgetViewingKey, createOpenNote,
   hasCachedViewingKey, type NoteContext, type NoteSlot,
@@ -53,6 +54,9 @@ type State = {
   noteCtx?: NoteContext;
   noteSlot?: NoteSlot;
   noteSearched: boolean;
+  /// Whether the quote breakdown is expanded. Kept in state so a re-render
+  /// does not snap it shut while the holder is reading it.
+  detailsOpen: boolean;
   evmSession?: evm.EvmSession;
   snSession?: sn.SnSession;
   token: { symbol: string; decimals: number };
@@ -81,6 +85,7 @@ const state: State = {
   poolChecking: false,
   noteId: '',
   noteSearched: false,
+  detailsOpen: false,
   token: { symbol: initial.symbol, decimals: initial.decimals },
   amount: '',
   recipient: '',
@@ -107,8 +112,6 @@ function sourceBalance(): bigint | undefined {
 
 // --------------------------------------------------------------- eligibility
 
-type Gate = { ok: boolean | null; label: string; detail?: string };
-
 function gates(): Gate[] {
   const s = state.evmStatus;
   const m = state.mirror;
@@ -130,32 +133,24 @@ function gates(): Gate[] {
         : undefined,
     });
     if (state.recipient) {
-      out.push({
-        ok: m ? m.verified : null,
-        label: `Recipient is eligible on ${starknetLabel}`,
-        detail: m && !m.verified
-          ? (m.identity === 0n
-              ? 'Not yet mirrored. The transfer will be held and claimable once eligibility is pushed.'
-              : m.fresh
-                ? 'The mirror says this identity is not currently eligible.'
-                : 'The mirrored record has gone stale, so it fails closed until refreshed.')
-          : undefined,
-      });
+      out.push(recipientGate(m, s, state.evmSession?.address, starknetLabel, IS_DEMO));
     }
   } else {
     out.push({
-      ok: m ? m.verified : null,
+      ok: !m || !m.readable ? null : m.verified,
       label: `You are eligible on ${starknetLabel}`,
-      detail: m && !m.verified
-        ? (m.identity === 0n
-            ? 'This wallet is not bound to any source identity, so it cannot hold or move the twin.'
-            : m.fresh
-              ? 'The mirror says this identity is not currently eligible.'
-              : 'The mirrored record has gone stale. Anyone can refresh it with syncCompliance.')
+      detail: !m ? undefined
+        : !m.readable ? mirrorUnreadable(IS_DEMO)
+        : !m.verified ? mirrorRefusal(m, true)
         : undefined,
     });
     out.push({
-      ok: m ? m.fresh || m.stalenessWindow === 0 : null,
+      // Freshness needs the record AND the window. Without both, "fresh" would
+      // be a guess -- and an unread window reads as 0, which means expiry is
+      // disabled, which would paint this green for having learned nothing.
+      ok: m && m.readable && m.identityKnown && (m.freshnessKnown || m.stalenessWindow === 0)
+        ? m.fresh || m.stalenessWindow === 0
+        : null,
       label: 'Your mirrored record is fresh',
     });
     if (state.recipient) {
@@ -175,38 +170,36 @@ function eligibilityCard(): string {
       <p>${esc(state.asset.name)} is not deployed on this route yet.</p></div>`;
   }
   const connected = toStarknet() ? state.evmSession : state.snSession;
-  if (!connected) {
-    return `<div class="eligibility"><div class="eligibility-head">Eligibility</div>
-      <p>Connect a wallet to check whether this transfer is permitted.</p></div>`;
-  }
+  if (!connected) return '';
 
   const list = gates();
   const failing = list.filter((g) => g.ok === false);
   // A check that could not be RUN is not a check that passed. Reads fail when
-  // an RPC is down or an address is wrong, and answering "cleared to bridge"
-  // because nothing came back is the one answer a compliance gate must never
-  // give. Unknown is its own state.
+  // an RPC is down or an address is wrong, and answering "eligible" because
+  // nothing came back is the one answer a compliance gate must never give.
   const unknown = list.filter((g) => g.ok === null);
-  const onlyRecipient = failing.length > 0 && failing.every((g) => g.label.startsWith('Recipient'));
-  const tone = failing.length > 0
-    ? (onlyRecipient ? 'is-warn' : 'is-bad')
-    : unknown.length > 0 ? 'is-warn' : 'is-good';
-  const head = failing.length > 0
-    ? (onlyRecipient ? 'Will arrive held' : 'Blocked')
-    : unknown.length > 0 ? 'Could not check' : 'Cleared to bridge';
 
-  const items = list.map((g) => {
-    const mark = g.ok === null ? '<span class="mark idk">·</span>'
-      : g.ok ? '<span class="mark ok">✓</span>' : '<span class="mark no">✕</span>';
+  // A PASSING gate has nothing to say. Five green ticks tell the holder only
+  // what the one-line verdict already tells them, and bury the single line that
+  // matters on the day something fails. So: the verdict, and -- only when
+  // something is wrong -- what is wrong and how to fix it.
+  if (failing.length === 0 && unknown.length === 0) {
+    return `<div class="eligibility is-good"><div class="eligibility-head">Eligible to bridge</div></div>`;
+  }
+
+  const onlyRecipient = failing.length > 0 && failing.every((g) => g.label.startsWith('Recipient'));
+  const tone = failing.length > 0 ? (onlyRecipient ? 'is-warn' : 'is-bad') : 'is-warn';
+  const head = failing.length > 0
+    ? (onlyRecipient ? 'Will arrive held' : 'Not eligible')
+    : 'Could not check';
+
+  const items = [...failing, ...unknown].map((g) => {
+    const mark = g.ok === null ? '<span class="mark idk">·</span>' : '<span class="mark no">✕</span>';
     return `<li>${mark}<span>${esc(g.label)}${g.detail ? `<br><span style="color:var(--faint)">${esc(g.detail)}</span>` : ''}</span></li>`;
   }).join('');
 
-  const stale = state.mirror && state.mirror.stalenessWindow > 0
-    ? `<p style="margin-top:9px">Mirrored eligibility expires after ${duration(state.mirror.stalenessWindow)}. Anyone can refresh it.</p>`
-    : '';
-
   return `<div class="eligibility ${tone}"><div class="eligibility-head">${head}</div>
-    <ul class="checks">${items}</ul>${stale}</div>`;
+    <ul class="checks">${items}</ul></div>`;
 }
 
 // ------------------------------------------------------------------- claims
@@ -302,7 +295,7 @@ function poolSection(): string {
            autocomplete="off" value="${esc(state.customPool)}" />
          ${status}`
       : main
-        ? `<p class="delivery-note">Lands in the main Veil pool <span class="mono">${esc(short(main, 8, 6))}</span>, the one Veil already runs. One pool carries every asset.</p>`
+        ? ''
         : `<p class="delivery-note is-warn">No Veil pool is configured for this deployment.</p>`}
   </div>`;
 }
@@ -318,35 +311,18 @@ function selectedPool(): string | undefined {
 /// cannot be produced by hand, and one that is not yours sends your tokens into
 /// somebody else's note.
 function noteSection(claimed: string | undefined, mine: boolean, unclaimed: boolean): string {
-  if (!state.snSession) {
-    return `<p class="delivery-note">Connect your ${esc(starknetLabel)} wallet to find your open note.</p>`;
-  }
-  if (!state.noteCtx) {
-    // The one signature in the app, and it happens here because the holder
-    // asked -- never as a side effect of connecting.
-    return `<p class="delivery-note">Your note is derived from your viewing key, which never leaves this device. This asks your wallet to <strong>sign one message</strong> — it is not a transaction and costs nothing.</p>
-      <button id="derive-note" class="max" style="margin-top:8px">Sign to find my open note</button>`;
-  }
-  if (!state.noteId) {
-    // The bridge MAKES one. `create_open_note` is proven through the SDK, so
-    // there is nothing to go and do in another app.
-    const canCreate = Boolean(PROVER_ENDPOINT && PROVER_MASTER_ADDRESS);
-    return `<p class="delivery-note">
-        You have no empty note for ${esc(state.token.symbol)} yet — a note holds one
-        deposit, so each transfer needs a fresh one.
-      </p>
-      ${canCreate
-        ? `<button id="create-note" class="max" style="margin-top:8px">Create my open note</button>
-           <p class="delivery-note">Proved and settled for you. No signature, no gas.</p>`
-        : `<p class="delivery-note is-warn">Note creation needs a Veil prover endpoint, which this deployment has not configured.</p>
-           <button id="derive-note" class="max" style="margin-top:8px">Look again</button>`}`;
-  }
+  // STATUS, not controls. Every step this panel used to offer a button for --
+  // sign, create, claim -- now runs inside the one Bridge press, so a button
+  // here would be a second way to do the same thing, competing with the CTA and
+  // leaving the holder to guess which one is the real one.
+  // Nothing to say before there is a note. Bridge sets it up; explaining the
+  // mechanism to someone who has not asked is noise on the way to a transfer.
+  if (!state.snSession || !state.noteCtx || !state.noteId) return '';
 
   const state_line = mine
     ? `<p class="delivery-note is-ok">Claimed by you. Ready to fill.</p>`
     : unclaimed
-      ? `<p class="delivery-note is-warn">Claim it first, or the transfer lands in the wallet above.</p>
-         <button id="claim-note" class="max" style="margin-top:8px">Claim this note</button>`
+      ? `<p class="delivery-note">Not claimed yet — Bridge claims it before sending.</p>`
       : claimed !== undefined
         ? `<p class="delivery-note is-warn">Claimed by another address, so it cannot be filled for you.</p>`
         : '';
@@ -357,7 +333,7 @@ function noteSection(claimed: string | undefined, mine: boolean, unclaimed: bool
       <span class="note-index">slot ${state.noteSlot?.index ?? 0}</span>
     </div>
     ${state_line}
-    <p class="delivery-note">Derived from your viewing key, so only you can spend it. If it cannot be filled the amount lands in the wallet above — never lost.</p>`;
+    <p class="delivery-note">Derived from your viewing key, so only you can spend it. If it cannot be filled the amount is held on the gateway and stays claimable into a note — never lost, and never a public balance.</p>`;
 }
 
 /// A note id must be a non-zero felt. Refusing an empty one saves a message
@@ -395,6 +371,11 @@ function assetPicker(): string {
 
 // ------------------------------------------------------------------ transfer
 
+/// ONE button, named for the outcome the holder wants. Everything a bridge-in
+/// needs on the way -- the viewing key, an empty note, its claim, the ERC-20
+/// allowance -- is plumbing, and plumbing does not get its own button. A card
+/// that walks someone through four differently-named presses is describing the
+/// implementation to a person who asked for a transfer.
 function ctaLabel(): { text: string; disabled: boolean; note: string } {
   if (!isDeployed) return { text: 'Not deployed', disabled: true, note: 'No deployment found for this network pair.' };
   if (!state.asset.available) {
@@ -433,7 +414,6 @@ function ctaLabel(): { text: string; disabled: boolean; note: string } {
     }
     if (s && !s.verified) return { text: 'Not eligible to bridge', disabled: true, note: 'Your address is not verified on the source registry.' };
     if (s && !s.lockboxRegistered) return { text: 'Bridge not approved by issuer', disabled: true, note: 'The lockbox must be a registered identity before any escrow can succeed.' };
-    if (s && s.allowance < amount) return { text: `Approve ${state.token.symbol}`, disabled: false, note: 'One approval, then the transfer.' };
     {
       // A pool that does not exist would cost a message and land in the wallet
       // anyway, so it is stopped here rather than discovered on the far side.
@@ -454,15 +434,35 @@ function ctaLabel(): { text: string; disabled: boolean; note: string } {
       } else if (!mainPool(state.asset)) {
         return { text: 'No Veil pool configured', disabled: true, note: 'This deployment has no pool to deliver into.' };
       }
-      if (!validNoteId()) {
-        return { text: 'Enter an open note id', disabled: true, note: 'A pool delivery needs a note to fill.' };
+      // NOTHING about the note appears here. Deriving the viewing key, creating
+      // an empty note and claiming it are steps the holder did not ask for and
+      // should not have to understand -- they asked to bridge. The button says
+      // "Bridge", and `bridgeToStarknet` runs whatever is missing. The only
+      // thing that stops the press is a note that cannot be MADE at all.
+      if (!validNoteId() && (!PROVER_ENDPOINT || !PROVER_MASTER_ADDRESS)) {
+        return {
+          text: 'Note creation unavailable', disabled: true,
+          note: 'Delivering into a pool needs a Veil prover endpoint, which this deployment has not configured.',
+        };
       }
       if (amount >= (1n << 128n)) {
         return { text: 'Amount too large for a note', disabled: true, note: 'A note holds at most 2^128 - 1 base units.' };
       }
     }
     const fee = state.fee !== undefined ? `${units(state.fee, 18, 5)} ETH` : '…';
-    return { text: 'Bridge', disabled: false, note: `Message fee ${fee}, paid to LayerZero.` };
+    // The button is named for what it DOES, not for the first transaction it
+    // happens to send. An allowance is plumbing: pressing "Approve" and landing
+    // back on an unchanged card looks like nothing happened, and nothing is
+    // bridged until a second press nobody told you about. One press bridges;
+    // the approval, when one is needed, runs inside it.
+    const needsApproval = Boolean(s && s.allowance < amount);
+    return {
+      text: `Bridge ${state.token.symbol}`,
+      disabled: false,
+      note: needsApproval
+        ? `Two confirmations: approve ${state.token.symbol}, then the transfer. Message fee ${fee}, paid to LayerZero.`
+        : `Message fee ${fee}, paid to LayerZero.`,
+    };
   }
 
   const m = state.mirror;
@@ -548,6 +548,8 @@ function transferView(): string {
     ${eligibilityCard()}
     ${claimsCard()}
 
+    <details class="details-wrap"${state.detailsOpen ? ' open' : ''}>
+      <summary class="details-summary">Details</summary>
     <dl class="details">
       <div class="detail"><dt>Asset</dt><dd>${esc(state.asset.name)}</dd></div>
       <div class="detail"><dt>Route</dt><dd>${esc(sourceLabel())} → ${esc(destLabel())}</dd></div>
@@ -557,6 +559,7 @@ function transferView(): string {
       <div class="detail"><dt>Bridge fee</dt><dd>0</dd></div>
       <div class="detail"><dt>Estimated time</dt><dd>~3–10 min</dd></div>
     </dl>
+    </details>
 
     <button id="cta" class="cta" ${cta.disabled ? 'disabled' : ''}>${esc(cta.text)}</button>
     ${cta.note ? `<div class="cta-note">${esc(cta.note)}</div>` : ''}
@@ -668,12 +671,6 @@ function render(): void {
       paintCta();
     };
   }
-  const deriveNote = document.getElementById('derive-note');
-  if (deriveNote) deriveNote.onclick = () => void doFindNote();
-  const createNote = document.getElementById('create-note');
-  if (createNote) createNote.onclick = () => void doCreateNote();
-  const claimNote = document.getElementById('claim-note');
-  if (claimNote) claimNote.onclick = () => void doClaimNote();
 
   const connectDest = document.getElementById('connect-dest');
   if (connectDest) connectDest.onclick = () => void (toStarknet() ? doConnectStarknet() : doConnectEvm());
@@ -701,6 +698,13 @@ function render(): void {
   document.querySelectorAll<HTMLButtonElement>('[data-disconnect]').forEach((b) => {
     b.onclick = () => void doDisconnect(b.dataset.disconnect as 'sn' | 'evm');
   });
+
+  const details = document.querySelector('.details-wrap');
+  if (details) {
+    details.addEventListener('toggle', () => {
+      state.detailsOpen = (details as HTMLDetailsElement).open;
+    });
+  }
 
   const cta = document.getElementById('cta');
   if (cta) cta.onclick = () => void onCta();
@@ -743,13 +747,17 @@ function paintNavWallets(): void {
   const host = document.getElementById('nav-wallets');
   if (!host) return;
 
+  // Two states, two meanings, and they must not look alike. Connected is a
+  // STATUS chip -- muted, because it is reporting, not asking. Not connected is
+  // an ACTION, and the muted style read as greyed-out for it: the same grey the
+  // CTA uses for `:disabled`, on the one control the page most needs pressed.
   const chip = (
     chain: 'evm' | 'sn', label: string, address: string | undefined
   ): string => address
     ? `<button class="nav-chip is-on" data-nav-wallet="${chain}" title="${esc(label)} — click to disconnect">
          <span class="nav-dot"></span><span class="mono">${esc(short(address, 6, 4))}</span>
        </button>`
-    : `<button class="nav-chip" data-nav-wallet="${chain}">Connect ${esc(label)}</button>`;
+    : `<button class="nav-chip is-action" data-nav-wallet="${chain}">Connect ${esc(label)}</button>`;
 
   // Only when an EVM wallet is connected and there is something to claim:
   // a faucet button with nowhere to send the tokens is just a dead control.
@@ -987,18 +995,30 @@ async function doConnectStarknet(): Promise<void> {
   state.busy = undefined;
   await refreshAll();
 
-  // The note, but only if it costs no signature. Connecting must not sign.
-  await findNoteIfFree();
+  // Derive the viewing key now, which is what prompts the signature.
+  //
+  // The two wallets are NOT symmetric and must not be treated as such. The EVM
+  // wallet signs nothing on connect -- it only names the sender. The Starknet
+  // wallet differs in kind: it is the thing that PRODUCES the viewing key, and
+  // that key is the whole point of connecting it, since the destination note is
+  // derived from it and nobody else can produce that id. Gating it behind a
+  // second button meant a holder connected their wallet and still saw no note,
+  // with nothing saying the app was waiting on them. veilx made this same
+  // change, for the same reason.
+  //
+  // Declining is fine and leaves the sign button in place; the key is cached
+  // after the first time, so later connects and reloads are silent.
+  await doFindNote();
 }
 
-/// Derive the viewing key, find this holder's fillable note, and read who has
-/// claimed it. One signature; no transaction and nothing stored.
 /// Find the note only if that costs NO signature.
 ///
-/// Connecting a wallet must not sign anything. Deriving the viewing key does
-/// sign -- it is what produces the key -- so it happens when the holder asks
-/// for it, not as a side effect of pressing Connect. Once derived it is cached,
-/// so every later connect and every reload finds the note silently.
+/// RESTORING a session is not the same act as connecting. Pressing Connect is
+/// the holder asking to use their Starknet wallet, and deriving the key there
+/// is the point of the press. Re-attaching silently on page load is not a
+/// request for anything, so it must never pop a prompt the holder did not ask
+/// for -- it uses the cached key if there is one and otherwise leaves the sign
+/// button in place.
 async function findNoteIfFree(): Promise<void> {
   if (!state.snSession || !toStarknet() || !state.asset.poolReady) return;
   let chainId: string;
@@ -1011,29 +1031,6 @@ async function findNoteIfFree(): Promise<void> {
   await doFindNote();
 }
 
-/// Make an empty open note for this asset, through the SDK's proven path.
-async function doCreateNote(): Promise<void> {
-  if (!state.snSession || !state.noteCtx) return doFindNote();
-  state.busy = 'Creating your note…'; paintCta(); render();
-  try {
-    const result = await createOpenNote(state.asset, state.noteCtx, (line) => {
-      state.busy = `Creating your note — ${line}…`; paintCta();
-    });
-    if (result.ok) {
-      state.noteSlot = result.slot;
-      state.noteId = result.slot.noteId;
-      state.noteSearched = true;
-      state.error = undefined;
-    } else {
-      state.error = result.reason;
-    }
-  } catch (e: any) {
-    state.error = e?.message ?? String(e);
-  } finally {
-    state.busy = undefined;
-    if (state.noteId) await refreshNoteOwner(); else render();
-  }
-}
 
 async function doFindNote(): Promise<void> {
   if (!state.snSession) return doConnectStarknet();
@@ -1046,7 +1043,10 @@ async function doFindNote(): Promise<void> {
     state.noteSearched = true;
     state.error = undefined;
   } catch (e: any) {
-    state.error = e?.message ?? String(e);
+    // Declining the prompt is a choice, not a failure. Leave the panel on its
+    // "sign to find my note" state rather than colouring it as an error.
+    const m = String(e?.message ?? e);
+    state.error = /reject|denied|abort|cancel/i.test(m) ? undefined : m;
   } finally {
     state.busy = undefined;
     if (state.noteId) await refreshNoteOwner(); else render();
@@ -1063,19 +1063,6 @@ async function refreshNoteOwner(): Promise<void> {
   render();
 }
 
-async function doClaimNote(): Promise<void> {
-  if (!state.snSession) return doConnectStarknet();
-  state.busy = 'Claiming note…'; paintCta();
-  try {
-    await sn.registerNote(state.snSession, state.asset, state.noteId);
-    state.notice = 'Note claimed. Only a transfer addressed to you can fill it.';
-  } catch (e: any) {
-    state.error = e?.message ?? String(e);
-  } finally {
-    state.busy = undefined;
-    await refreshNoteOwner();
-  }
-}
 
 async function doClaimStarknet(): Promise<void> {
   if (!state.snSession) return doConnectStarknet();
@@ -1112,6 +1099,72 @@ async function doClaimEvm(): Promise<void> {
   }
 }
 
+/// Get the destination ready to receive, doing only what is still missing.
+///
+/// Four things have to be true before a bridge-in can land in a pool note: the
+/// destination wallet is connected, its viewing key is derived, an empty note
+/// exists for this asset, and that note is claimed on the gateway. None of them
+/// is something the holder asked for, so none of them gets its own button --
+/// they run inside the one press, and each is skipped when already done.
+///
+/// Returns false when a step could not complete, having put the reason in
+/// `state.error`. The caller must not go on to escrow anything in that case:
+/// the tokens would arrive with nowhere to land and quarantine.
+async function prepareDestination(): Promise<boolean> {
+  const asset = state.asset;
+
+  // 1. The destination wallet. Connecting also derives the viewing key.
+  if (!state.snSession) {
+    await doConnectStarknet();
+    if (!state.snSession) {
+      state.error = state.error ?? `Connect your ${starknetLabel} wallet to receive.`;
+      return false;
+    }
+  }
+
+  // 2. The viewing key, if connecting did not already produce it.
+  if (!state.noteCtx) {
+    state.busy = 'Check your wallet to sign…'; paintCta(); render();
+    state.noteCtx = await deriveNoteContext(state.snSession);
+  }
+
+  // 3. A fillable note. Look before making one: a note holds a single deposit,
+  //    so an unused one from a previous attempt is the one to use.
+  if (!validNoteId()) {
+    const found = await findFillableNote(asset, state.noteCtx);
+    if (found) { state.noteSlot = found; state.noteId = found.noteId; }
+    state.noteSearched = true;
+  }
+  if (!validNoteId()) {
+    state.busy = 'Creating your note…'; paintCta(); render();
+    const made = await createOpenNote(asset, state.noteCtx, (line) => {
+      state.busy = `Creating your note — ${line}…`; paintCta();
+    });
+    if (!made.ok) { state.error = made.reason; return false; }
+    state.noteSlot = made.slot;
+    state.noteId = made.slot.noteId;
+    state.noteSearched = true;
+  }
+
+  // 4. The claim. `fill_open_note` is one-shot and note ids are public, so an
+  //    unclaimed note could be burned with dust by anyone.
+  const owner = await sn.noteOwner(asset, state.noteId).catch(() => undefined);
+  state.noteClaimedBy = owner;
+  const claimedByMe = owner !== undefined && state.snSession !== undefined
+    && BigInt(owner || 0) === BigInt(state.snSession.address);
+  if (!claimedByMe) {
+    if (owner !== undefined && BigInt(owner || 0) !== 0n) {
+      state.error = 'Your note is claimed by another address, so it cannot be filled for you.';
+      return false;
+    }
+    state.busy = 'Claiming your note…'; paintCta(); render();
+    await sn.registerNote(state.snSession, asset, state.noteId);
+    state.noteClaimedBy = state.snSession.address;
+  }
+
+  return true;
+}
+
 async function onCta(): Promise<void> {
   if (toStarknet() && !state.evmSession) return doConnectEvm();
   if (!toStarknet() && !state.snSession) return doConnectStarknet();
@@ -1126,11 +1179,17 @@ async function onCta(): Promise<void> {
   const asset = state.asset;
   try {
     if (toStarknet()) {
+      // Everything the delivery needs, in this one press. The holder asked to
+      // bridge; the viewing key, the note, its claim and the allowance are ours
+      // to arrange. Any of them may already be done, and each is skipped if so.
+      if (!(await prepareDestination())) return;
+
+      // `approve` awaits its receipt, so the allowance is on chain before the
+      // transfer is built -- returning here instead would leave the tokens
+      // unmoved with the card looking unchanged.
       if (state.evmStatus && state.evmStatus.allowance < amount) {
-        state.busy = 'Approving…'; paintCta();
+        state.busy = 'Approve in wallet…'; paintCta(); render();
         await evm.approve(state.evmSession!, asset, amount);
-        state.notice = 'Approved. Confirm the transfer to bridge.';
-        return;
       }
       const fee = state.fee ?? (await evm.quote(asset, amount, state.recipient));
       state.busy = 'Confirm in wallet…'; paintCta();

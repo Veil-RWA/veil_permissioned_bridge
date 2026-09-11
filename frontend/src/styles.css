@@ -98,11 +98,16 @@ a { color: inherit; }
   color: var(--ink);
 }
 
+/* The real Veil mark. This was a CSS triangle standing in for it -- close
+   enough to read as "a logo" at a glance, and wrong everywhere it mattered. */
+/* The real Veil mark. `contain`, not `cover`: the V reaches the edges of the
+   artwork, so any crop clips its points -- a circular mask took the corners
+   off. Let the whole mark show and give it room instead. */
 .brand-mark {
-  width: 24px; height: 24px; flex: none;
-  background: linear-gradient(150deg, #f4f6fa 0%, #b9c2d0 38%, #6c7686 62%, #eef1f6 100%);
-  clip-path: polygon(50% 4%, 96% 88%, 4% 88%);
-  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .6));
+  width: 28px; height: 28px; flex: none;
+  object-fit: contain;
+  display: block;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .55));
 }
 
 .tabs { display: flex; gap: 4px; margin-left: 8px; }
@@ -459,9 +464,11 @@ a { color: inherit; }
 .nav-chip.is-on { color: var(--ink); }
 .nav-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--good); flex: none; }
 
-/* "Get faucets" is an ACTION, not a status chip. In the muted chip style it sat
-   next to two connected wallets reading as disabled -- the same grey the CTA
-   uses for exactly that. Gold, like the primary CTA, because it is one. */
+/* An ACTION in the nav, not a status chip: "Get faucets" and the two "Connect"
+   buttons. In the muted chip style they read as disabled -- the same grey the
+   CTA uses for exactly that -- which is the one meaning a control asking to be
+   pressed must not carry. Gold, like the primary CTA, because they are one.
+   Status chips (a connected wallet, `.is-on`) stay muted: they report. */
 .nav-chip.is-action {
   background: linear-gradient(180deg, var(--gold-lift), var(--gold));
   border-color: var(--gold-deep);
@@ -565,3 +572,35 @@ a { color: inherit; }
 .note-label { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--faint); }
 .note-id { font-size: 13px; color: var(--ink); }
 .note-index { font-size: 11px; color: var(--muted); margin-left: auto; }
+
+/* Quote breakdown, collapsed by default. The numbers matter when someone goes
+   looking for them; six label/value rows above the action button do not need to
+   be read on the way to pressing it. */
+.details-wrap { margin-top: 4px; }
+.details-summary {
+  list-style: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--dim);
+  padding: 6px 0;
+  user-select: none;
+}
+.details-summary::-webkit-details-marker { display: none; }
+.details-summary::after {
+  content: '';
+  width: 5px; height: 5px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg) translate(-1px, -1px);
+  transition: transform 120ms ease;
+}
+.details-wrap[open] .details-summary::after { transform: rotate(-135deg) translate(-1px, -1px); }
+.details-summary:hover { color: var(--ink); }
+.details-wrap:focus-within .details-summary { outline: none; }
+.details-summary:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; border-radius: 3px; }
+@media (prefers-reduced-motion: reduce) {
+  .details-summary::after { transition: none; }
+}

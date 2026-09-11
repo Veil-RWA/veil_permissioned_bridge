@@ -1,5 +1,5 @@
 {
-  "_comment": "DEMO ONLY -- for looking at the app without deploying. The EVM and gateway addresses below are PLACEHOLDERS and point at nothing; connecting a wallet will not work. The Veil pool, factory and identity registry ARE real, live Starknet Sepolia contracts, so the pool existence check runs for real against them. veil.proverEndpoint and veil.masterAddress are blank here: without them the app says note creation is unavailable rather than failing at the prover.",
+  "_comment": "DEMO ONLY -- lets the app run before anything is deployed. `demo: true` is what the app reads: the bridge contracts below are PLACEHOLDERS that point at nothing, so every mirror check renders as unknown rather than as a refusal, and connecting a wallet will not bridge. veil.pool and veil.factory are real Starknet Sepolia contracts, so the pool checks run for real. veil.proverEndpoint and veil.masterAddress are blank: without them the app says note creation is unavailable instead of failing inside the prover.",
   "demo": true,
   "evmNetwork": "ethereum-sepolia",
   "starknetNetwork": "starknet-sepolia",

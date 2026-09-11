@@ -19,7 +19,7 @@
 import { connect as pickWallet, disconnect as dropWallet } from '@starknet-io/get-starknet';
 import type { StarknetWindowObject } from '@starknet-io/get-starknet';
 import { RpcProvider, WalletAccount, CallData, uint256 } from 'starknet';
-import { STARKNET_RPC, DEFAULT_GAS_LIMIT, deployment } from './config';
+import { STARKNET_RPC, DEFAULT_GAS_LIMIT, deployment, IS_DEMO } from './config';
 import type { Asset } from './assets';
 
 export const snProvider = new RpcProvider({ nodeUrl: STARKNET_RPC });
@@ -144,14 +144,39 @@ async function callFelts(
   return (await snProvider.callContract({ contractAddress, entrypoint, calldata })) as string[];
 }
 
-const u256 = (felts: string[]): bigint => BigInt(felts[0] ?? 0) + (BigInt(felts[1] ?? 0) << 128n);
+/// A read that may not have happened.
+///
+/// `undefined` means the contract did not answer -- no address configured, a
+/// missing entrypoint, a revert, an RPC that is down -- which is NOT the same
+/// as answering zero. Collapsing the two is how an eligibility panel ends up
+/// telling a registered holder they are "not yet mirrored": nothing asked, and
+/// the default got rendered as a fact about them.
+async function maybeFelts(
+  contractAddress: string | undefined, entrypoint: string, calldata: string[] = []
+): Promise<string[] | undefined> {
+  if (!contractAddress) return undefined;
+  try { return await callFelts(contractAddress, entrypoint, calldata); }
+  catch { return undefined; }
+}
+
+const u256 = (felts: string[] | undefined): bigint =>
+  felts ? BigInt(felts[0] ?? 0) + (BigInt(felts[1] ?? 0) << 128n) : 0n;
 
 export type MirrorStatus = {
+  /// Did the mirrored registry answer the question that decides the gate? When
+  /// false every eligibility field below is a default, not a finding, and the
+  /// caller must render unknown rather than a refusal.
+  readable: boolean;
   identity: bigint;      // the EVM account backing this wallet, 0 if unbound
+  /// Whether `identity` is a fact. Eligibility is keyed on the EVM account, so
+  /// a registry with no `identity_of` is not a mirrored registry at all and
+  /// "unbound" would be the wrong thing to conclude from its silence.
+  identityKnown: boolean;
   verified: boolean;     // what the twin will actually enforce
   balance: bigint;
   pending: bigint;       // quarantined, claimable once eligible
   fresh: boolean;
+  freshnessKnown: boolean;
   syncedAt: number;
   stalenessWindow: number;
 };
@@ -159,36 +184,49 @@ export type MirrorStatus = {
 /// What the mirror currently says about a Starknet wallet. `verified` is the
 /// number that matters: it already folds in the binding, the record, the freeze
 /// flag, the global pause and the staleness window.
+///
+/// Every read is optional and reports whether it happened. A mirrored registry
+/// is the only contract that can answer these, and pointing them at anything
+/// else -- a demo stand-in, an ERC-3643 identity registry that happens to share
+/// an entrypoint NAME -- produces a confident wrong answer about a real holder.
+/// So on a demo deployment the registry is not asked at all.
 export async function mirrorStatus(asset: Asset, address: string): Promise<MirrorStatus> {
   const sn = asset.addresses.starknet!;
+  const registry = IS_DEMO ? undefined : sn.registry;
   const [identityF, verifiedF, balanceF, pendingF, windowF] = await Promise.all([
-    callFelts(sn.registry!, 'identity_of', [address]).catch(() => ['0']),
-    callFelts(sn.registry!, 'is_verified', [address]).catch(() => ['0']),
-    callFelts(sn.token!, 'balance_of', [address]).catch(() => ['0', '0']),
-    callFelts(sn.gateway!, 'pending_of', [address]).catch(() => ['0', '0']),
-    callFelts(sn.registry!, 'staleness_window', []).catch(() => ['0']),
+    maybeFelts(registry, 'identity_of', [address]),
+    maybeFelts(registry, 'is_verified', [address]),
+    maybeFelts(sn.token, 'balance_of', [address]),
+    maybeFelts(IS_DEMO ? undefined : sn.gateway, 'pending_of', [address]),
+    maybeFelts(registry, 'staleness_window', []),
   ]);
 
-  const identity = BigInt(identityF[0] ?? 0);
+  // `is_verified` is the call that decides the gate, so it is the one that
+  // decides whether there is an answer to show at all.
+  const readable = verifiedF !== undefined;
+  const identity = identityF ? BigInt(identityF[0] ?? 0) : 0n;
   let syncedAt = 0;
   let fresh = false;
-  if (identity !== 0n) {
-    try {
-      // IdentityRecord: seq, synced_at, verified, frozen, country
-      const record = await callFelts(sn.registry!, 'record', [identityF[0]]);
-      syncedAt = Number(BigInt(record[1] ?? 0));
-      fresh = BigInt((await callFelts(sn.registry!, 'is_fresh', [identityF[0]]))[0] ?? 0) === 1n;
-    } catch { /* leave defaults */ }
+  let freshnessKnown = false;
+  if (identityF && identity !== 0n) {
+    // IdentityRecord: seq, synced_at, verified, frozen, country
+    const record = await maybeFelts(registry, 'record', [identityF[0]]);
+    if (record) syncedAt = Number(BigInt(record[1] ?? 0));
+    const isFresh = await maybeFelts(registry, 'is_fresh', [identityF[0]]);
+    if (isFresh) { fresh = BigInt(isFresh[0] ?? 0) === 1n; freshnessKnown = true; }
   }
 
   return {
+    readable,
     identity,
-    verified: BigInt(verifiedF[0] ?? 0) === 1n,
+    identityKnown: identityF !== undefined,
+    verified: readable && BigInt(verifiedF![0] ?? 0) === 1n,
     balance: u256(balanceF),
     pending: u256(pendingF),
     fresh,
+    freshnessKnown,
     syncedAt,
-    stalenessWindow: Number(BigInt(windowF[0] ?? 0)),
+    stalenessWindow: windowF ? Number(BigInt(windowF[0] ?? 0)) : 0,
   };
 }
 

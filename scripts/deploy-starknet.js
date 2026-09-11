@@ -45,7 +45,7 @@ async function declareIfNeeded(account, contract, deployment) {
   const res = await account.declareIfNot({ contract: sierra, casm });
   if (res.transaction_hash) {
     console.log(`      declaring...`);
-    await account.waitForTransaction(res.transaction_hash);
+    await account.provider.waitForTransaction(res.transaction_hash);
     console.log(`      declared                ${classHash}`);
   } else {
     console.log(`      class already declared  ${classHash}`);
@@ -56,7 +56,7 @@ async function declareIfNeeded(account, contract, deployment) {
 
 async function deployContract(account, classHash, calldata) {
   const res = await account.deployContract({ classHash, constructorCalldata: calldata });
-  await account.waitForTransaction(res.transaction_hash);
+  await account.provider.waitForTransaction(res.transaction_hash);
   return res.contract_address;
 }
 

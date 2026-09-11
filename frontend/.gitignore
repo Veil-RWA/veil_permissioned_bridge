@@ -5,3 +5,4 @@ node_modules
 src/deployment.json
 .env
 src/pools.bundle.mjs
+src/eligibility.bundle.mjs

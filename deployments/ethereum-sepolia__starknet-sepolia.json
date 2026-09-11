@@ -1,0 +1,177 @@
+{
+  "evmNetwork": "ethereum-sepolia",
+  "starknetNetwork": "starknet-sepolia",
+  "evmEid": 40161,
+  "starknetEid": 40500,
+  "assets": {
+    "gold": {
+      "evm": {
+        "token": "0x464aC0c7A41A538583eFd01EbfF9f704a7Abe9b1",
+        "lockbox": "0xeaCEfA7b0897eCE342c0A08e9F1e9f2251Dc9503",
+        "complianceReader": "0x81605BAF7b733F2D47aB2BE6206ad96ad68a1253"
+      },
+      "starknet": {
+        "registry": "0x1aa0cbb0793c47fd478bd7cc11e755c8533edc1543505e944dd4d4770e83a19",
+        "stalenessWindow": 86400,
+        "gateway": "0x1c88e111c19cc4a4c4e38ddb5a3aaf5c2228606f1f8a4cceb2c7439b638b276",
+        "compliance": "0x629ba3fa8ade2f2ee3bc323fe714a0cabdf48b39e0297fa52e9d543ebddea38",
+        "token": "0x69ea48277f2bf6aeed487e3bb3a15f7d1e08e69264e3590cdb5b407bf060e95",
+        "name": "Bridged Gold",
+        "symbol": "bXAU",
+        "pool": "0x12808521ab5f277d84eb430f2d59ff8753e91947b43fcf9aea341b38481a80a"
+      },
+      "wired": {
+        "peers": true,
+        "links": true
+      },
+      "faucet": {
+        "compliance": "0x03bae4c4BDe7CFC16cfd6bfC262A5af379fc516e",
+        "modules": {
+          "countryAllow": "0x5C6D56040FD1e95be08E913D97Aa5ddabc804E8b",
+          "countryRestrict": "0x472e4aDeCAD0C3C1Bfc550e7e608b4103302E637",
+          "transferRestrict": "0xcEB464254aAb52E21cd0334A4C5B8823A9e8D530",
+          "supplyLimit": "0x84611C74Ba329061d042CB1dd2A747af27EE7814",
+          "maxBalance": "0x434392EF73ceFF61D9cD0efB03992b3616f8Ea35"
+        }
+      }
+    },
+    "silver": {
+      "evm": {
+        "token": "0x4AE95b86146D88563F30ab01FB75e39098dB8B1d",
+        "lockbox": "0x17E265F7Ae60CB08a2f9DD4F79Cb3Cb4077dcC50",
+        "complianceReader": "0x81605BAF7b733F2D47aB2BE6206ad96ad68a1253"
+      },
+      "starknet": {
+        "registry": "0x4490170947af3e7e387808f411403b92a4ac149d096361a5db813159a492702",
+        "stalenessWindow": 86400,
+        "gateway": "0x9e37f35156db2ab8b8b9259f89d3d97c3e2c50914197eec3d417f0ac85085a",
+        "compliance": "0x92e75bfe44815b8abe25e6a496cbb70ed75b7d49aa41576b254416ed493d8",
+        "token": "0x192d44cd471cf60c7061a9ca87626766f18f44abd627c94abb8fe487889b026",
+        "name": "Bridged Silver",
+        "symbol": "bXAG",
+        "pool": "0x12808521ab5f277d84eb430f2d59ff8753e91947b43fcf9aea341b38481a80a"
+      },
+      "wired": {
+        "peers": true,
+        "links": true
+      },
+      "faucet": {
+        "compliance": "0x6727d8f6D594aF969c8955Fa4cAeD1a491f28B56",
+        "modules": {
+          "countryAllow": "0xB6e3c2D62cFFa5B7E3d3a005700d11b365a643B6",
+          "countryRestrict": "0xd147345Fca93C10191faC1aD8b5B0D99737E2028",
+          "transferRestrict": "0x4995225c20734e0B1d6E8EfaB7FFe3Ff2211B86c",
+          "supplyLimit": "0x6e01c3870C6D45270506a341441317F486908c24",
+          "maxBalance": "0x58042CD7b7f0EA1b514d72F5E9D48BB62823Ca9b"
+        }
+      }
+    },
+    "tbill": {
+      "evm": {
+        "token": "0xe2a4E8Fd19d868e5535Ba03D01A2bd0BCDf4B411",
+        "lockbox": "0x2FE915E6945341F74f8bb4E0891866eb2087aC93",
+        "complianceReader": "0x81605BAF7b733F2D47aB2BE6206ad96ad68a1253"
+      },
+      "starknet": {
+        "registry": "0x10faa9192b2e947db03ac92b841a3f4ac9442bcbb21326ec92b56a37de31b18",
+        "stalenessWindow": 86400,
+        "gateway": "0x56321b8993a2e84f1980b4e5a3d7605bd6e930b35c262b9a1c7fdf1adf79749",
+        "compliance": "0x18ea7e24add02ab8a29988d277ddf8b503e547a7bd0005d96894d3a36750cd4",
+        "token": "0x65446b29129e56a195b72904e0b35bc2cbaca579a8b43512e9f4f7d85e18fbf",
+        "name": "Bridged Treasuries",
+        "symbol": "bTBILL",
+        "pool": "0x12808521ab5f277d84eb430f2d59ff8753e91947b43fcf9aea341b38481a80a"
+      },
+      "wired": {
+        "peers": true,
+        "links": true
+      },
+      "faucet": {
+        "compliance": "0xA6cfAb894fE3844839FF62cA9247c9b4f0D36236",
+        "modules": {
+          "countryAllow": "0x4361aF051Ea39ee99a6b9AB242e0dAaf070a1268",
+          "countryRestrict": "0x5f7c4Fc5A366aaac503155Bc4569f981D88346C5",
+          "transferRestrict": "0xDe316777B3E16de9BdC988e703EE45Cb628945a1",
+          "supplyLimit": "0xca09485f9D8B6135798B728E3E70D968E9Ba0CB7",
+          "maxBalance": "0x298cDB054f2847A5B1CD216a999502bd6B9EF0aD"
+        }
+      }
+    },
+    "credit": {
+      "evm": {
+        "token": "0xB60B7a2219A2813bEb6BBE64A010cCfc1A602A2C",
+        "lockbox": "0x07412FC155852F8c7446391d3DAE7EFc3Eb485B8",
+        "complianceReader": "0x81605BAF7b733F2D47aB2BE6206ad96ad68a1253"
+      },
+      "starknet": {
+        "registry": "0x645dc3aa13aef695168865c453a629d54556c41738a7e2637fc6af0c6e14ae3",
+        "stalenessWindow": 86400,
+        "gateway": "0x12c6ad0dd3b26ea54328aaf1c77b59d1d1f74821053e23a4ec3b81feae0cc56",
+        "compliance": "0x7bb9d3871b424308e4daeb637645932249dda941020a37cc49bcb59f4c1e287",
+        "token": "0x2348eba3fcf733f8787b97326211cea231d5270af3ef86aba30ca4efcd8066e",
+        "name": "Bridged Credit",
+        "symbol": "bCREDIT",
+        "pool": "0x12808521ab5f277d84eb430f2d59ff8753e91947b43fcf9aea341b38481a80a"
+      },
+      "wired": {
+        "peers": true,
+        "links": true
+      },
+      "faucet": {
+        "compliance": "0x5626689340cD3022B14881eD49B7D203cAA328EF",
+        "modules": {
+          "countryAllow": "0xf895464355d31A3e5100587069bb3b1575752fb1",
+          "countryRestrict": "0xdf12569b895994292B2115cA58303D895e551aB3",
+          "transferRestrict": "0x9e640E4FfB82c7aF776f7b80Ad6CaC9747379F98",
+          "supplyLimit": "0x7142023Aa55005D778592eACE41403e404eB5A3c",
+          "maxBalance": "0x185aE3F756609008CcEd04d3bE5a83DA5b644dc4"
+        }
+      }
+    },
+    "estate": {
+      "evm": {
+        "token": "0x05a73Ff1AF26F532abf8c3eE4C04b68A104c17D7",
+        "lockbox": "0xEB952c4fDF52CaCE6cDa5d45dc38883921A79697",
+        "complianceReader": "0x81605BAF7b733F2D47aB2BE6206ad96ad68a1253"
+      },
+      "starknet": {
+        "registry": "0x6fdb1e34f82ffa21f65ebf0a05d4da1a540c5e61d2b5c898132e7270b709efe",
+        "stalenessWindow": 86400,
+        "gateway": "0x709bd101d5d315e6fcb4cac47e1d2e8e8bdb5ae875b58166435fd61d8fb412f",
+        "compliance": "0xd1b046f90d549314e7ebd0d794892bd74c43dd9b1fc029026f04dcfbb3c38d",
+        "token": "0x9cc14e5789bf98503e36e7989b9d3b89c3aa0705db71723550101d6e8aa88a",
+        "name": "Bridged Estate",
+        "symbol": "bESTATE",
+        "pool": "0x12808521ab5f277d84eb430f2d59ff8753e91947b43fcf9aea341b38481a80a"
+      },
+      "wired": {
+        "peers": true,
+        "links": true
+      },
+      "faucet": {
+        "compliance": "0xfC5e95a606F24F15d795B6c68058D10696Fe9f89",
+        "modules": {
+          "countryAllow": "0xa53Cf8A726532604E66565B8f3a9eBcF09426b7E",
+          "countryRestrict": "0xF3ebF8f103d217caE43992C3d88A1a290e157D86",
+          "transferRestrict": "0x95c1bc3AcdDFE864732655e363757f519827C6E6",
+          "supplyLimit": "0xcE2Ea700c9b05e26B6E9E36CD5fEba18D9b36137",
+          "maxBalance": "0x956d7abA7B9d5bE26972995914F2cb5e0Ed039e9"
+        }
+      }
+    }
+  },
+  "faucet": {
+    "registry": "0xF01d75f3514524bEc608a855334e1e6292Bf83D8",
+    "router": "0xFA2b72AA67032dB594DD2b7AbAA72AB7b4CA0AA5"
+  },
+  "classes": {
+    "VeilMirroredRegistry": "0x52a293bee63f8b138883ce95ac06719041ad1bcfb7443524fb1ce17e11c6a52",
+    "VeilBridgeGateway": "0x3e43c6f9e3ac6b7cb30cfee0feeadcd6dae2013d53769170a31763462463d62",
+    "MirroredCompliance": "0x44f6b1819501942b11ff1847f10036912074b593b8667a94560866173d9321e",
+    "VeilBridgedERC3643": "0x6186a8a05921a1aea3bde80e717e4f0dafbe493fc9de5b7cdf0592666b4eea3"
+  },
+  "veil": {
+    "pool": "0x12808521ab5f277d84eb430f2d59ff8753e91947b43fcf9aea341b38481a80a",
+    "factory": "0x244b26034b77cd3bbafe6a506ec177e7981bf0620021f3082813fc22a40cbe8"
+  }
+}

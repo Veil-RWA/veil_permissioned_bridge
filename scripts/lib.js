@@ -7,11 +7,23 @@ const {
 } = require('./config');
 
 function parseArgs(argv) {
+  // `asset` defaults to gold for the per-asset scripts. deploy-faucet.js, which
+  // is the only one that means "all five" when given none, must not read this
+  // default as a choice -- it checks argv itself (see assetsRequested).
   const out = { evm: DEFAULT_EVM, starknet: DEFAULT_STARKNET, asset: 'gold' };
   for (let i = 2; i < argv.length; i++) {
     const key = argv[i].replace(/^--/, '');
     if (key === 'yes' || key === 'y') {
       out.yes = true;
+      continue;
+    }
+    // A flag with nothing after it is a BOOLEAN. Without this, `--modules`
+    // swallows whatever follows as its value -- so `--modules --asset silver`
+    // read as {modules:'--asset'} and still deployed gold, and a trailing
+    // `--modules` read as undefined and silently did nothing at all.
+    const next = argv[i + 1];
+    if (next === undefined || next.startsWith('--')) {
+      out[key] = true;
       continue;
     }
     const value = argv[++i];
@@ -23,6 +35,15 @@ function parseArgs(argv) {
     }
   }
   return out;
+}
+
+/// Which assets the user actually ASKED for, as opposed to what parseArgs
+/// defaulted to. `--asset x` means just x; naming none means every id, which is
+/// what deploy-faucet.js documents and what the parser default was quietly
+/// overriding.
+function assetsRequested(argv, all) {
+  const i = argv.indexOf('--asset');
+  return i !== -1 && argv[i + 1] ? [argv[i + 1]] : all.slice();
 }
 
 function loadDeployment(args) {
@@ -163,6 +184,7 @@ function done(label, value, explorer) {
 
 module.exports = {
   parseArgs,
+  assetsRequested,
   assetSlot,
   starknetAccount,
   httpFetch,

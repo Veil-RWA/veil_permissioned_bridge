@@ -22,6 +22,7 @@ const {
 } = require('./lib');
 
 const GATEWAY_ABI = [
+  { type: 'function', name: 'set_local_identity', inputs: [{ name: 'sn_account', type: 'core::starknet::contract_address::ContractAddress' }, { name: 'allowed', type: 'core::bool' }, { name: 'country', type: 'core::integer::u16' }], outputs: [], state_mutability: 'external' },
   { type: 'function', name: 'set_peer', inputs: [{ name: 'eid', type: 'core::integer::u32' }, { name: 'peer', type: 'veil_bridge::lz::Bytes32' }], outputs: [], state_mutability: 'external' },
 ];
 
@@ -58,7 +59,7 @@ async function main() {
 
   async function invoke(label, contractAddress, entrypoint, calldata) {
     const res = await account.execute({ contractAddress, entrypoint, calldata });
-    await account.waitForTransaction(res.transaction_hash);
+    await account.provider.waitForTransaction(res.transaction_hash);
     done(label, res.transaction_hash, `${snNet.explorer}/tx/${res.transaction_hash}`);
   }
 
@@ -149,6 +150,30 @@ async function main() {
     done('already set', wantFactory);
   } else {
     await invoke('tx', slot.starknet.gateway, 'set_factory', [wantFactory]);
+  }
+
+  // A POOL IS A HOLDER, and the twin refuses to move to an address its mirror
+  // has never heard of. `fill_open_note` pulls with `transfer_from(gateway ->
+  // pool)`, so without this the pool reverts, the gateway burns back, and every
+  // delivery quarantines with POOL_REVERTED -- the exact failure this flag was
+  // documented to prevent while doing nothing at all.
+  //
+  // A pool has no EVM identity to mirror, so it is registered as a LOCAL
+  // identity: infrastructure that may hold, not an investor. Defaults to the
+  // pool being wired, since that is the one that has to work.
+  const holders = [].concat(args.holder ?? [], wantPool ?? []).filter(Boolean);
+  const seen = new Set();
+  for (const holder of holders) {
+    const key = BigInt(holder).toString();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    step(9, 9, `registry.set_local_identity(${holder.slice(0, 10)}… may hold the twin)`);
+    const current = await call(slot.starknet.registry, 'local_identity', [holder]);
+    if (asFelt(current) === 1n) {
+      done('already a holder', holder);
+    } else {
+      await invoke('tx', slot.starknet.registry, 'set_local_identity', [holder, '1', '840']);
+    }
   }
 
   // Recorded once at deployment level, not per asset, because one pool serves
