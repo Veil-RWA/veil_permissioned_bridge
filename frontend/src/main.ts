@@ -28,7 +28,7 @@ import { load as loadHistory, record, update, type Transfer } from './history';
 import { recipientGate, mirrorRefusal, mirrorUnreadable, type Gate } from './eligibility';
 import {
   deriveNoteContext, findFillableNote, forgetViewingKey, createOpenNote,
-  hasCachedViewingKey, type NoteContext, type NoteSlot,
+  hasCachedViewingKey, isRegisteredInPool, registerInPool, type NoteContext, type NoteSlot,
 } from './notes';
 import {
   checkPool, mainPool, poolFactory, normalisePoolAddress, POOL_PROBLEMS, type PoolCheck,
@@ -1009,6 +1009,35 @@ async function doConnectStarknet(): Promise<void> {
   // Declining is fine and leaves the sign button in place; the key is cached
   // after the first time, so later connects and reloads are silent.
   await doFindNote();
+  await ensureRegistered();
+}
+
+/// Register the wallet in the Veil pool if it is not yet, the way veilx does.
+///
+/// A wallet the pool has never seen cannot own a note -- the pool refuses to
+/// create one (VIEW_KEY_MISSING) -- so without this an unregistered holder only
+/// found out at "Creating your note". Returns false, with the reason in
+/// `state.error` when there is one, if the wallet is not registered afterwards.
+async function ensureRegistered(): Promise<boolean> {
+  if (!state.snSession || !state.noteCtx || !state.asset.poolReady) return false;
+  const registered = await isRegisteredInPool(state.asset, state.snSession.address);
+  if (registered) return true;
+  if (registered === undefined) {
+    state.error = 'Could not check your registration in the Veil pool. Try again in a moment.';
+    render();
+    return false;
+  }
+  state.busy = 'Registering your wallet…'; paintCta(); render();
+  try {
+    const r = await registerInPool(state.asset, state.noteCtx, (line) => {
+      state.busy = `Registering your wallet — ${line}…`; paintCta();
+    });
+    if (!r.ok) state.error = r.reason;
+    return r.ok;
+  } finally {
+    state.busy = undefined;
+    render();
+  }
 }
 
 /// Find the note only if that costs NO signature.
@@ -1029,6 +1058,7 @@ async function findNoteIfFree(): Promise<void> {
     return;
   }
   await doFindNote();
+  await ensureRegistered();
 }
 
 
@@ -1101,9 +1131,10 @@ async function doClaimEvm(): Promise<void> {
 
 /// Get the destination ready to receive, doing only what is still missing.
 ///
-/// Four things have to be true before a bridge-in can land in a pool note: the
-/// destination wallet is connected, its viewing key is derived, an empty note
-/// exists for this asset, and that note is claimed on the gateway. None of them
+/// Five things have to be true before a bridge-in can land in a pool note: the
+/// destination wallet is connected, its viewing key is derived, that key is
+/// registered in the pool, an empty note exists for this asset, and that note is
+/// claimed on the gateway. None of them
 /// is something the holder asked for, so none of them gets its own button --
 /// they run inside the one press, and each is skipped when already done.
 ///
@@ -1128,7 +1159,14 @@ async function prepareDestination(): Promise<boolean> {
     state.noteCtx = await deriveNoteContext(state.snSession);
   }
 
-  // 3. A fillable note. Look before making one: a note holds a single deposit,
+  // 3. Registration. Connecting already does this; a holder whose registration
+  //    failed there, or who reloaded before it finished, is registered here.
+  if (!(await ensureRegistered())) {
+    state.error = state.error ?? 'Your wallet is not registered in the Veil pool yet.';
+    return false;
+  }
+
+  // 4. A fillable note. Look before making one: a note holds a single deposit,
   //    so an unused one from a previous attempt is the one to use.
   if (!validNoteId()) {
     const found = await findFillableNote(asset, state.noteCtx);
@@ -1146,7 +1184,7 @@ async function prepareDestination(): Promise<boolean> {
     state.noteSearched = true;
   }
 
-  // 4. The claim. `fill_open_note` is one-shot and note ids are public, so an
+  // 5. The claim. `fill_open_note` is one-shot and note ids are public, so an
   //    unclaimed note could be burned with dust by anyone.
   const owner = await sn.noteOwner(asset, state.noteId).catch(() => undefined);
   state.noteClaimedBy = owner;

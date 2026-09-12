@@ -211,6 +211,87 @@ function randomFelt(): bigint {
   return v === 0n ? 1n : v;
 }
 
+// ── Registering the wallet ───────────────────────────────────────────────────
+//
+// A wallet the pool has never seen cannot own a note: `create_open_note_derive`
+// asserts the owner published a viewing key (VIEW_KEY_MISSING). So connecting
+// registers it, exactly as veilx/app does -- through the prover, with the
+// settle submitted from the prover's own account.
+
+/// Has this wallet published a viewing key on the asset's pool? Undefined when
+/// the read did not come back -- silence is never "not registered".
+export async function isRegisteredInPool(
+  asset: Asset, address: string
+): Promise<boolean | undefined> {
+  const pool = asset.addresses.starknet?.pool;
+  if (!pool) return undefined;
+  try {
+    const res = await snProvider.callContract({
+      contractAddress: pool, entrypoint: 'get_viewing_key', calldata: [address],
+    });
+    return BigInt((res as string[])[0] ?? 0) !== 0n;
+  } catch {
+    return undefined;
+  }
+}
+
+export type RegisterResult = { ok: true } | { ok: false; reason: string };
+
+/// Publish the viewing key. One per account, forever -- the pool rejects a
+/// second registration, so check `isRegisteredInPool` first.
+export async function registerInPool(
+  asset: Asset, ctx: NoteContext, onProgress?: (line: string) => void
+): Promise<RegisterResult> {
+  const pool = asset.addresses.starknet?.pool;
+  if (!pool) return { ok: false, reason: 'This asset has no Veil pool configured.' };
+  if (!PROVER_ENDPOINT) {
+    return { ok: false, reason: 'No Veil prover endpoint is configured for this deployment.' };
+  }
+  if (!PROVER_MASTER_ADDRESS) {
+    return { ok: false, reason: 'No prover master account is configured for this deployment.' };
+  }
+
+  const prover = new VeilProver({
+    veilAddress: pool,
+    pool: 'erc3643',
+    endpoint: PROVER_ENDPOINT,
+    transport: 'job',
+    rpcUrl: STARKNET_RPC,
+    masterAddress: PROVER_MASTER_ADDRESS,
+  });
+
+  // register_viewing_key_derive(user, k: u256, audit_ephemeral_secret_r,
+  //   self_channel_ephemeral_secret_r, channel_outgoing_salt)
+  const calldata = [
+    hexOf(ctx.owner),
+    ...u256Pair(ctx.viewingKey),
+    hexOf(randomFelt()),
+    hexOf(randomFelt()),
+    hexOf(randomFelt()),
+  ];
+
+  try {
+    onProgress?.('proving');
+    const { txHash } = await prover.registerViewingKey(calldata);
+    // Every settle goes out from the prover's one account. The note created
+    // next must not start before this is included, or its nonce is stale.
+    onProgress?.('waiting for inclusion');
+    await snProvider.waitForTransaction(txHash, { retryInterval: 3000 });
+  } catch (e: any) {
+    return { ok: false, reason: e?.message ?? String(e) };
+  }
+
+  // Included, but this RPC may trail a block.
+  for (let attempt = 0; attempt < NOTE_VISIBLE_ATTEMPTS; attempt++) {
+    if (await isRegisteredInPool(asset, hexOf(ctx.owner))) return { ok: true };
+    await new Promise((r) => setTimeout(r, NOTE_VISIBLE_DELAY_MS));
+  }
+  return {
+    ok: false,
+    reason: 'Your wallet was registered, but this RPC cannot see it yet. Press Bridge again in a moment.',
+  };
+}
+
 /// Calldata for `create_open_note_derive(owner, k: u256, token,
 /// audit_ephemeral_secret_r, subchannel_salt)`.
 export function buildCreateOpenNoteCalldata(
