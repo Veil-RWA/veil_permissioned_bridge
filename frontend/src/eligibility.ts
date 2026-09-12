@@ -32,17 +32,20 @@ export function mirrorRefusal(m: MirrorStatus, self: boolean): string {
 /// What the mirror says about the RECIPIENT of a bridge-in -- which is not the
 /// same question as what it says about a holder already on this chain.
 ///
-/// A MINT carries the sender's eligibility snapshot with it. `handle_mint`
-/// applies that record, binds the recipient wallet to the sender's EVM account,
-/// and only THEN checks `can_bridge_mint`. So a recipient the mirror has never
-/// seen is the ordinary first-bridge case and arrives eligible -- what decides
-/// it is the SENDER's record on the source registry, which is its own gate.
-/// Reading an empty mirror as "will arrive held" states the opposite of what
-/// the contract does, and tells a registered holder they are not registered.
+/// A MINT carries the sender's eligibility snapshot with it, under a fresh
+/// `seq` (the lockbox bumps it on every bridge-out). `handle_mint` applies that
+/// record -- rewriting `verified`, `frozen` and `synced_at` -- binds the
+/// recipient wallet to the sender's EVM account, and only THEN checks
+/// `can_bridge_mint`. So when the recipient is unbound, or already bound to
+/// this sender, whatever the mirror holds right now (nothing, a stale record,
+/// an old revocation) is overwritten before the check. What decides it is the
+/// SENDER's record on the source registry. Reading the mirror's current record
+/// as "will arrive held" tells a registered holder they are not registered.
 ///
-/// The one case that genuinely lands held is a wallet already bound to a
-/// DIFFERENT EVM account: inbound messages never re-point a binding, so the
-/// mint quarantines with BINDING_CONFLICT.
+/// What the snapshot does NOT overwrite:
+///   - a binding to a DIFFERENT EVM account: inbound messages never re-point a
+///     binding, so the mint quarantines with BINDING_CONFLICT;
+///   - the mirror's global pause, which only `syncGlobal` moves.
 export function recipientGate(
   m: MirrorStatus | undefined,
   source: EvmStatus | undefined,
@@ -54,30 +57,50 @@ export function recipientGate(
   if (!m) return { ok: null, label };
   if (!m.readable) return { ok: null, label, detail: mirrorUnreadable(isDemo) };
 
-  if (m.identityKnown && m.identity === 0n) {
-    // Unbound: eligibility travels with the transfer, so this gate restates the
-    // source registry's answer about the sender rather than the mirror's
-    // silence about the recipient.
+  let senderId: bigint | undefined;
+  if (sender !== undefined) {
+    try { senderId = BigInt(sender); } catch { senderId = undefined; }
+  }
+
+  if (m.identityKnown && m.identity !== 0n && senderId !== undefined && senderId !== m.identity) {
     return {
-      ok: source ? source.verified : null,
+      ok: false,
       label,
-      detail: source && source.verified
-        ? 'First bridge-in. The transfer carries your eligibility snapshot, so the mirror is written before the mint is checked.'
-        : undefined,
+      detail: 'This wallet is already bound to a different source identity. A message never re-points a binding, so the transfer will be held and released with claim_to_note.',
     };
   }
 
-  if (m.identityKnown && m.identity !== 0n && sender !== undefined) {
-    let senderId: bigint | undefined;
-    try { senderId = BigInt(sender); } catch { senderId = undefined; }
-    if (senderId !== undefined && senderId !== m.identity) {
-      return {
-        ok: false,
-        label,
-        detail: 'This wallet is already bound to a different source identity. A message never re-points a binding, so the transfer will be held and released with claim_to_note.',
-      };
-    }
+  const snapshotDecides = m.identityKnown && (m.identity === 0n || m.identity === senderId);
+  if (!snapshotDecides) {
+    return { ok: m.verified, label, detail: m.verified ? undefined : mirrorRefusal(m, false) };
   }
 
-  return { ok: m.verified, label, detail: m.verified ? undefined : mirrorRefusal(m, false) };
+  // The source gates already explain a refusal there; this one just agrees.
+  if (!source) return { ok: null, label };
+  if (!source.verified || source.frozen) return { ok: false, label };
+
+  // `is_verified` folds in the pause, so a true answer rules it out. A false
+  // one could be the pause or a record the snapshot is about to replace.
+  if (m.globalPaused === true) {
+    return {
+      ok: false,
+      label,
+      detail: 'Transfers are paused on the mirror, so the transfer will be held until the pause is lifted.',
+    };
+  }
+  if (!m.verified && m.globalPaused === undefined) {
+    return {
+      ok: null,
+      label,
+      detail: 'The mirror pause flag did not answer, so this could not be checked. It is not a refusal.',
+    };
+  }
+
+  return {
+    ok: true,
+    label,
+    detail: m.identity === 0n
+      ? 'First bridge-in. The transfer carries your eligibility snapshot, so the mirror is written before the mint is checked.'
+      : undefined,
+  };
 }

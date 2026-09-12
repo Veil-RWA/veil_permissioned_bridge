@@ -4,11 +4,12 @@
 //   npx esbuild src/eligibility.ts --bundle --format=esm --platform=node \
 //     --outfile=src/eligibility.bundle.mjs --define:import.meta.env='{}'
 //
-// The case that matters is the first bridge-in. `handle_mint` applies the
-// sender's snapshot, binds the recipient wallet, and only then checks
-// `can_bridge_mint` -- so a recipient the mirror has never seen arrives
-// ELIGIBLE. An empty mirror is not a refusal, and saying "will arrive held"
-// there tells a registered holder the opposite of what will happen.
+// The cases that matter are the bridge-ins the snapshot decides. `handle_mint`
+// applies the sender's snapshot (fresh seq, synced_at = now), binds the
+// recipient wallet, and only then checks `can_bridge_mint` -- so a recipient
+// the mirror has never seen, or one whose record for this same sender has gone
+// stale, arrives ELIGIBLE. Saying "will arrive held" there tells a registered
+// holder the opposite of what will happen.
 
 import { recipientGate } from './eligibility.bundle.mjs';
 
@@ -34,6 +35,7 @@ const mirror = (over = {}) => ({
   freshnessKnown: false,
   syncedAt: 0,
   stalenessWindow: 86400,
+  globalPaused: false,
   ...over,
 });
 
@@ -50,7 +52,7 @@ const source = (over = {}) => ({
 
 const SENDER = '0x878ffCF3351C6596Bd75355E00319AB5Fcf1c639';
 
-// ── the bug this file exists for ────────────────────────────────────────────
+// ── the first bridge-in ─────────────────────────────────────────────────────
 
 {
   // Unbound recipient + verified sender = the ordinary first bridge-in.
@@ -79,22 +81,42 @@ const SENDER = '0x878ffCF3351C6596Bd75355E00319AB5Fcf1c639';
     /already bound to a different/i.test(g.detail ?? ''));
 }
 
+{
+  const mine = BigInt(SENDER);
+  const g = recipientGate(
+    mirror({ identity: mine, verified: false, globalPaused: true }), source(), SENDER, LABEL,
+  );
+  ok('a paused mirror holds even this sender -- the snapshot does not lift it', g.ok === false);
+  ok('and it names the pause', /paused/i.test(g.detail ?? ''));
+}
+
 // ── the ordinary repeat bridger ─────────────────────────────────────────────
 
 {
   const mine = BigInt(SENDER);
   const g = recipientGate(mirror({ identity: mine, verified: true }), source(), SENDER, LABEL);
-  ok('a wallet already bound to this sender uses the mirror verdict', g.ok === true);
+  ok('a wallet already bound to this sender is cleared', g.ok === true);
+}
+
+{
+  // The screenshot bug: record older than the staleness window, sender still
+  // verified at the source. The mint rewrites synced_at before checking.
+  const mine = BigInt(SENDER);
+  const g = recipientGate(
+    mirror({ identity: mine, verified: false, freshnessKnown: true, fresh: false }),
+    source(), SENDER, LABEL,
+  );
+  ok('a STALE record for this sender is refreshed by the transfer, not held', g.ok === true);
+  ok('and it never claims staleness blocks it', !/stale|held/i.test(g.detail ?? ''));
 }
 
 {
   const mine = BigInt(SENDER);
   const g = recipientGate(
     mirror({ identity: mine, verified: false, freshnessKnown: true, fresh: false }),
-    source(), SENDER, LABEL,
+    source({ frozen: true }), SENDER, LABEL,
   );
-  ok('a stale record for this sender still fails closed', g.ok === false);
-  ok('and says so', /stale/i.test(g.detail ?? ''));
+  ok('a sender frozen at the source is not cleared', g.ok === false);
 }
 
 // ── unknown is its own state ────────────────────────────────────────────────
@@ -113,6 +135,14 @@ const SENDER = '0x878ffCF3351C6596Bd75355E00319AB5Fcf1c639';
 {
   const g = recipientGate(mirror({ readable: false }), source(), SENDER, LABEL, true);
   ok('the demo deployment says the registry is not on chain', /Demo deployment/.test(g.detail ?? ''));
+}
+
+{
+  const mine = BigInt(SENDER);
+  const g = recipientGate(
+    mirror({ identity: mine, verified: false, globalPaused: undefined }), source(), SENDER, LABEL,
+  );
+  ok('an unread pause flag behind a false verdict is unknown, not cleared', g.ok === null);
 }
 
 // ── a sender address that will not parse must not crash the card ────────────

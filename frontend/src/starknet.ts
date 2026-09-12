@@ -179,6 +179,9 @@ export type MirrorStatus = {
   freshnessKnown: boolean;
   syncedAt: number;
   stalenessWindow: number;
+  /// The one mirror flag a bridge-in's snapshot does not overwrite. Undefined
+  /// when the read did not come back.
+  globalPaused: boolean | undefined;
 };
 
 /// What the mirror currently says about a Starknet wallet. `verified` is the
@@ -193,12 +196,13 @@ export type MirrorStatus = {
 export async function mirrorStatus(asset: Asset, address: string): Promise<MirrorStatus> {
   const sn = asset.addresses.starknet!;
   const registry = IS_DEMO ? undefined : sn.registry;
-  const [identityF, verifiedF, balanceF, pendingF, windowF] = await Promise.all([
+  const [identityF, verifiedF, balanceF, pendingF, windowF, pausedF] = await Promise.all([
     maybeFelts(registry, 'identity_of', [address]),
     maybeFelts(registry, 'is_verified', [address]),
     maybeFelts(sn.token, 'balance_of', [address]),
     maybeFelts(IS_DEMO ? undefined : sn.gateway, 'pending_of', [address]),
     maybeFelts(registry, 'staleness_window', []),
+    maybeFelts(registry, 'global_paused', []),
   ]);
 
   // `is_verified` is the call that decides the gate, so it is the one that
@@ -227,6 +231,7 @@ export async function mirrorStatus(asset: Asset, address: string): Promise<Mirro
     freshnessKnown,
     syncedAt,
     stalenessWindow: windowF ? Number(BigInt(windowF[0] ?? 0)) : 0,
+    globalPaused: pausedF ? BigInt(pausedF[0] ?? 0) === 1n : undefined,
   };
 }
 
