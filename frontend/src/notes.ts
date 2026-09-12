@@ -218,21 +218,29 @@ function randomFelt(): bigint {
 // registers it, exactly as veilx/app does -- through the prover, with the
 // settle submitted from the prover's own account.
 
-/// Has this wallet published a viewing key on the asset's pool? Undefined when
-/// the read did not come back -- silence is never "not registered".
-export async function isRegisteredInPool(
+/// The public viewing key this wallet published on the asset's pool: 0n when it
+/// has not registered, undefined when the read did not come back -- silence is
+/// never "not registered".
+export async function registeredViewingKey(
   asset: Asset, address: string
-): Promise<boolean | undefined> {
+): Promise<bigint | undefined> {
   const pool = asset.addresses.starknet?.pool;
   if (!pool) return undefined;
   try {
     const res = await snProvider.callContract({
       contractAddress: pool, entrypoint: 'get_viewing_key', calldata: [address],
     });
-    return BigInt((res as string[])[0] ?? 0) !== 0n;
+    return BigInt((res as string[])[0] ?? 0);
   } catch {
     return undefined;
   }
+}
+
+export async function isRegisteredInPool(
+  asset: Asset, address: string
+): Promise<boolean | undefined> {
+  const pk = await registeredViewingKey(asset, address);
+  return pk === undefined ? undefined : pk !== 0n;
 }
 
 export type RegisterResult = { ok: true } | { ok: false; reason: string };

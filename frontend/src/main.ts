@@ -28,7 +28,7 @@ import { load as loadHistory, record, update, type Transfer } from './history';
 import { recipientGate, mirrorRefusal, mirrorUnreadable, type Gate } from './eligibility';
 import {
   deriveNoteContext, findFillableNote, forgetViewingKey, createOpenNote,
-  hasCachedViewingKey, isRegisteredInPool, registerInPool, type NoteContext, type NoteSlot,
+  hasCachedViewingKey, registeredViewingKey, registerInPool, type NoteContext, type NoteSlot,
 } from './notes';
 import {
   checkPool, mainPool, poolFactory, normalisePoolAddress, POOL_PROBLEMS, type PoolCheck,
@@ -66,9 +66,9 @@ type State = {
   evmPicker?: evm.EvmWallet[];
   evmStatus?: evm.EvmStatus;
   mirror?: sn.MirrorStatus;
-  /// Whether the Starknet wallet has a viewing key on the Veil pool. Undefined
-  /// until read, and when the read did not come back.
-  poolRegistered?: boolean;
+  /// Whether the Veil pool holds the viewing key this Starknet wallet signs for.
+  /// Set only once the signature has run; undefined until then.
+  poolVerified?: boolean;
   claimableEvm: bigint;
   feeBalance: bigint;
   fee?: bigint;
@@ -137,15 +137,17 @@ function gates(): Gate[] {
     });
     if (state.asset.poolReady) {
       // The destination is a Veil pool note, and the pool only creates one for a
-      // wallet with a registered viewing key. Nothing on the EVM side can answer
-      // that, so without a Starknet wallet this is unknown -- never "eligible".
-      const reg = state.poolRegistered;
+      // wallet registered with the viewing key it signs for. Nothing on the EVM
+      // side can answer that, and connecting alone cannot either: until the
+      // signature has run and the pool has been checked, this is unknown --
+      // never "eligible".
+      const verified = state.poolVerified;
       out.push({
-        ok: state.snSession ? (reg ?? null) : null,
-        label: `Your ${starknetLabel} wallet is registered in the Veil pool`,
+        ok: state.snSession ? (verified ?? null) : null,
+        label: `Your ${starknetLabel} wallet is verified in the Veil pool`,
         detail: !state.snSession ? `Connect your ${starknetLabel} wallet to check.`
-          : reg === undefined ? 'The Veil pool did not answer, so this could not be checked. It is not a refusal.'
-          : !reg ? 'Not registered yet. Connecting your wallet registers it, and so does Bridge.'
+          : verified === undefined ? 'Sign the message in your wallet to verify it.'
+          : !verified ? 'This wallet could not be verified in the Veil pool.'
           : undefined,
       });
     }
@@ -208,7 +210,9 @@ function eligibilityCard(): string {
   const tone = failing.length > 0 ? (onlyRecipient ? 'is-warn' : 'is-bad') : 'is-warn';
   const head = failing.length > 0
     ? (onlyRecipient ? 'Will arrive held' : 'Not eligible')
-    : toStarknet() && !state.snSession ? `Connect your ${starknetLabel} wallet` : 'Could not check';
+    : toStarknet() && !state.snSession ? `Connect your ${starknetLabel} wallet`
+    : toStarknet() && state.asset.poolReady && state.poolVerified === undefined ? `Verify your ${starknetLabel} wallet`
+    : 'Could not check';
 
   const items = [...failing, ...unknown].map((g) => {
     const mark = g.ok === null ? '<span class="mark idk">·</span>' : '<span class="mark no">✕</span>';
@@ -943,9 +947,6 @@ async function refreshAll(): Promise<void> {
   if (state.snSession) {
     jobs.push(sn.mirrorStatus(asset, state.snSession.address).then((m) => { state.mirror = m; }).catch(() => {}));
     jobs.push(sn.feeTokenBalance(STARKNET_FEE_TOKEN, state.snSession.address).then((b) => { state.feeBalance = b; }).catch(() => {}));
-    if (asset.poolReady) {
-      jobs.push(isRegisteredInPool(asset, state.snSession.address).then((r) => { state.poolRegistered = r; }));
-    }
   }
   // When bridging in, the mirror status we care about is the RECIPIENT's, not
   // our own wallet's.
@@ -1001,6 +1002,7 @@ async function doConnectStarknet(): Promise<void> {
       state.noteSlot = undefined;
       state.noteClaimedBy = undefined;
       state.noteSearched = false;
+      state.poolVerified = undefined;
     }
     // Bridging in, the destination is this wallet. Not a choice: the note is
     // derived from this account's viewing key and nobody else can produce it.
@@ -1032,28 +1034,37 @@ async function doConnectStarknet(): Promise<void> {
   await ensureRegistered();
 }
 
-/// Register the wallet in the Veil pool if it is not yet, the way veilx does.
+/// Verify the wallet in the Veil pool, registering it first if it is not yet,
+/// the way veilx does. Runs only once the viewing key is signed for.
 ///
 /// A wallet the pool has never seen cannot own a note -- the pool refuses to
-/// create one (VIEW_KEY_MISSING) -- so without this an unregistered holder only
-/// found out at "Creating your note". Returns false, with the reason in
-/// `state.error` when there is one, if the wallet is not registered afterwards.
+/// create one (VIEW_KEY_MISSING). And a registered key only counts if it is the
+/// one this wallet signs for: the pool derives the note channel from the STORED
+/// key, so any other key puts the note where this app cannot find it. Returns
+/// false, with the reason in `state.error` when there is one, unless verified.
 async function ensureRegistered(): Promise<boolean> {
   if (!state.snSession || !state.noteCtx || !state.asset.poolReady) return false;
-  const registered = await isRegisteredInPool(state.asset, state.snSession.address);
-  state.poolRegistered = registered;
-  if (registered) return true;
-  if (registered === undefined) {
+  const pk = await registeredViewingKey(state.asset, state.snSession.address);
+  if (pk === undefined) {
     state.error = 'Could not check your registration in the Veil pool. Try again in a moment.';
     render();
     return false;
+  }
+  if (pk !== 0n) {
+    state.poolVerified = pk === state.noteCtx.publicViewingKey;
+    if (!state.poolVerified) {
+      state.error = 'This wallet is registered in the Veil pool with a different viewing key, so notes cannot be created for it here.';
+    }
+    render();
+    return state.poolVerified;
   }
   state.busy = 'Registering your wallet…'; paintCta(); render();
   try {
     const r = await registerInPool(state.asset, state.noteCtx, (line) => {
       state.busy = `Registering your wallet — ${line}…`; paintCta();
     });
-    if (r.ok) state.poolRegistered = true; else state.error = r.reason;
+    state.poolVerified = r.ok;
+    if (!r.ok) state.error = r.reason;
     return r.ok;
   } finally {
     state.busy = undefined;
@@ -1391,7 +1402,7 @@ async function doDisconnect(which: 'sn' | 'evm'): Promise<void> {
     state.noteClaimedBy = undefined;
     state.noteSearched = false;
     state.mirror = undefined;
-    state.poolRegistered = undefined;
+    state.poolVerified = undefined;
     if (toStarknet()) state.recipient = '';
   } else {
     unwatchEvm?.();
