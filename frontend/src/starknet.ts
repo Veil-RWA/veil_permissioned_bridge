@@ -16,6 +16,9 @@
 //
 // This mirrors veilx/app/src/main.ts, which is the reference for the flow.
 
+// Must run before get-starknet evaluates: stops MetaMask's Starknet Snap from
+// being discovered, which otherwise prompts MetaMask on every load.
+import './noMetaMaskSnap';
 import { connect as pickWallet, disconnect as dropWallet } from '@starknet-io/get-starknet';
 import type { StarknetWindowObject } from '@starknet-io/get-starknet';
 import { RpcProvider, WalletAccount, CallData, uint256 } from 'starknet';
