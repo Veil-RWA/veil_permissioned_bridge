@@ -279,6 +279,25 @@ export async function tokenInfo(asset: Asset): Promise<TokenInfo> {
   return { symbol: symbol || asset.symbol, decimals: Number(decimals) };
 }
 
+/// One asset's public balance on the source chain, in the token's own decimals.
+/// Undefined when the read failed -- never a zero the holder may not have.
+export async function publicBalance(
+  asset: Asset, account: string
+): Promise<{ balance: bigint; decimals: number } | undefined> {
+  const address = asset.addresses.evm?.token;
+  if (!address) return undefined;
+  const token = new Contract(address, TOKEN_ABI, readProvider);
+  try {
+    const [balance, decimals] = await Promise.all([
+      token.balanceOf(account),
+      token.decimals().catch(() => asset.decimals),
+    ]);
+    return { balance: BigInt(balance), decimals: Number(decimals) };
+  } catch {
+    return undefined;
+  }
+}
+
 export type EvmStatus = {
   balance: bigint;
   allowance: bigint;

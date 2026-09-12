@@ -1,0 +1,488 @@
+[
+  {
+    "type": "struct",
+    "name": "core::integer::u256",
+    "members": [
+      {
+        "name": "low",
+        "type": "core::integer::u128"
+      },
+      {
+        "name": "high",
+        "type": "core::integer::u128"
+      }
+    ]
+  },
+  {
+    "type": "struct",
+    "name": "veil::interfaces::IVeilERC3643::EncUserAddr",
+    "members": [
+      {
+        "name": "auditor_public_key",
+        "type": "core::felt252"
+      },
+      {
+        "name": "ephemeral_pubkey",
+        "type": "core::felt252"
+      },
+      {
+        "name": "enc_user_addr",
+        "type": "core::felt252"
+      }
+    ]
+  },
+  {
+    "type": "struct",
+    "name": "veil::interfaces::IVeilERC3643::OpenNoteRecord",
+    "members": [
+      {
+        "name": "token",
+        "type": "core::starknet::contract_address::ContractAddress"
+      }
+    ]
+  },
+  {
+    "type": "enum",
+    "name": "core::bool",
+    "variants": [
+      {
+        "name": "False",
+        "type": "()"
+      },
+      {
+        "name": "True",
+        "type": "()"
+      }
+    ]
+  },
+  {
+    "type": "struct",
+    "name": "veil::interfaces::IVeilERC3643::InvokeSwap",
+    "members": [
+      {
+        "name": "enc_recipient_addr",
+        "type": "veil::interfaces::IVeilERC3643::EncUserAddr"
+      },
+      {
+        "name": "in_token",
+        "type": "core::starknet::contract_address::ContractAddress"
+      },
+      {
+        "name": "in_amount",
+        "type": "core::integer::u128"
+      },
+      {
+        "name": "out_token",
+        "type": "core::starknet::contract_address::ContractAddress"
+      },
+      {
+        "name": "target",
+        "type": "core::starknet::contract_address::ContractAddress"
+      },
+      {
+        "name": "calldata_hash",
+        "type": "core::felt252"
+      },
+      {
+        "name": "open_note_id",
+        "type": "core::felt252"
+      },
+      {
+        "name": "open_note_index",
+        "type": "core::integer::u32"
+      },
+      {
+        "name": "self_channel_marker",
+        "type": "core::felt252"
+      },
+      {
+        "name": "subchannel_marker",
+        "type": "core::felt252"
+      },
+      {
+        "name": "subchannel_counts",
+        "type": "core::integer::u32"
+      },
+      {
+        "name": "subchannel_id",
+        "type": "core::felt252"
+      },
+      {
+        "name": "previous_subchannel_id",
+        "type": "core::felt252"
+      },
+      {
+        "name": "encrypted_token",
+        "type": "core::felt252"
+      },
+      {
+        "name": "subchannel_salt",
+        "type": "core::felt252"
+      },
+      {
+        "name": "change_note_id",
+        "type": "core::felt252"
+      },
+      {
+        "name": "change_enc",
+        "type": "core::felt252"
+      },
+      {
+        "name": "change_note_index",
+        "type": "core::integer::u32"
+      },
+      {
+        "name": "has_change",
+        "type": "core::bool"
+      }
+    ]
+  },
+  {
+    "type": "struct",
+    "name": "veil::interfaces::IVeilERC3643::PostOrder",
+    "members": [
+      {
+        "name": "order_id",
+        "type": "core::felt252"
+      },
+      {
+        "name": "maker",
+        "type": "core::starknet::contract_address::ContractAddress"
+      },
+      {
+        "name": "offer_token",
+        "type": "core::starknet::contract_address::ContractAddress"
+      },
+      {
+        "name": "want_token",
+        "type": "core::starknet::contract_address::ContractAddress"
+      },
+      {
+        "name": "offer_amount",
+        "type": "core::integer::u128"
+      },
+      {
+        "name": "want_amount",
+        "type": "core::integer::u128"
+      },
+      {
+        "name": "expiry",
+        "type": "core::integer::u64"
+      },
+      {
+        "name": "nonce",
+        "type": "core::felt252"
+      },
+      {
+        "name": "change_note_id",
+        "type": "core::felt252"
+      },
+      {
+        "name": "change_enc",
+        "type": "core::felt252"
+      },
+      {
+        "name": "change_note_index",
+        "type": "core::integer::u32"
+      },
+      {
+        "name": "has_change",
+        "type": "core::bool"
+      },
+      {
+        "name": "receive_note_id",
+        "type": "core::felt252"
+      },
+      {
+        "name": "receive_note_index",
+        "type": "core::integer::u32"
+      },
+      {
+        "name": "want_sub_marker",
+        "type": "core::felt252"
+      },
+      {
+        "name": "want_sub_counts",
+        "type": "core::integer::u32"
+      },
+      {
+        "name": "want_sub_id",
+        "type": "core::felt252"
+      },
+      {
+        "name": "want_sub_prev_id",
+        "type": "core::felt252"
+      },
+      {
+        "name": "want_encrypted_token",
+        "type": "core::felt252"
+      },
+      {
+        "name": "want_subchannel_salt",
+        "type": "core::felt252"
+      },
+      {
+        "name": "self_channel_marker",
+        "type": "core::felt252"
+      }
+    ]
+  },
+  {
+    "type": "struct",
+    "name": "veil::interfaces::IVeilERC3643::BatchFill",
+    "members": [
+      {
+        "name": "deliver",
+        "type": "core::integer::u128"
+      },
+      {
+        "name": "draw",
+        "type": "core::integer::u128"
+      }
+    ]
+  },
+  {
+    "type": "struct",
+    "name": "veil::interfaces::IVeilERC3643::CancelOrder",
+    "members": [
+      {
+        "name": "order_id",
+        "type": "core::felt252"
+      },
+      {
+        "name": "maker",
+        "type": "core::starknet::contract_address::ContractAddress"
+      },
+      {
+        "name": "escrow_snapshot",
+        "type": "core::integer::u128"
+      },
+      {
+        "name": "leftover_note_id",
+        "type": "core::felt252"
+      },
+      {
+        "name": "leftover_enc",
+        "type": "core::felt252"
+      },
+      {
+        "name": "leftover_note_index",
+        "type": "core::integer::u32"
+      },
+      {
+        "name": "has_leftover",
+        "type": "core::bool"
+      }
+    ]
+  },
+  {
+    "type": "struct",
+    "name": "veil::interfaces::IVeilERC3643::OrderRecord",
+    "members": [
+      {
+        "name": "maker",
+        "type": "core::starknet::contract_address::ContractAddress"
+      },
+      {
+        "name": "offer_token",
+        "type": "core::starknet::contract_address::ContractAddress"
+      },
+      {
+        "name": "want_token",
+        "type": "core::starknet::contract_address::ContractAddress"
+      },
+      {
+        "name": "offer_amount",
+        "type": "core::integer::u128"
+      },
+      {
+        "name": "want_amount",
+        "type": "core::integer::u128"
+      },
+      {
+        "name": "escrow_remaining",
+        "type": "core::integer::u128"
+      },
+      {
+        "name": "received",
+        "type": "core::integer::u128"
+      },
+      {
+        "name": "receive_note_id",
+        "type": "core::felt252"
+      },
+      {
+        "name": "expiry",
+        "type": "core::integer::u64"
+      },
+      {
+        "name": "status",
+        "type": "core::integer::u8"
+      }
+    ]
+  },
+  {
+    "type": "struct",
+    "name": "veil::interfaces::IVeilERC3643::ChannelCiphertext",
+    "members": [
+      {
+        "name": "ephemeral_key_x",
+        "type": "core::felt252"
+      },
+      {
+        "name": "encrypted_channel_key",
+        "type": "core::felt252"
+      },
+      {
+        "name": "encrypted_sender",
+        "type": "core::felt252"
+      }
+    ]
+  },
+  {
+    "type": "struct",
+    "name": "veil::interfaces::IVeilERC3643::OutgoingChannelRecord",
+    "members": [
+      {
+        "name": "salt",
+        "type": "core::felt252"
+      },
+      {
+        "name": "encrypted_recipient",
+        "type": "core::felt252"
+      }
+    ]
+  },
+  {
+    "type": "struct",
+    "name": "veil::interfaces::IVeilERC3643::SubchannelRecord",
+    "members": [
+      {
+        "name": "salt",
+        "type": "core::felt252"
+      },
+      {
+        "name": "encrypted_token",
+        "type": "core::felt252"
+      }
+    ]
+  },
+  {
+    "type": "struct",
+    "name": "veil::interfaces::IVeilERC3643::NoteRecord",
+    "members": [
+      {
+        "name": "encrypted_amount",
+        "type": "core::felt252"
+      }
+    ]
+  },
+  {
+    "type": "struct",
+    "name": "veil::interfaces::IVeilERC3643::EncryptedViewingKey",
+    "members": [
+      {
+        "name": "ephemeral_key_x",
+        "type": "core::felt252"
+      },
+      {
+        "name": "encrypted_private_viewing_key",
+        "type": "core::felt252"
+      }
+    ]
+  },
+  {
+    "type": "interface",
+    "name": "veil::interfaces::IVeilERC3643::IVeilERC3643",
+    "items": [
+      {
+        "type": "function",
+        "name": "note_locked_order",
+        "inputs": [
+          {
+            "name": "note_id",
+            "type": "core::felt252"
+          }
+        ],
+        "outputs": [
+          {
+            "type": "core::felt252"
+          }
+        ],
+        "state_mutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "get_recipient_channels_batch",
+        "inputs": [
+          {
+            "name": "recipient",
+            "type": "core::starknet::contract_address::ContractAddress"
+          },
+          {
+            "name": "start",
+            "type": "core::integer::u32"
+          },
+          {
+            "name": "count",
+            "type": "core::integer::u32"
+          }
+        ],
+        "outputs": [
+          {
+            "type": "core::array::Array::<veil::interfaces::IVeilERC3643::ChannelCiphertext>"
+          }
+        ],
+        "state_mutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "get_subchannels_batch",
+        "inputs": [
+          {
+            "name": "subchannel_ids",
+            "type": "core::array::Array::<core::felt252>"
+          }
+        ],
+        "outputs": [
+          {
+            "type": "core::array::Array::<veil::interfaces::IVeilERC3643::SubchannelRecord>"
+          }
+        ],
+        "state_mutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "get_notes_batch",
+        "inputs": [
+          {
+            "name": "note_ids",
+            "type": "core::array::Array::<core::felt252>"
+          }
+        ],
+        "outputs": [
+          {
+            "type": "core::array::Array::<veil::interfaces::IVeilERC3643::NoteRecord>"
+          }
+        ],
+        "state_mutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "nullifiers_used_batch",
+        "inputs": [
+          {
+            "name": "nullifiers",
+            "type": "core::array::Array::<core::felt252>"
+          }
+        ],
+        "outputs": [
+          {
+            "type": "core::array::Array::<core::bool>"
+          }
+        ],
+        "state_mutability": "view"
+      }
+    ]
+  }
+]

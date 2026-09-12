@@ -28,7 +28,8 @@ import { load as loadHistory, record, update, type Transfer } from './history';
 import { recipientGate, mirrorRefusal, mirrorUnreadable, type Gate } from './eligibility';
 import {
   deriveNoteContext, findFillableNote, forgetViewingKey, createOpenNote,
-  hasCachedViewingKey, registeredViewingKey, registerInPool, type NoteContext, type NoteSlot,
+  hasCachedViewingKey, registeredViewingKey, registerInPool, privateBalances,
+  type AssetBalance, type NoteContext, type NoteSlot,
 } from './notes';
 import {
   checkPool, mainPool, poolFactory, normalisePoolAddress, POOL_PROBLEMS, type PoolCheck,
@@ -69,6 +70,15 @@ type State = {
   /// Whether the Veil pool holds the viewing key this Starknet wallet signs for.
   /// Set only once the signature has run; undefined until then.
   poolVerified?: boolean;
+  /// Which connected wallet's assets panel is open, if any.
+  walletPanel?: 'evm' | 'sn';
+  /// Public balances (EVM wallet) and private Veil pool balances (Starknet
+  /// wallet), per asset id. Undefined until read; an undefined public entry is
+  /// a read that failed, not a zero.
+  publicBalances?: Record<string, AssetBalance | undefined>;
+  privateBalances?: Record<string, AssetBalance>;
+  balancesBusy: { evm: boolean; sn: boolean };
+  balancesError: { evm?: string; sn?: string };
   claimableEvm: bigint;
   feeBalance: bigint;
   fee?: bigint;
@@ -94,6 +104,8 @@ const state: State = {
   recipient: '',
   claimableEvm: 0n,
   feeBalance: 0n,
+  balancesBusy: { evm: false, sn: false },
+  balancesError: {},
 };
 
 const app = document.getElementById('app')!;
@@ -775,7 +787,7 @@ function paintNavWallets(): void {
   const chip = (
     chain: 'evm' | 'sn', label: string, address: string | undefined
   ): string => address
-    ? `<button class="nav-chip is-on" data-nav-wallet="${chain}" title="${esc(label)} — click to disconnect">
+    ? `<button class="nav-chip is-on" data-nav-wallet="${chain}" title="${esc(label)} — your assets">
          <span class="nav-dot"></span><span class="mono">${esc(short(address, 6, 4))}</span>
        </button>`
     : `<button class="nav-chip is-action" data-nav-wallet="${chain}">Connect ${esc(label)}</button>`;
@@ -800,9 +812,125 @@ function paintNavWallets(): void {
     const chain = b.dataset.navWallet as 'evm' | 'sn';
     const connected = chain === 'evm' ? state.evmSession : state.snSession;
     b.onclick = () => void (connected
-      ? doDisconnect(chain === 'evm' ? 'evm' : 'sn')
+      ? openWalletPanel(chain)
       : chain === 'evm' ? doConnectEvm() : doConnectStarknet());
   });
+
+  paintWalletPanel();
+}
+
+/// The assets behind a connected wallet, in veilx's balances panel: PUBLIC
+/// balances for the EVM wallet, PRIVATE ones -- the notes this wallet owns in
+/// the Veil pool -- for the Starknet wallet. Two separate things, never mixed
+/// into one list.
+function paintWalletPanel(): void {
+  const chain = state.walletPanel;
+  const session = chain === 'evm' ? state.evmSession : chain === 'sn' ? state.snSession : undefined;
+  let host = document.getElementById('wallet-panel');
+  if (!chain || !session) {
+    if (host) host.innerHTML = '';
+    return;
+  }
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'wallet-panel';
+    document.body.appendChild(host);
+  }
+
+  const isEvm = chain === 'evm';
+  const busy = state.balancesBusy[chain];
+  const values = isEvm ? state.publicBalances : state.privateBalances;
+  const list = assets.filter((a) => (isEvm ? a.addresses.evm?.token : a.addresses.starknet?.token));
+  const rows = list.map((a) => {
+    const v = values?.[a.id];
+    const amount = v ? units(v.balance, v.decimals, 4) : busy ? '…' : '—';
+    return `<div class="bal-row">
+      <span class="bal-sym">${esc(a.symbol)}</span>
+      <span class="bal-name">${esc(a.name)}</span>
+      <span class="bal-amt">${esc(amount)}</span>
+    </div>`;
+  }).join('');
+  const error = state.balancesError[chain];
+
+  host.innerHTML = `
+    <div class="bal-backdrop" data-bal="close"></div>
+    <div class="bal-panel" role="dialog" aria-label="Your assets">
+      <div class="bal-head">
+        <strong>Your assets</strong>
+        <span class="mono">${esc(isEvm ? evmLabel : starknetLabel)} · ${esc(short(session.address, 6, 4))}</span>
+      </div>
+      <div class="bal-row bal-hdr">
+        <span class="bal-sym">Asset</span><span class="bal-name"></span>
+        <span class="bal-amt">${isEvm ? 'Public' : 'Private'}</span>
+      </div>
+      ${rows || '<div class="bal-row"><span class="bal-name">No assets on this route.</span></div>'}
+      ${error ? `<div class="bal-err">${esc(error)}</div>` : ''}
+      <div class="bal-foot">
+        <button data-bal="refresh" ${busy ? 'disabled' : ''}>${busy ? 'Loading…' : 'Refresh'}</button>
+        <button data-bal="disconnect">Disconnect</button>
+      </div>
+    </div>`;
+
+  host.querySelector<HTMLElement>('[data-bal="close"]')!.onclick = () => {
+    state.walletPanel = undefined;
+    render();
+  };
+  host.querySelector<HTMLButtonElement>('[data-bal="refresh"]')!.onclick = () => void loadWalletBalances(chain);
+  host.querySelector<HTMLButtonElement>('[data-bal="disconnect"]')!.onclick = () => {
+    state.walletPanel = undefined;
+    void doDisconnect(chain);
+  };
+}
+
+function openWalletPanel(chain: 'evm' | 'sn'): void {
+  state.walletPanel = state.walletPanel === chain ? undefined : chain;
+  render();
+  if (state.walletPanel) void loadWalletBalances(chain);
+}
+
+/// Read the balances for one wallet's panel. Opening the Starknet panel is the
+/// holder asking for their private balances, so it may prompt for the viewing
+/// key signature once; the key is cached after, the same as on connect.
+async function loadWalletBalances(chain: 'evm' | 'sn'): Promise<void> {
+  if (state.balancesBusy[chain]) return;
+  state.balancesBusy[chain] = true;
+  state.balancesError[chain] = undefined;
+  render();
+  try {
+    if (chain === 'evm') {
+      const session = state.evmSession;
+      if (!session) return;
+      const list = assets.filter((a) => a.addresses.evm?.token);
+      const read = await Promise.all(list.map((a) => evm.publicBalance(a, session.address)));
+      // The wallet may have switched account while this was reading.
+      if (state.evmSession?.address !== session.address) return;
+      state.publicBalances = Object.fromEntries(list.map((a, i) => [a.id, read[i]]));
+      if (read.some((r) => r === undefined)) {
+        state.balancesError.evm = 'Some balances could not be read. Try Refresh.';
+      }
+    } else {
+      const session = state.snSession;
+      if (!session) return;
+      const pool = mainPool(state.asset);
+      if (!pool) {
+        state.balancesError.sn = 'No Veil pool is configured for this deployment.';
+        return;
+      }
+      if (!state.noteCtx) state.noteCtx = await deriveNoteContext(session);
+      const list = assets.filter((a) => a.addresses.starknet?.token);
+      const read = await privateBalances(pool, state.noteCtx, list);
+      if (state.snSession?.address !== session.address) return;
+      state.privateBalances = read;
+    }
+  } catch (e: any) {
+    const m = String(e?.message ?? e);
+    state.balancesError[chain] = /reject|denied|abort|cancel/i.test(m)
+      ? 'Sign the message in your wallet to read your private balances.'
+      : `Could not read balances: ${m}`;
+  } finally {
+    state.balancesBusy[chain] = false;
+    render();
+  }
 }
 
 const FAUCET_BUSY = 'Claiming test tokens…';
@@ -857,7 +985,8 @@ document.addEventListener('click', () => {
 // on the backdrop is the other half of "impossible to use".
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  if (state.evmPicker) { state.evmPicker = undefined; render(); }
+  if (state.walletPanel) { state.walletPanel = undefined; render(); }
+  else if (state.evmPicker) { state.evmPicker = undefined; render(); }
   else if (state.pickerOpen) { state.pickerOpen = false; render(); }
 });
 
@@ -1003,6 +1132,7 @@ async function doConnectStarknet(): Promise<void> {
       state.noteClaimedBy = undefined;
       state.noteSearched = false;
       state.poolVerified = undefined;
+      state.privateBalances = undefined;
     }
     // Bridging in, the destination is this wallet. Not a choice: the note is
     // derived from this account's viewing key and nobody else can produce it.
@@ -1403,6 +1533,8 @@ async function doDisconnect(which: 'sn' | 'evm'): Promise<void> {
     state.noteSearched = false;
     state.mirror = undefined;
     state.poolVerified = undefined;
+    state.privateBalances = undefined;
+    if (state.walletPanel === 'sn') state.walletPanel = undefined;
     if (toStarknet()) state.recipient = '';
   } else {
     unwatchEvm?.();
@@ -1411,6 +1543,8 @@ async function doDisconnect(which: 'sn' | 'evm'): Promise<void> {
     state.evmSession = undefined;
     state.evmStatus = undefined;
     state.claimableEvm = 0n;
+    state.publicBalances = undefined;
+    if (state.walletPanel === 'evm') state.walletPanel = undefined;
     if (!toStarknet()) state.recipient = '';
   }
   state.error = undefined;

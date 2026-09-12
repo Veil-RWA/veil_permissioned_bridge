@@ -377,3 +377,44 @@ export async function createOpenNote(
     reason: 'Your note was created, but this RPC still cannot see it. It is not lost — press Bridge again in a moment and it will be used.',
   };
 }
+
+// ── Private balances ─────────────────────────────────────────────────────────
+//
+// What the holder owns inside the Veil pool, read the way veilx/app reads it:
+// scan the notes this viewing key can open and sum them per token. The pool
+// publishes no balances -- only the key can see them -- so the scan runs here,
+// on the device.
+
+import { Contract } from 'starknet';
+import { VeilERC3643Discovery, makeVeilERC3643ContractReader } from 'veil-sdk';
+// Only the five reads the note scan makes, with their types, taken from the
+// deployed pool class. Shipped rather than fetched: not every RPC serves
+// `starknet_getClassAt` (drpc does not), and the scan must not depend on it.
+import poolReaderAbi from './poolReaderAbi.json';
+
+export type AssetBalance = { balance: bigint; decimals: number };
+
+/// Spendable private balance per asset id, for every asset in `list` that has a
+/// twin on Starknet. An asset with no notes is a real zero: the scan covered it.
+export async function privateBalances(
+  pool: string, ctx: NoteContext, list: Asset[]
+): Promise<Record<string, AssetBalance>> {
+  const contract = new Contract({
+    abi: poolReaderAbi as never, address: pool, providerOrAccount: snProvider,
+  });
+  const discovery = new VeilERC3643Discovery(makeVeilERC3643ContractReader(contract as never));
+  const rows = await discovery.getBalances(ctx.owner, ctx.viewingKey);
+  const byToken = new Map(rows.map((r) => [r.token, r.balance]));
+
+  const out: Record<string, AssetBalance> = {};
+  await Promise.all(list.map(async (a) => {
+    const token = a.addresses.starknet?.token;
+    if (!token) return;
+    const decimals = await snProvider
+      .callContract({ contractAddress: token, entrypoint: 'decimals', calldata: [] })
+      .then((r) => Number(BigInt((r as string[])[0] ?? 18)))
+      .catch(() => 18);
+    out[a.id] = { balance: byToken.get(BigInt(token)) ?? 0n, decimals };
+  }));
+  return out;
+}
