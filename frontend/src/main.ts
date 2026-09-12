@@ -16,6 +16,7 @@
 //   than rejected, on both sides. That balance is invisible unless the UI goes
 //   looking for it, so it does, and offers the claim.
 
+import { inject } from '@vercel/analytics';
 import {
   isDeployed, evmLabel, starknetLabel, EXPLORER_EVM, EXPLORER_SN, LZ_SCAN, STARKNET_FEE_TOKEN,
   PROVER_ENDPOINT, PROVER_MASTER_ADDRESS, IS_DEMO,
@@ -33,6 +34,9 @@ import {
 import {
   checkPool, mainPool, poolFactory, normalisePoolAddress, POOL_PROBLEMS, type PoolCheck,
 } from './pools';
+
+// Initialize Vercel Web Analytics
+inject();
 
 type View = 'transfer' | 'history';
 type Direction = 'toStarknet' | 'toEvm';
