@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Turn an exported ComplianceSpec into the Starknet call that replicates it.
+// Turn an exported ComplianceSpec into the invoke that replicates it on the Veil twin.
 //
 //   node apply-compliance.js --spec compliance-spec.json --compliance <address>
 //

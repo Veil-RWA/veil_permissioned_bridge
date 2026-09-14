@@ -17,7 +17,7 @@
 //   looking for it, so it does, and offers the claim.
 
 import {
-  isDeployed, evmLabel, starknetLabel, EXPLORER_EVM, EXPLORER_SN, LZ_SCAN, STARKNET_FEE_TOKEN,
+  isDeployed, deployment, evmLabel, starknetLabel, veilLabel, EXPLORER_EVM, EXPLORER_SN, LZ_SCAN, STARKNET_FEE_TOKEN,
   PROVER_ENDPOINT, PROVER_MASTER_ADDRESS, IS_DEMO,
 } from './config';
 import { assets, defaultAsset, faucetTokens, faucetRouter, type Asset } from './assets';
@@ -35,7 +35,7 @@ import {
   checkPool, mainPool, poolFactory, normalisePoolAddress, POOL_PROBLEMS, type PoolCheck,
 } from './pools';
 
-type View = 'transfer' | 'history';
+type View = 'transfer' | 'history' | 'issuer';
 type Direction = 'toStarknet' | 'toEvm';
 
 type State = {
@@ -114,10 +114,39 @@ const esc = (s: string): string =>
 const tint = (a: Asset): string => `linear-gradient(150deg, ${a.tint[0]}, ${a.tint[1]})`;
 const toStarknet = () => state.direction === 'toStarknet';
 
-const sourceLabel = () => (toStarknet() ? evmLabel : starknetLabel);
-const destLabel = () => (toStarknet() ? starknetLabel : evmLabel);
+/// Product-facing chain names. Settlement shows as Veil so issuers/holders are
+/// not asked to reason about the L2 under the private pool.
+const sourceLabel = () => (toStarknet() ? evmLabel : veilLabel);
+const destLabel = () => (toStarknet() ? veilLabel : evmLabel);
 const sourceMark = () => (toStarknet() ? 'eth' : 'sn');
 const destMark = () => (toStarknet() ? 'sn' : 'eth');
+/// Underlying network label (explorers, fee token). Prefer sourceLabel/destLabel in UI copy.
+const settlementNetworkLabel = starknetLabel;
+
+/// Map wallet/RPC noise into something an operator can act on. Raw revert data
+/// still lands in the console via the original throw path when useful.
+function friendlyError(e: any): string {
+  const raw = String(e?.shortMessage ?? e?.message ?? e ?? '');
+  const m = raw.toLowerCase();
+  if (/user rejected|user denied|rejected the request|denied transaction|action_rejected|user abort/i.test(raw)) {
+    return 'Request cancelled in the wallet.';
+  }
+  if (/insufficient funds|insufficient balance|exceeds balance/i.test(m)) {
+    return 'Insufficient balance for this transfer (or the network fee).';
+  }
+  if (/network|rpc|timeout|failed to fetch|econnrefused|503|502|429/i.test(m) && /call|fetch|provider|request/i.test(m)) {
+    return 'Network did not answer. Check RPC connectivity and try again.';
+  }
+  if (/lockbox|not (a )?registered|identity registry|not verified/i.test(m) && /lockbox|recipient|transfer/i.test(m)) {
+    return 'Bridge not approved by issuer: the lockbox must be a verified identity in the source registry.';
+  }
+  if (/nonce|replacement|already known/i.test(m)) {
+    return 'Wallet has a pending transaction. Wait for it to clear, then retry.';
+  }
+  // Cap extremely long revert dumps — keep the first actionable line.
+  const first = raw.split(/\n/)[0]!.trim();
+  return first.length > 220 ? first.slice(0, 217) + '…' : first;
+}
 
 /// The balance the transfer spends from, on whichever chain is the source.
 function sourceBalance(): bigint | undefined {
@@ -156,20 +185,20 @@ function gates(): Gate[] {
       const verified = state.poolVerified;
       out.push({
         ok: state.snSession ? (verified ?? null) : null,
-        label: `Your ${starknetLabel} wallet is verified in the Veil pool`,
-        detail: !state.snSession ? `Connect your ${starknetLabel} wallet to check.`
+        label: `Your ${veilLabel} wallet is verified in the pool`,
+        detail: !state.snSession ? `Connect your ${veilLabel} wallet to check.`
           : verified === undefined ? 'Sign the message in your wallet to verify it.'
           : !verified ? 'This wallet could not be verified in the Veil pool.'
           : undefined,
       });
     }
     if (state.recipient) {
-      out.push(recipientGate(m, s, state.evmSession?.address, starknetLabel, IS_DEMO));
+      out.push(recipientGate(m, s, state.evmSession?.address, veilLabel, IS_DEMO));
     }
   } else {
     out.push({
       ok: !m || !m.readable ? null : m.verified,
-      label: `You are eligible on ${starknetLabel}`,
+      label: `You are eligible on ${veilLabel}`,
       detail: !m ? undefined
         : !m.readable ? mirrorUnreadable(IS_DEMO)
         : !m.verified ? mirrorRefusal(m, true)
@@ -222,8 +251,8 @@ function eligibilityCard(): string {
   const tone = failing.length > 0 ? (onlyRecipient ? 'is-warn' : 'is-bad') : 'is-warn';
   const head = failing.length > 0
     ? (onlyRecipient ? 'Will arrive held' : 'Not eligible')
-    : toStarknet() && !state.snSession ? `Connect your ${starknetLabel} wallet`
-    : toStarknet() && state.asset.poolReady && state.poolVerified === undefined ? `Verify your ${starknetLabel} wallet`
+    : toStarknet() && !state.snSession ? `Connect your ${veilLabel} wallet`
+    : toStarknet() && state.asset.poolReady && state.poolVerified === undefined ? `Verify your ${veilLabel} wallet`
     : 'Could not check';
 
   const items = [...failing, ...unknown].map((g) => {
@@ -250,7 +279,7 @@ function claimsCard(): string {
     const ready = state.mirror?.verified === true;
     rows.push(`<div class="claim-row">
       <div><strong>${esc(units(pending, state.token.decimals))} ${esc(state.token.symbol)}</strong>
-        <span class="claim-where">held on ${esc(starknetLabel)}</span></div>
+        <span class="claim-where">held in ${esc(veilLabel)}</span></div>
       <button id="claim-sn" class="max" ${ready && state.snSession ? '' : 'disabled'}>
         ${ready ? (state.snSession ? 'Claim' : 'Connect wallet') : 'Not eligible yet'}
       </button>
@@ -316,7 +345,7 @@ function poolSection(): string {
         ? `<p class="delivery-note is-ok">Veil pool found. It carries ${esc(state.token.symbol)}.</p>`
         : state.poolCheck
           ? `<p class="delivery-note is-warn">${esc(POOL_PROBLEMS[state.poolCheck.reason])}</p>`
-          : `<p class="delivery-note">Paste the pool's address on ${esc(starknetLabel)}.</p>`;
+          : `<p class="delivery-note">Paste the Veil pool address.</p>`;
 
   return `<div class="pool-choice">
     <div class="seg seg-sm" role="radiogroup" aria-label="Which pool">
@@ -377,6 +406,162 @@ function validNoteId(): boolean {
   try { return BigInt(raw) !== 0n; } catch { return false; }
 }
 
+// ---------------------------------------------------------- setup steps
+
+/// A short checklist so an issuer or first-time holder sees the sequence before
+/// gas is spent — EVM source, Veil settlement wallet, eligibility — without a
+/// multi-screen wizard.
+function setupStepsCard(): string {
+  if (!state.asset.available || !toStarknet()) return '';
+  const steps: { ok: boolean | null; label: string; hint?: string }[] = [
+    {
+      ok: state.evmSession ? true : false,
+      label: `Connect ${evmLabel} (source)`,
+      hint: 'The wallet that holds the ERC-3643 balance.',
+    },
+    {
+      ok: state.snSession ? true : false,
+      label: `Connect ${veilLabel} (settlement)`,
+      hint: 'Where the private pool note is claimed. No address is typed.',
+    },
+  ];
+  if (state.evmSession) {
+    const s = state.evmStatus;
+    steps.push({
+      ok: !s ? null : s.verified && !s.frozen && !s.paused,
+      label: 'Eligible on the issuer registry',
+      hint: !s ? 'Checking…'
+        : !s.verified ? 'Issuer has not registered this address.'
+        : s.frozen ? 'This address is frozen.'
+        : s.paused ? `${state.token.symbol} is paused.`
+        : undefined,
+    });
+    steps.push({
+      ok: !s ? null : s.lockboxRegistered,
+      label: 'Bridge approved by issuer',
+      hint: s && !s.lockboxRegistered
+        ? 'Register the lockbox in the identity registry (see Issuer tab).'
+        : undefined,
+    });
+  }
+  if (state.asset.poolReady) {
+    const verified = state.poolVerified;
+    steps.push({
+      ok: !state.snSession ? false : (verified ?? null),
+      label: `Verified in the ${veilLabel} pool`,
+      hint: !state.snSession ? undefined
+        : verified === undefined ? 'Sign once to verify — Bridge does this if needed.'
+        : !verified ? 'Wallet could not be verified in the pool.'
+        : undefined,
+    });
+  }
+
+  // Hide once everything we can know is green — the eligibility card already
+  // says "Eligible to bridge" and repeating the checklist is noise.
+  const known = steps.filter((s) => s.ok !== null);
+  if (known.length > 0 && known.every((s) => s.ok === true) && steps.every((s) => s.ok !== false && s.ok !== null)) {
+    return '';
+  }
+
+  const items = steps.map((s, i) => {
+    const mark = s.ok === true ? '✓' : s.ok === false ? String(i + 1) : '·';
+    const cls = s.ok === true ? 'is-done' : s.ok === false ? 'is-todo' : 'is-idk';
+    return `<li class="${cls}"><span class="setup-mark">${mark}</span><span><strong>${esc(s.label)}</strong>${
+      s.hint ? `<br><span class="setup-hint">${esc(s.hint)}</span>` : ''
+    }</span></li>`;
+  }).join('');
+
+  return `<div class="setup-steps">
+    <div class="setup-head">Before you bridge</div>
+    <ol class="setup-list">${items}</ol>
+    <p class="setup-foot">Issuers: allow an asset on the <button type="button" class="linkish" data-goto="issuer">Issuer</button> tab.</p>
+  </div>`;
+}
+
+// -------------------------------------------------------------- issuer view
+
+function issuerView(): string {
+  const lockbox = state.asset.addresses.evm?.lockbox;
+  const compliance = state.asset.addresses.starknet?.compliance;
+  const token = state.asset.addresses.evm?.token;
+  const windowSecs =
+    deployment.assets?.[state.asset.id]?.starknet?.stalenessWindow
+    ?? deployment.starknet?.stalenessWindow;
+  const windowLine = windowSecs === undefined ? 'see deployment'
+    : windowSecs === 0 ? 'disabled (dev only — unbounded revocation lag)'
+    : `${windowSecs} seconds`;
+
+  return `<div class="issuer">
+    <div class="issuer-hero">
+      <span class="eyebrow">For issuers &amp; operators</span>
+      <h2>Allow an ERC-3643 asset onto Veil</h2>
+      <p>Holders escrow on ${esc(evmLabel)} and settle privately in ${esc(veilLabel)}.
+         Your compliance state travels with the tokens. The settlement network under
+         Veil stays an implementation detail — day to day you manage lockbox consent,
+         rule export, and eligibility freshness.</p>
+    </div>
+
+    <ol class="issuer-steps">
+      <li>
+        <h3>1. Register the lockbox</h3>
+        <p>T-REX verifies the <em>recipient</em> of every transfer. On a bridge-out that
+           recipient is the lockbox. Register it as a verified identity in your token's
+           registry — the same KYC decision you make for any approved holder.
+           De-registering withdraws consent.</p>
+        ${lockbox
+          ? `<p class="issuer-addr">Lockbox for <strong>${esc(state.asset.symbol)}</strong>:
+               <span class="mono">${esc(lockbox)}</span></p>`
+          : `<p class="issuer-addr is-warn">No lockbox in this deployment for ${esc(state.asset.symbol)}.</p>`}
+        ${token
+          ? `<p class="issuer-addr">Token: <span class="mono">${esc(token)}</span></p>` : ''}
+      </li>
+      <li>
+        <h3>2. Export compliance rules (EVM)</h3>
+        <p>Read the live token and write a <span class="mono">ComplianceSpec</span>. Review
+           unmirrored modules before applying.</p>
+        <pre class="issuer-code">cd tools
+node export-compliance.js --rpc $RPC --token 0x&lt;erc3643&gt; --out spec.json</pre>
+      </li>
+      <li>
+        <h3>3. Apply rules on the twin</h3>
+        <p>Prints a ready-to-run invoke — nothing is sent automatically. Diff
+           <span class="mono">export_spec</span> against the file after it lands.</p>
+        <pre class="issuer-code">node apply-compliance.js --spec spec.json --compliance 0x&lt;MirroredCompliance&gt;</pre>
+        ${compliance
+          ? `<p class="issuer-addr">MirroredCompliance for <strong>${esc(state.asset.symbol)}</strong>:
+               <span class="mono">${esc(compliance)}</span></p>`
+          : ''}
+      </li>
+      <li>
+        <h3>4. Keep eligibility fresh</h3>
+        <p>Anyone may call <span class="mono">syncCompliance</span> — it only forwards what
+           your registry already says. Past the staleness window, transfers fail closed.</p>
+        <p class="issuer-addr">Staleness window: <strong>${esc(windowLine)}</strong></p>
+      </li>
+      <li>
+        <h3>5. Pool must hold the twin</h3>
+        <p>Delivery is a Veil pool note, not a public wallet balance. Register the pool
+           as a holder of the twin or fills will not complete.</p>
+      </li>
+    </ol>
+
+    <div class="issuer-triage">
+      <div class="issuer-triage-head">Support triage</div>
+      <table>
+        <thead><tr><th>App says</th><th>Likely cause</th><th>Who acts</th></tr></thead>
+        <tbody>
+          <tr><td>Bridge not approved by issuer</td><td>Lockbox not in identity registry</td><td>Issuer agent</td></tr>
+          <tr><td>Not eligible to bridge</td><td>Holder unverified / frozen / paused</td><td>Issuer KYC</td></tr>
+          <tr><td>Pool cannot be used</td><td>Pool not registered for this twin</td><td>Issuer / ops</td></tr>
+          <tr><td>Mirrored record stale</td><td>Past staleness window</td><td>Anyone — syncCompliance</td></tr>
+        </tbody>
+      </table>
+      <p class="issuer-more">Full checklist: <span class="mono">ISSUER.md</span> in the repo.
+        <a href="https://github.com/Veil-RWA/veil_permissioned_bridge/blob/main/ISSUER.md" target="_blank" rel="noreferrer">Open on GitHub</a></p>
+    </div>
+  </div>`;
+}
+
 // ------------------------------------------------------------- asset picker
 
 function assetPill(): string {
@@ -417,7 +602,7 @@ function ctaLabel(): { text: string; disabled: boolean; note: string } {
   if (state.busy) return { text: state.busy, disabled: true, note: '' };
 
   if (toStarknet() && !state.evmSession) return { text: `Connect ${evmLabel} wallet`, disabled: false, note: '' };
-  if (!toStarknet() && !state.snSession) return { text: `Connect ${starknetLabel} wallet`, disabled: false, note: '' };
+  if (!toStarknet() && !state.snSession) return { text: `Connect ${veilLabel} wallet`, disabled: false, note: '' };
   if (!state.recipient) {
     return {
       text: `Connect your ${destLabel()} wallet`,
@@ -493,18 +678,18 @@ function ctaLabel(): { text: string; disabled: boolean; note: string } {
       text: `Bridge ${state.token.symbol}`,
       disabled: false,
       note: needsApproval
-        ? `Two confirmations: approve ${state.token.symbol}, then the transfer. Message fee ${fee}, paid to LayerZero.`
-        : `Message fee ${fee}, paid to LayerZero.`,
+        ? `Two wallet confirmations: approve ${state.token.symbol}, then escrow. Relayer fee ${fee}.`
+        : `Relayer fee ${fee}. Lands as a private ${veilLabel} pool note.`,
     };
   }
 
   const m = state.mirror;
   if (m && !m.verified) return { text: 'Not eligible to bridge', disabled: true, note: 'A frozen or revoked holder cannot move value, cross-chain included.' };
   if (state.fee !== undefined && state.feeBalance < state.fee) {
-    return { text: 'Not enough STRK for the fee', disabled: true, note: `Need ${units(state.fee, 18, 5)} STRK.` };
+    return { text: 'Not enough fee balance', disabled: true, note: `Need ${units(state.fee, 18, 5)} STRK for the settlement-network fee.` };
   }
   const fee = state.fee !== undefined ? `${units(state.fee, 18, 5)} STRK` : '…';
-  return { text: 'Bridge back', disabled: false, note: `Message fee ${fee}. You approve the gateway, which pays the endpoint.` };
+  return { text: 'Bridge back to ' + evmLabel, disabled: false, note: `Relayer fee ${fee}. Approves the gateway, which pays the endpoint.` };
 }
 
 function transferView(): string {
@@ -532,7 +717,7 @@ function transferView(): string {
     ? `<div class="dest-wallet"><span class="dest-mark"></span><span class="mono">${esc(short(destWallet, 10, 8))}</span>
          <button class="dest-disconnect" data-disconnect="${toStarknet() ? 'sn' : 'evm'}"
            title="Disconnect">Disconnect</button></div>`
-    : `<button id="connect-dest" class="max" style="margin-top:8px">Connect ${esc(toStarknet() ? starknetLabel : evmLabel)} wallet</button>`;
+    : `<button id="connect-dest" class="max" style="margin-top:8px">Connect ${esc(toStarknet() ? veilLabel : evmLabel)} wallet</button>`;
 
   // A MODAL, not inline content. The previous version rendered the picker as a
   // block above the card, so with the page scrolled at all it sat off-screen --
@@ -560,7 +745,7 @@ function transferView(): string {
   <div class="card">
     <div class="leg">
       <div class="leg-head"><span>From</span><span class="leg-balance">${esc(balance)}</span></div>
-      <div class="chain"><span class="chain-mark ${sourceMark()}">${toStarknet() ? 'E' : 'S'}</span>${esc(sourceLabel())}</div>
+      <div class="chain"><span class="chain-mark ${sourceMark()}">${toStarknet() ? 'E' : 'V'}</span>${esc(sourceLabel())}</div>
       <div class="amount-row">
         <input id="amount" class="amount" inputmode="decimal" placeholder="0.0" value="${esc(state.amount)}" />
         <button id="max" class="max">MAX</button>
@@ -573,11 +758,12 @@ function transferView(): string {
 
     <div class="leg">
       <div class="leg-head"><span>To</span><span class="leg-balance">${esc(destBalance)}</span></div>
-      <div class="chain"><span class="chain-mark ${destMark()}">${toStarknet() ? 'S' : 'E'}</span>${esc(destLabel())}</div>
+      <div class="chain"><span class="chain-mark ${destMark()}">${toStarknet() ? 'V' : 'E'}</span>${esc(destLabel())}</div>
       ${connectDest}
       ${deliveryControls()}
     </div>
 
+    ${setupStepsCard()}
     ${eligibilityCard()}
     ${claimsCard()}
 
@@ -587,8 +773,11 @@ function transferView(): string {
       <div class="detail"><dt>Asset</dt><dd>${esc(state.asset.name)}</dd></div>
       <div class="detail"><dt>Route</dt><dd>${esc(sourceLabel())} → ${esc(destLabel())}</dd></div>
       ${toStarknet() && state.asset.poolReady
-        ? `<div class="detail"><dt>Lands as</dt><dd>Pool note</dd></div>` : ''}
+        ? `<div class="detail"><dt>Lands as</dt><dd>Private ${esc(veilLabel)} pool note</dd></div>` : ''}
       <div class="detail"><dt>Message fee</dt><dd>${state.fee !== undefined ? units(state.fee, 18, 6) + (toStarknet() ? ' ETH' : ' STRK') : '—'}</dd></div>
+      ${toStarknet()
+        ? `<div class="detail"><dt>Settlement network</dt><dd>${esc(settlementNetworkLabel)} <span style="color:var(--faint)">(implementation detail)</span></dd></div>`
+        : `<div class="detail"><dt>Fee token</dt><dd>STRK (${esc(settlementNetworkLabel)})</dd></div>`}
       <div class="detail"><dt>Bridge fee</dt><dd>0</dd></div>
       <div class="detail"><dt>Estimated time</dt><dd>~3–10 min</dd></div>
     </dl>
@@ -610,7 +799,7 @@ function historyView(): string {
   }
   const rows = items.map((t: Transfer) => {
     const dir = t.direction === 'toStarknet'
-      ? `${esc(evmLabel)} → ${esc(starknetLabel)}` : `${esc(starknetLabel)} → ${esc(evmLabel)}`;
+      ? `${esc(evmLabel)} → ${esc(veilLabel)}` : `${esc(veilLabel)} → ${esc(evmLabel)}`;
     const explorer = t.direction === 'toStarknet' ? EXPLORER_EVM : EXPLORER_SN;
     return `<div class="row">
       <div class="row-main">${esc(t.amount)} ${esc(t.symbol ?? '')}<span style="color:var(--faint);font-weight:500">${dir}</span></div>
@@ -634,7 +823,9 @@ function render(): void {
   const focusedId = active?.id;
   const caret = active?.selectionStart ?? null;
 
-  app.innerHTML = state.view === 'transfer' ? transferView() : historyView();
+  app.innerHTML = state.view === 'transfer' ? transferView()
+    : state.view === 'issuer' ? issuerView()
+    : historyView();
 
   if (focusedId) {
     const restored = document.getElementById(focusedId) as HTMLInputElement | null;
@@ -655,6 +846,15 @@ function render(): void {
 
   const foot = document.getElementById('foot-route');
   if (foot) foot.textContent = isDeployed ? `${sourceLabel()} → ${destLabel()}` : 'not deployed';
+
+  document.querySelectorAll<HTMLElement>('[data-goto]').forEach((el) => {
+    el.onclick = () => {
+      state.view = el.dataset.goto as View;
+      state.pickerOpen = false;
+      render();
+    };
+  });
+
   if (state.view !== 'transfer') return;
 
   const amount = document.getElementById('amount') as HTMLInputElement | null;
@@ -803,7 +1003,7 @@ function paintNavWallets(): void {
   host.innerHTML =
     faucet +
     chip('evm', evmLabel, state.evmSession?.address) +
-    chip('sn', starknetLabel, state.snSession?.address);
+    chip('sn', veilLabel, state.snSession?.address);
 
   const getFaucets = document.getElementById('get-faucets');
   if (getFaucets) getFaucets.onclick = () => void doGetFaucets();
@@ -857,7 +1057,7 @@ function paintWalletPanel(): void {
     <div class="bal-panel" role="dialog" aria-label="Your assets">
       <div class="bal-head">
         <strong>Your assets</strong>
-        <span class="mono">${esc(isEvm ? evmLabel : starknetLabel)} · ${esc(short(session.address, 6, 4))}</span>
+        <span class="mono">${esc(isEvm ? evmLabel : veilLabel)} · ${esc(short(session.address, 6, 4))}</span>
       </div>
       <div class="bal-row bal-hdr">
         <span class="bal-sym">Asset</span><span class="bal-name"></span>
@@ -1103,7 +1303,7 @@ async function doConnectEvm(rdns?: string): Promise<void> {
       state.evmPicker = e.wallets;
       state.error = undefined;
     } else {
-      state.error = e?.message ?? String(e);
+      state.error = friendlyError(e);
     }
   } finally {
     state.busy = undefined;
@@ -1139,7 +1339,7 @@ async function doConnectStarknet(): Promise<void> {
     if (toStarknet()) state.recipient = state.snSession.address;
     state.error = undefined;
   } catch (e: any) {
-    state.error = e?.message ?? String(e);
+    state.error = friendlyError(e);
     state.busy = undefined;
     await refreshAll();
     return;
@@ -1238,7 +1438,7 @@ async function doFindNote(): Promise<void> {
     // Declining the prompt is a choice, not a failure. Leave the panel on its
     // "sign to find my note" state rather than colouring it as an error.
     const m = String(e?.message ?? e);
-    state.error = /reject|denied|abort|cancel/i.test(m) ? undefined : m;
+    state.error = /reject|denied|abort|cancel/i.test(m) ? undefined : friendlyError(e);
   } finally {
     state.busy = undefined;
     if (state.noteId) await refreshNoteOwner(); else render();
@@ -1262,14 +1462,14 @@ async function doClaimStarknet(): Promise<void> {
   state.busy = 'Claiming…'; paintCta();
   try {
     await sn.claimPending(state.snSession, state.asset, owner);
-    state.notice = 'Released on ' + starknetLabel + '.';
+    state.notice = 'Released in ' + veilLabel + '.';
   } catch (e: any) {
     // More than one wallet installed: show the picker instead of guessing.
     if (e?.name === 'PickEvmWalletError') {
       state.evmPicker = e.wallets;
       state.error = undefined;
     } else {
-      state.error = e?.message ?? String(e);
+      state.error = friendlyError(e);
     }
   } finally {
     state.busy = undefined;
@@ -1284,7 +1484,7 @@ async function doClaimEvm(): Promise<void> {
     await evm.claimHeld(state.evmSession, state.asset, state.evmSession.address);
     state.notice = 'Released on ' + evmLabel + '.';
   } catch (e: any) {
-    state.error = e?.shortMessage ?? e?.message ?? String(e);
+    state.error = friendlyError(e);
   } finally {
     state.busy = undefined;
     await refreshAll();
@@ -1310,7 +1510,7 @@ async function prepareDestination(): Promise<boolean> {
   if (!state.snSession) {
     await doConnectStarknet();
     if (!state.snSession) {
-      state.error = state.error ?? `Connect your ${starknetLabel} wallet to receive.`;
+      state.error = state.error ?? `Connect your ${veilLabel} wallet to receive.`;
       return false;
     }
   }
@@ -1373,7 +1573,7 @@ async function onCta(): Promise<void> {
   try {
     amount = parseUnits(state.amount, state.token.decimals);
   } catch (e: any) {
-    state.error = e.message; render(); return;
+    state.error = friendlyError(e); render(); return;
   }
 
   const asset = state.asset;
@@ -1420,7 +1620,7 @@ async function onCta(): Promise<void> {
       void watchRelease(asset, hash, state.recipient);
     }
   } catch (e: any) {
-    state.error = e?.shortMessage ?? e?.message ?? String(e);
+    state.error = friendlyError(e);
   } finally {
     state.busy = undefined;
     await refreshAll();
@@ -1440,7 +1640,7 @@ async function watchDelivery(asset: Asset, hash: string, recipient: string): Pro
       const [supply, mirror] = await Promise.all([sn.twinSupply(asset), sn.mirrorStatus(asset, recipient)]);
       if (supply > before) {
         if (id) update(id, 'minted');
-        state.notice = `Delivered and minted on ${starknetLabel}.`;
+        state.notice = `Delivered into ${veilLabel} (private settlement).`;
         await refreshAll(); return;
       }
       if (mirror.pending > 0n) {

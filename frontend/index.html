@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Veil Bridge — permissioned RWA across chains</title>
-    <meta name="description" content="Bridge permissioned ERC-3643 assets between EVM chains and Starknet, with compliance state carried across." />
+    <title>Veil Bridge — private compliant settlement for ERC-3643</title>
+    <meta name="description" content="Escrow permissioned ERC-3643 assets on Ethereum and settle privately in Veil — compliance travels with the tokens." />
     <link rel="icon" type="image/png" href="/veil-logo.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -20,12 +20,13 @@
         <nav class="tabs" role="tablist">
           <button class="tab is-active" data-view="transfer" role="tab">Transfer</button>
           <button class="tab" data-view="history" role="tab">History</button>
+          <button class="tab" data-view="issuer" role="tab">Issuer</button>
         </nav>
         <div class="nav-right">
           <!-- Both wallets live here, filled by render(). A bridge has two
                chains, so one "Connect wallet" would always be ambiguous. -->
           <div class="nav-wallets" id="nav-wallets"></div>
-          <a class="nav-link" href="https://github.com/Veil-RWA/veil_permissioned_bridge" target="_blank" rel="noreferrer">Docs</a>
+          <button type="button" class="nav-link nav-link-btn" data-goto="issuer">Issuer guide</button>
         </div>
       </div>
     </header>
@@ -33,10 +34,10 @@
     <main class="page">
       <section class="hero">
         <span class="eyebrow">Confidential · Compliant · On-chain</span>
-        <h1>Move permissioned assets,<br />keep the permissions.</h1>
+        <h1>Escrow on Ethereum.<br />Settle privately in Veil.</h1>
         <p>
-          Escrow an ERC-3643 asset on Ethereum, mint a permissioned twin on Starknet.
-          Eligibility travels with the tokens — and expires if it goes stale.
+          Bridge permissioned ERC-3643 assets into Veil's private settlement layer.
+          Your issuer's eligibility travels with the tokens — and fails closed if it goes stale.
         </p>
       </section>
 
@@ -45,15 +46,15 @@
       <section class="assurances">
         <div class="assurance">
           <h3>Compliance crosses too</h3>
-          <p>The twin runs the full ERC-3643 gate against a mirror of the source registry, not a copy made once at launch.</p>
+          <p>Settlement runs the full ERC-3643 gate against a live mirror of your source registry — not a one-time snapshot at launch.</p>
         </div>
         <div class="assurance">
           <h3>Fails closed</h3>
-          <p>If the mirror goes stale, transfers stop until someone refreshes it. Anyone can — it only forwards what the source already says.</p>
+          <p>If eligibility goes stale, transfers stop until someone refreshes it. Anyone can — it only forwards what the issuer registry already says.</p>
         </div>
         <div class="assurance">
           <h3>Nothing is stranded</h3>
-          <p>A transfer that arrives for an ineligible holder is quarantined and claimable later, never rejected back into the void.</p>
+          <p>A transfer that arrives for an ineligible holder is held and claimable later, never rejected into the void.</p>
         </div>
       </section>
     </main>

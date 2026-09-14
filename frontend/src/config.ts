@@ -99,6 +99,11 @@ export const evmChain = EVM_CHAIN_IDS[deployment.evmNetwork ?? 'ethereum-sepolia
 export const evmLabel = evmChain?.label ?? 'Ethereum';
 export const starknetLabel = STARKNET_LABELS[deployment.starknetNetwork ?? 'starknet-sepolia'] ?? 'Starknet';
 
+/// User-facing name for the private settlement layer. Issuers escrow on EVM and
+/// settle here; the underlying L2 is an implementation detail of the bridge, not
+/// something an institutional operator needs in every prompt.
+export const veilLabel = 'Veil';
+
 /// An env var left blank in `.env` arrives as an EMPTY STRING, not undefined,
 /// and `??` does not fall back on that -- so a blank line in the file would
 /// shadow the value it was meant to leave alone. Treat blank as unset.

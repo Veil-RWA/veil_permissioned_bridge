@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Read a live ERC-3643 token's compliance rule set and write it out as a
-// ComplianceSpec, ready to replicate onto its Starknet twin.
+// ComplianceSpec, ready to replicate onto its Veil twin (operator / issuer step).
 //
 //   node export-compliance.js --rpc <url> --token <address> [options]
 //

@@ -9,6 +9,10 @@ token can be wrapped by anyone, because there is nothing to carry across. A
 permissioned one cannot: the twin is only as legitimate as its eligibility data,
 so the eligibility data has to travel, keep travelling, and expire when it stops.
 
+**Issuers / EVM operators:** start with [ISSUER.md](ISSUER.md) — lockbox consent,
+compliance export/apply, and support triage in EVM + compliance language. Starknet
+stays an implementation detail of private settlement.
+
 Self-contained: it shares no code with the `veil` pool package in either
 direction. The twin plugs into a Veil ERC-3643 pool by exposing the same
 entrypoint *names* (`transfer`, `identity_registry`, `is_verified`, …), not by
