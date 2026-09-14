@@ -60,12 +60,12 @@ export type PoolProblem =
   | 'unreachable';   // the RPC could not answer
 
 export const POOL_PROBLEMS: Record<PoolProblem, string> = {
-  malformed: 'That is not a Starknet address.',
+  malformed: 'That is not a valid Veil pool address.',
   'no-factory': 'This deployment has no Veil factory, so only the main pool can be used.',
   'not-a-pool': 'No Veil pool exists at that address.',
   'wrong-asset': 'That pool does not carry this asset.',
   'not-a-holder': 'That pool is not registered to hold this asset yet. The issuer has to register it.',
-  unreachable: 'Could not reach Starknet to check that pool.',
+  unreachable: 'Could not reach the settlement network to check that pool.',
 };
 
 /// Starknet addresses are felts: at most 63 hex digits, and never zero.
