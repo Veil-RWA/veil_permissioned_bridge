@@ -356,6 +356,12 @@ a { color: inherit; }
 }
 .foot a { color: var(--muted); text-decoration: none; }
 .foot a:hover { color: var(--gold); }
+
+.nav-link-btn {
+  background: none; border: none; padding: 0; margin: 0;
+  font: inherit; color: inherit; cursor: pointer;
+}
+.nav-link-btn:hover { color: var(--gold); }
 .dot { opacity: .5; }
 
 .mono { font-family: var(--mono); }
