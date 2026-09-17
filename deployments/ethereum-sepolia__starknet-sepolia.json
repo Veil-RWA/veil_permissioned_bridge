@@ -380,7 +380,8 @@
             "rebasing": "0xE5ECCEF28C1C39c1C19d0D7339Ffc35761C56ae8"
           },
           "configured": true,
-          "faucet": "0x7696A646aaD08b0cf18AeCD763f19662c191d882"
+          "faucet": "0x7696A646aaD08b0cf18AeCD763f19662c191d882",
+          "profile": "open"
         },
         "token": "0x32dee6CCEA7c5A82Fdfb4a7085901314aB086c6f",
         "faucet": "0x7696A646aaD08b0cf18AeCD763f19662c191d882",
@@ -398,6 +399,74 @@
         "name": "Bridged BUIDL",
         "symbol": "bBUIDL",
         "rules": "0x5eb19a1fda79496ce830d0066500da73965d2ba4ad2d5c756a12d780a66278e",
+        "rulesMirror": true,
+        "poolBound": true,
+        "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3"
+      },
+      "wired": {
+        "peers": true,
+        "links": true,
+        "dvns": {
+          "required": [
+            "LayerZero Labs"
+          ],
+          "optional": [],
+          "threshold": 0,
+          "evmConfirmations": "2",
+          "starknetConfirmations": "1"
+        }
+      }
+    },
+    "vbill": {
+      "evm": {
+        "securitize": {
+          "model": "REGULATED",
+          "libraries": {
+            "TokenLibrary": "0x72E74b6F8dF83C07769facBF623756529b3A093d",
+            "ComplianceServiceLibrary": "0x76B9415AfdAfa4Ea2197d03AAF2fc3D19C5465A0"
+          },
+          "services": {
+            "token": "0x1A35dDa2c4362BDD451B16DE7Cb3Df5525bBfcDb",
+            "trust": "0x0C2f54F40985cee6d735d87511e802Cb0A3a6372",
+            "registry": "0xD625f7c0769Ac29BF13112eB126e44C96Fe849d0",
+            "compliance": "0x2Cc769D56D9289C04ff7e3550efA0aaC314aECFc",
+            "walletManager": "0x1663CC2d58619E9cDFfE06ca66d1f82c4fCC3ae6",
+            "lockManager": "0x43FFA20518501A04a177cB5563F60F51C01B7b2d",
+            "config": "0x47365F84872bA1C59b9651A46192c102EFE6fDa3",
+            "blacklist": "0x454922e0C0b958Fb15d90de6d0c3E002092f30B0",
+            "rebasing": "0xC6674043fEFed012b0E694d9dcBe106A776B0CB7"
+          },
+          "implementations": {
+            "token": "0x9365A4aDB6e64a5999a6FB7c295dB7cB098bb0e0",
+            "trust": "0xD3AFa30202147495687a630C2A0047bcf5eD575D",
+            "registry": "0x889fa12Bb529AAA0b88fB7c9b83fC00B3e9e38B4",
+            "compliance": "0x51eB51AfDb0D956760BA85696FEac59F0FF1ad74",
+            "walletManager": "0xeE392983F6ECcac3290A7F119f2a3127C29738eD",
+            "lockManager": "0xEb2191db8F4941090a9ca521E530DCD72Cd99949",
+            "config": "0x977984470A7256912bF29300c4612fd86F17dBF4",
+            "blacklist": "0xC6D90685c2D947BFe28cb9b627e830D0c331FABa",
+            "rebasing": "0xE5ECCEF28C1C39c1C19d0D7339Ffc35761C56ae8"
+          },
+          "configured": true,
+          "faucet": "0xcD0DF48C591e7DB26Ef7ea717EBaA74bbf71bbDf",
+          "profile": "open"
+        },
+        "token": "0x1A35dDa2c4362BDD451B16DE7Cb3Df5525bBfcDb",
+        "faucet": "0xcD0DF48C591e7DB26Ef7ea717EBaA74bbf71bbDf",
+        "kind": "securitize",
+        "issuerRules": "0x79b128A7Dc4e461598eDb14D936A5a5f7889F8d8",
+        "allowlist": "0x79b128A7Dc4e461598eDb14D936A5a5f7889F8d8",
+        "lockbox": "0x1345c786bB294c4593007cEC652520A047D2515F",
+        "owner": "0x878ffCF3351C6596Bd75355E00319AB5Fcf1c639"
+      },
+      "starknet": {
+        "registry": "0x768e7a25169b232ce62b48c8485e85ce0dc0aa88891b9a1f20a99b42d99de76",
+        "stalenessWindow": 86400,
+        "gateway": "0x126a05b8d132117d145ec88fa2aa2b1fa997f71c95d7ce6a54b5ed6875325a5",
+        "token": "0x79971e0411bf61b32b25b35ffcdb841b219fd50f073daa929ebe0f58a359274",
+        "name": "Bridged VBILL",
+        "symbol": "bVBILL",
+        "rules": "0x4dbd45f3a668b979c4c3f0f9fdce44b4ea22aa5e2edd4a8715455215172052a",
         "rulesMirror": true,
         "poolBound": true,
         "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3"
