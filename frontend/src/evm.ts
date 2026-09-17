@@ -53,6 +53,7 @@ const TOKEN_ABI = [
 
 const FAUCET_ABI = [
   'function claim() returns (uint256)',
+  'function claimFor(address) returns (uint256)',
   'function faucetAmount() view returns (uint256)',
   'function lastClaimed(address) view returns (uint256)',
   'function hasClaimed(address) view returns (bool)',
@@ -390,18 +391,33 @@ async function eligibilitySource(asset: Asset): Promise<EligibilitySource> {
 /// the selected asset is better than no faucet at all.
 export async function claimFaucets(
   session: EvmSession, tokens: string[], router?: string
-): Promise<{ hash: string; batched: boolean }> {
+): Promise<{ hash: string; batched: boolean; claimed: number }> {
   const signer = await session.provider.getSigner();
-  if (router && tokens.length > 1) {
+  // The router skips a faucet that fails instead of reverting, so a wallet's
+  // gas estimate settles on the least gas at which the batch still succeeds --
+  // and that can be the gas at which the costliest claim (a Securitize faucet
+  // also onboards the investor) runs out and is skipped. So each claim is
+  // estimated on its own, only those that would pay are sent, and the limit
+  // covers all of them.
+  const estimates = await Promise.all(tokens.map((t) =>
+    new Contract(t, FAUCET_ABI, readProvider).claimFor
+      .estimateGas(session.address, { from: session.address })
+      .catch(() => undefined)));
+  const ready = tokens.filter((_, i) => estimates[i] !== undefined);
+  if (ready.length === 0) throw new Error('Nothing to claim: every faucet is on cooldown.');
+  if (router && ready.length > 1) {
+    const total = estimates.reduce<bigint>((sum, g) => sum + (g ?? 0n), 0n);
     const contract = new Contract(router, ROUTER_ABI, signer);
-    const tx = await contract.claimAll(tokens, session.address);
+    const tx = await contract.claimAll(ready, session.address, {
+      gasLimit: (total * 13n) / 10n + 100_000n,
+    });
     await tx.wait();
-    return { hash: tx.hash, batched: true };
+    return { hash: tx.hash, batched: true, claimed: ready.length };
   }
-  const contract = new Contract(tokens[0], FAUCET_ABI, signer);
+  const contract = new Contract(ready[0], FAUCET_ABI, signer);
   const tx = await contract.claim();
   await tx.wait();
-  return { hash: tx.hash, batched: false };
+  return { hash: tx.hash, batched: false, claimed: 1 };
 }
 
 /// Is a faucet configured on this token at all? `faucetAmount` of 0 disables it,

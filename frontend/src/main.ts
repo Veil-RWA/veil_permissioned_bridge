@@ -983,9 +983,9 @@ async function doGetFaucets(): Promise<void> {
   }
   state.busy = FAUCET_BUSY; paintCta(); render();
   try {
-    const { batched } = await evm.claimFaucets(state.evmSession, tokens, faucetRouter());
+    const { batched, claimed } = await evm.claimFaucets(state.evmSession, tokens, faucetRouter());
     state.notice = batched
-      ? `Claimed test tokens for all ${tokens.length} assets.`
+      ? `Claimed test tokens for ${claimed} of ${tokens.length} assets.`
       : 'Claimed test tokens.';
     state.error = undefined;
   } catch (e: any) {
