@@ -1395,6 +1395,50 @@ async function ensureLinked(): Promise<boolean> {
   return false;
 }
 
+/// Eligibility pushes sent this session, keyed asset:account.
+const identitySent = new Map<string, number>();
+
+/// Make sure the mirror holds a fresh eligibility record for the connected
+/// account on this asset.
+///
+/// The record is a snapshot and the mirror fails closed once it expires, so the
+/// pool will not make a note for a holder whose record is missing or stale. The
+/// bridge-in itself carries a fresh snapshot, but the note has to exist first.
+/// Anyone may push it, so the holder does, and only when it is needed.
+async function ensureIdentitySynced(): Promise<boolean> {
+  const asset = state.asset;
+  const source = state.evmSession;
+  if (!source) return false;
+  const status = await sn.identityFreshness(asset, source.address);
+  if (status === undefined) {
+    state.error = 'The mirrored registry did not answer, so your eligibility could not be checked. Try again in a moment.';
+    return false;
+  }
+  if (status.verified && status.fresh) return true;
+
+  const key = `${asset.id}:${source.address.toLowerCase()}`;
+  const sentAt = identitySent.get(key);
+  if (sentAt === undefined || Date.now() - sentAt > LINK_WAIT_MS) {
+    state.busy = `Confirm the eligibility update in your ${evmLabel} wallet…`; paintCta(); render();
+    await evm.syncCompliance(source, asset);
+    identitySent.set(key, Date.now());
+  }
+
+  const deadline = (identitySent.get(key) ?? Date.now()) + LINK_WAIT_MS;
+  while (Date.now() < deadline) {
+    state.busy = 'Updating your eligibility — delivery takes a few minutes…'; paintCta();
+    await new Promise((r) => setTimeout(r, 15000));
+    const now = await sn.identityFreshness(asset, source.address);
+    if (now && now.verified && now.fresh) return true;
+    if (now && !now.verified && now.fresh) {
+      state.error = `${evmLabel} says this account is not eligible to hold ${state.token.symbol}.`;
+      return false;
+    }
+  }
+  state.error = 'Your eligibility update was sent but has not arrived yet. Press Bridge again in a few minutes; it will not be sent twice.';
+  return false;
+}
+
 /// Rule pushes sent this session, keyed by account, so pressing Bridge again
 /// while one is in flight waits for it instead of paying for a second message.
 const rulesSent = new Map<string, number>();
@@ -1476,7 +1520,11 @@ async function prepareDestination(): Promise<boolean> {
     return false;
   }
 
-  // 4. Fresh issuer rules on the mirror, for an asset that enforces them.
+  // 4. A fresh eligibility record, and the issuer rules where the asset has
+  //    them. Both are keyed by the source account, so the wallet is linked
+  //    first: a note is made only for a wallet the mirror can vouch for.
+  if (!(await ensureLinked())) return false;
+  if (!(await ensureIdentitySynced())) return false;
   if (!(await ensureRulesSynced())) return false;
 
   // 5. A fillable note. Look before making one: a note holds a single deposit,
@@ -1487,9 +1535,6 @@ async function prepareDestination(): Promise<boolean> {
     state.noteSearched = true;
   }
   if (!validNoteId()) {
-    // The pool makes a note only for a wallet eligible under the asset's rules,
-    // and the mirror knows nothing of a wallet it has never bound.
-    if (!(await ensureLinked())) return false;
     state.busy = 'Creating your note…'; paintCta(); render();
     const made = await createOpenNote(asset, state.noteCtx, (line) => {
       state.busy = `Creating your note — ${line}…`; paintCta();

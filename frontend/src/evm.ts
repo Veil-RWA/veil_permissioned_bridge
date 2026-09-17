@@ -24,6 +24,8 @@ const LOCKBOX_ABI = [
   'function claimableTokens(address recipient) view returns (uint256)',
   'function quoteLinkStarknet(bytes32 snAccount, uint128 gasLimit) view returns (tuple(uint256 nativeFee, uint256 lzTokenFee))',
   'function linkStarknet(bytes32 snAccount, uint128 gasLimit, address refundAddress) payable returns (bytes32)',
+  'function quoteSyncCompliance(address account, uint128 gasLimit) view returns (tuple(uint256 nativeFee, uint256 lzTokenFee))',
+  'function syncCompliance(address account, uint128 gasLimit, address refundAddress) payable returns (bytes32)',
   // A lockbox that mirrors balance rules (kinds `rules` and `securitize`).
   'function quoteSyncRules(address account, uint128 gasLimit) view returns (tuple(uint256 nativeFee, uint256 lzTokenFee))',
   'function syncRules(address account, uint128 gasLimit, address refundAddress) payable returns (bytes32)',
@@ -520,6 +522,22 @@ export async function bridgeOut(
     } catch { /* not ours */ }
   }
   return { hash: tx.hash, guid };
+}
+
+/// Push the connected account's eligibility snapshot to the mirror. The record
+/// expires (the mirror fails closed once it is older than the staleness
+/// window), and a holder needs a fresh one before the pool will make them a
+/// note. Permissionless: the lockbox forwards what the issuer's own registry
+/// says, and the caller pays the LayerZero fee.
+export async function syncCompliance(session: EvmSession, asset: Asset): Promise<string> {
+  const signer = await session.provider.getSigner();
+  const lockbox = new Contract(asset.addresses.evm!.lockbox!, LOCKBOX_ABI, signer);
+  const fee = await lockbox.quoteSyncCompliance(session.address, DEFAULT_GAS_LIMIT);
+  const tx = await lockbox.syncCompliance(session.address, DEFAULT_GAS_LIMIT, session.address, {
+    value: fee.nativeFee ?? fee[0],
+  });
+  await tx.wait();
+  return tx.hash;
 }
 
 /// Push the connected account's issuer rules to the mirror (`syncRules`), and

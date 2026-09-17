@@ -305,6 +305,25 @@ export async function linkRequestOf(asset: Asset, address: string): Promise<bigi
   return felts ? BigInt(felts[0] ?? 0) : undefined;
 }
 
+/// Whether the mirror holds a fresh, verified eligibility record for
+/// `evmAccount`. Undefined when the registry did not answer.
+export async function identityFreshness(
+  asset: Asset, evmAccount: string
+): Promise<{ verified: boolean; fresh: boolean } | undefined> {
+  if (IS_DEMO) return undefined;
+  const registry = asset.addresses.starknet!.registry;
+  const account = BigInt(evmAccount).toString();
+  const [record, fresh] = await Promise.all([
+    maybeFelts(registry, 'record', [account]),
+    maybeFelts(registry, 'is_fresh', [account]),
+  ]);
+  if (!record || !fresh) return undefined;
+  // IdentityRecord: seq, synced_at, verified, frozen, country
+  const verified = BigInt(record[0] ?? 0) !== 0n
+    && BigInt(record[2] ?? 0) === 1n && BigInt(record[3] ?? 0) === 0n;
+  return { verified, fresh: BigInt(fresh[0] ?? 0) === 1n };
+}
+
 /// Whether the mirror holds fresh issuer rules for `evmAccount` and for the
 /// token. `required` is false for an asset whose mirror enforces no rules, and
 /// then the other two do not matter. Undefined when the registry did not answer.
