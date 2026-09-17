@@ -1327,8 +1327,10 @@ async function doClaimEvm(): Promise<void> {
   }
 }
 
-/// LINKs sent this session, keyed wallet:account, so pressing Bridge again while
-/// one is in flight waits for it instead of paying for a second message.
+/// LINKs sent this session, keyed asset:wallet:account -- every asset has its
+/// own gateway and mirror, so a link to one says nothing about another. Pressing
+/// Bridge again on the SAME asset waits for the message in flight instead of
+/// paying for a second one.
 const linksSent = new Map<string, number>();
 const LINK_WAIT_MS = 10 * 60 * 1000;
 
@@ -1368,7 +1370,7 @@ async function ensureLinked(): Promise<boolean> {
     return false;
   }
 
-  const key = `${BigInt(wallet.address)}:${account}`;
+  const key = `${asset.id}:${BigInt(wallet.address)}:${account}`;
   const sentAt = linksSent.get(key);
   if (sentAt === undefined || Date.now() - sentAt > LINK_WAIT_MS) {
     if ((await sn.linkRequestOf(asset, wallet.address)) !== account) {
@@ -1439,8 +1441,9 @@ async function ensureIdentitySynced(): Promise<boolean> {
   return false;
 }
 
-/// Rule pushes sent this session, keyed by account, so pressing Bridge again
-/// while one is in flight waits for it instead of paying for a second message.
+/// Rule pushes sent this session, keyed asset:account: each asset mirrors its
+/// own issuer's rules. Pressing Bridge again on the same asset waits for the
+/// message in flight instead of paying for a second one.
 const rulesSent = new Map<string, number>();
 
 /// Make sure the mirror holds fresh issuer rules for the connected account, for
@@ -1462,7 +1465,7 @@ async function ensureRulesSynced(): Promise<boolean> {
   }
   if (!status.required || (status.account && status.token)) return true;
 
-  const key = source.address.toLowerCase();
+  const key = `${asset.id}:${source.address.toLowerCase()}`;
   const sentAt = rulesSent.get(key);
   if (sentAt === undefined || Date.now() - sentAt > LINK_WAIT_MS) {
     state.busy = `Confirm the rules update in your ${evmLabel} wallet…`; paintCta(); render();
