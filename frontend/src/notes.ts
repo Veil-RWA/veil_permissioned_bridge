@@ -19,6 +19,7 @@ import {
 } from 'veil-sdk';
 import { snProvider } from './starknet';
 import type { SnSession } from './starknet';
+import type { WalletAccount } from 'starknet';
 import type { Asset } from './assets';
 
 export type NoteContext = {
@@ -26,6 +27,10 @@ export type NoteContext = {
   viewingKey: bigint;
   publicViewingKey: bigint;
   channelKey: bigint;
+  /// Signs each derive's authorization: the pool checks the owner's signature
+  /// inside the proof, while the prover's relayer sends the transactions.
+  signer: WalletAccount;
+  chainId: string;
 };
 
 /// Recover the owner's viewing key and self-channel key.
@@ -108,7 +113,10 @@ export async function deriveNoteContext(session: SnSession): Promise<NoteContext
   const owner = BigInt(session.address);
   // The SELF channel: owner -> owner, which is where a holder's own notes live.
   const channelKey = deriveChannelKey(owner, privateKey, owner, publicKey);
-  return { owner, viewingKey: privateKey, publicViewingKey: publicKey, channelKey };
+  return {
+    owner, viewingKey: privateKey, publicViewingKey: publicKey, channelKey,
+    signer: session.account, chainId,
+  };
 }
 
 export type NoteSlot = {
@@ -266,6 +274,8 @@ export async function registerInPool(
     transport: 'job',
     rpcUrl: STARKNET_RPC,
     masterAddress: PROVER_MASTER_ADDRESS,
+    signer: ctx.signer,
+    chainId: ctx.chainId,
   });
 
   // register_viewing_key_derive(user, k: u256, audit_ephemeral_secret_r,
@@ -345,6 +355,8 @@ export async function createOpenNote(
     rpcUrl: STARKNET_RPC,
     // The browser cannot sign a settle; the prover submits from its own account.
     masterAddress: PROVER_MASTER_ADDRESS,
+    signer: ctx.signer,
+    chainId: ctx.chainId,
   });
 
   const calldata = buildCreateOpenNoteCalldata(

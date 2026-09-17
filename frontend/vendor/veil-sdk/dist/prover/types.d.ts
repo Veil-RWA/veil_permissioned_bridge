@@ -15,7 +15,7 @@ export interface ProverServiceConfig {
  *  different message layouts, so the server keys its settle-calldata assembly by
  *  `(pool, operation)` — set `pool` accordingly. The literals below are hints
  *  across both pools; `string & {}` keeps the type open. */
-export type VeilOperation = "register_viewing_key" | "deposit" | "create_open_note" | "invoke" | "private_transfer" | "withdraw" | "forced_transfer" | "post_order" | "cancel_order" | "approve_private_transfer" | "private_transfer_as_approved" | "revoke_private_approval" | (string & {});
+export type VeilOperation = "register_viewing_key" | "deposit" | "create_open_note" | "invoke" | "private_transfer" | "withdraw" | "forced_transfer" | "post_order" | "cancel_order" | "execute_batch" | "approve_private_transfer" | "private_transfer_as_approved" | "revoke_private_approval" | (string & {});
 /** Which pool the operation targets. The server selects its settle-assembly
  *  table from this. */
 export type VeilPool = "erc721" | "erc3643" | (string & {});

@@ -17,6 +17,14 @@
 //
 // `deriveCalldata` is the ABI-serialized argument list for `<op>_derive` (hex
 // felts; u256 = [low, high], ContractAddress/felt252/u128 = one felt each).
+//
+// ERC-3643 pool: every derive must be authorized by the acting account (see
+// authorization.ts). Give the instance (or the call) a `signer` — the user's
+// wallet account, the agent's for a forced transfer, the exchange's for a batch
+// — and the calldata gets its (`auth_nonce`, `signature`) appended before
+// proving. Without a signer the calldata is sent as given, so it must already
+// end with them.
+import { authorizeDeriveCalldata } from "../authorization.js";
 import { veilProveAndSettle, veilProveAndSettleStream } from "./veil.js";
 import { proverEndpointFromEnv, proverTransportFromEnv } from "./constants.js";
 export class VeilProver {
@@ -27,12 +35,28 @@ export class VeilProver {
             throw new Error("VeilProver: veilAddress is required");
     }
     /** Run any operation by name + raw derive calldata. */
-    proveAndSettle(operation, deriveCalldata, opts = {}) {
-        return veilProveAndSettle(this.input(operation, deriveCalldata, opts));
+    async proveAndSettle(operation, deriveCalldata, opts = {}) {
+        const calldata = await this.authorized(operation, deriveCalldata, opts);
+        return veilProveAndSettle(this.input(operation, calldata, opts));
     }
     /** Same, but yields each SSE event (phase / log / program_hash / complete). */
-    proveAndSettleStream(operation, deriveCalldata, opts = {}) {
-        return veilProveAndSettleStream(this.input(operation, deriveCalldata, opts));
+    async *proveAndSettleStream(operation, deriveCalldata, opts = {}) {
+        const calldata = await this.authorized(operation, deriveCalldata, opts);
+        yield* veilProveAndSettleStream(this.input(operation, calldata, opts));
+    }
+    /** The derive calldata with the signer's authorization appended (ERC-3643
+     *  pool with a signer), else unchanged. */
+    async authorized(operation, deriveCalldata, opts) {
+        const signer = opts.signer ?? this.config.signer;
+        if (this.config.pool !== "erc3643" || signer === undefined)
+            return deriveCalldata;
+        return authorizeDeriveCalldata({
+            signer,
+            pool: this.config.veilAddress,
+            operation,
+            deriveCalldata,
+            chainId: this.config.chainId,
+        });
     }
     // ── Typed per-operation shortcuts (operation name baked in) ───────────────
     registerViewingKey(deriveCalldata, opts) {
@@ -57,8 +81,8 @@ export class VeilProver {
     privateTransfer(deriveCalldata, opts) {
         return this.proveAndSettle("private_transfer", deriveCalldata, opts);
     }
-    /** ERC-3643 pool: agent clawback / recovery (settle is agent-gated, so submit
-     *  with the agent's privateKey + senderAddress). */
+    /** ERC-3643 pool: agent clawback / recovery. The calldata ends with the
+     *  agent's address, and the signer is the agent's account. */
     forcedTransfer(deriveCalldata, opts) {
         return this.proveAndSettle("forced_transfer", deriveCalldata, opts);
     }

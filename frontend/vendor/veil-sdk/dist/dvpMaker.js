@@ -1,16 +1,20 @@
 // Maker-side DvP client. Posts and cancels orders on the ERC-3643 pool through
 // the SNIP-36 prover service (the proven `post_order_derive` / `cancel_order_derive`
 // run in the virtual OS; the viewing key stays in the proof witness, never
-// on-chain). Thin wrapper over `VeilProver` that builds the derive calldata.
+// on-chain). Thin wrapper over `VeilProver` that builds the derive calldata;
+// `signer` is the maker's own account, which authorizes each derive.
 //
-//   const maker = new VeilDvpMaker({ veilAddress: "0x<pool>" });
-//   const order = { maker, offerToken: USDC, offerAmount: 1000n,
+//   const maker = new VeilDvpMaker({ veilAddress: "0x<pool>", signer: makerAccount });
+//   const order = { maker, makerSalt, offerToken: USDC, offerAmount: 1000n,
 //                   wantToken: GOLD, wantAmount: 100n, expiry, nonce };
+//   const rules = await maker.rulesSnapshot(reader, order);  // just before posting
 //   await maker.postOrder({ maker, makerPrivateViewingKey: k, order,
-//                           changeNoteSalt, receiveSubchannelSalt });
+//                           auditEphemeralSecret, changeNoteSalt,
+//                           offerSubchannelSalt, receiveSubchannelSalt });
+//   // hand the exchange: { maker, makerSalt, makerRules: rules }
 //   // later, to reclaim the unfilled remainder as a PRIVATE note:
 //   await maker.cancelOrder({ maker, makerPrivateViewingKey: k, orderId,
-//                             leftoverNoteSalt });
+//                             makerSalt, leftoverNoteSalt });
 import { buildCancelOrderDeriveCalldata, buildPostOrderDeriveCalldata, computeOrderId, } from "./dvp.js";
 import { VeilProver } from "./prover/veilProver.js";
 export class VeilDvpMaker {
@@ -39,6 +43,18 @@ export class VeilDvpMaker {
     /** Streaming variant of {@link cancelOrder}. */
     cancelOrderStream(args, opts) {
         return this.prover.proveAndSettleStream("cancel_order", buildCancelOrderDeriveCalldata(args), opts);
+    }
+    /** What the maker gives the exchange for this order: its address, the salt
+     *  behind the order's commitment, and the rules snapshot the post proof hashed
+     *  (read with {@link rulesSnapshot} just before posting). */
+    opening(order, makerRules) {
+        return { maker: order.maker, makerSalt: order.makerSalt, makerRules };
+    }
+    /** The pool's `get_sender_balance_rules(offer_token, maker)`: the rules a post
+     *  proof reads now. If the issuer changes them before the proof's base block,
+     *  the order's hash will not match this snapshot; re-read and re-post. */
+    async rulesSnapshot(reader, order) {
+        return reader.getSenderBalanceRules(order.offerToken, order.maker);
     }
     /** The deterministic order_id for an order (bound to this pool + chain). Use
      *  it to track the order on-chain (`get_order`) and to reference it at cancel.

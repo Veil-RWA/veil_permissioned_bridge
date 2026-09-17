@@ -1,3 +1,4 @@
+export * from "./authorization.js";
 export * from "./crypto.js";
 export * from "./discovery.js";
 export * from "./erc3643.js";

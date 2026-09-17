@@ -1,3 +1,4 @@
+import { type AuthorizationSigner } from "../authorization.js";
 import type { VeilEvent, VeilOperation, VeilPool, VeilProveAndSettleResult } from "./types.js";
 export interface VeilProverConfig {
     /** Deployed Veil pool address (hex) every call targets. */
@@ -19,6 +20,10 @@ export interface VeilProverConfig {
     privateKey?: string;
     /** Default sender account (hex), used with `privateKey`. */
     senderAddress?: string;
+    /** ERC-3643 pool: the account that authorizes each derive. */
+    signer?: AuthorizationSigner;
+    /** Chain id for the authorization; defaults to the signer's. */
+    chainId?: string | bigint;
 }
 /** Per-call options. `settleExtra` carries settle-only fields the derive does
  *  not produce (e.g. the NFT pool's withdraw recipient). */
@@ -30,6 +35,8 @@ export interface VeilCallOptions {
     senderAddress?: string;
     onEvent?: (event: VeilEvent) => void;
     signal?: AbortSignal;
+    /** Overrides the instance `signer` for this call. */
+    signer?: AuthorizationSigner;
 }
 export declare class VeilProver {
     private readonly config;
@@ -38,6 +45,9 @@ export declare class VeilProver {
     proveAndSettle(operation: VeilOperation, deriveCalldata: string[], opts?: VeilCallOptions): Promise<VeilProveAndSettleResult>;
     /** Same, but yields each SSE event (phase / log / program_hash / complete). */
     proveAndSettleStream(operation: VeilOperation, deriveCalldata: string[], opts?: VeilCallOptions): AsyncGenerator<VeilEvent, void, void>;
+    /** The derive calldata with the signer's authorization appended (ERC-3643
+     *  pool with a signer), else unchanged. */
+    private authorized;
     registerViewingKey(deriveCalldata: string[], opts?: VeilCallOptions): Promise<VeilProveAndSettleResult>;
     deposit(deriveCalldata: string[], opts?: VeilCallOptions): Promise<VeilProveAndSettleResult>;
     /** ERC-3643 pool: reserve an EMPTY open note that an owner-authorised adapter
@@ -50,8 +60,8 @@ export declare class VeilProver {
      *  by hash rather than by value. */
     invoke(deriveCalldata: string[], opts?: VeilCallOptions): Promise<VeilProveAndSettleResult>;
     privateTransfer(deriveCalldata: string[], opts?: VeilCallOptions): Promise<VeilProveAndSettleResult>;
-    /** ERC-3643 pool: agent clawback / recovery (settle is agent-gated, so submit
-     *  with the agent's privateKey + senderAddress). */
+    /** ERC-3643 pool: agent clawback / recovery. The calldata ends with the
+     *  agent's address, and the signer is the agent's account. */
     forcedTransfer(deriveCalldata: string[], opts?: VeilCallOptions): Promise<VeilProveAndSettleResult>;
     approvePrivateTransfer(deriveCalldata: string[], opts?: VeilCallOptions): Promise<VeilProveAndSettleResult>;
     privateTransferAsApproved(deriveCalldata: string[], opts?: VeilCallOptions): Promise<VeilProveAndSettleResult>;

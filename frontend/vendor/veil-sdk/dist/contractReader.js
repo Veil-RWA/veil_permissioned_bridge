@@ -93,3 +93,19 @@ export function makeVeilERC3643ContractReader(contract) {
         },
     };
 }
+/** The pool's `get_sender_balance_rules(token, holder)`: the rules a DvP post
+ *  proof hashes into the order (see VeilDvpMaker.rulesSnapshot). */
+export function makeSenderBalanceRulesReader(contract) {
+    return {
+        async getSenderBalanceRules(token, holder) {
+            const r = (await contract.call("get_sender_balance_rules", [token, holder], LATEST));
+            return {
+                fullRequired: Boolean(r.full_required),
+                capped: Boolean(r.capped),
+                locked: toBig(r.locked),
+                minResidual: toBig(r.min_residual),
+                residualStrict: Boolean(r.residual_strict),
+            };
+        },
+    };
+}

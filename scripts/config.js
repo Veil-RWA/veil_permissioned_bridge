@@ -73,8 +73,8 @@ const ASSET_IDS = ['gold', 'silver', 'tbill', 'credit', 'estate'];
 /// Public on-chain addresses, overridable with --pool / --factory.
 const VEIL = {
   'starknet-sepolia': {
-    pool: '0x12808521ab5f277d84eb430f2d59ff8753e91947b43fcf9aea341b38481a80a',
-    factory: '0x244b26034b77cd3bbafe6a506ec177e7981bf0620021f3082813fc22a40cbe8',
+    pool: '0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3',
+    factory: '0x462126c275889892df53f5902c4db2a9c90333414ab3f1660b3bb2b3b154541',
   },
 };
 
