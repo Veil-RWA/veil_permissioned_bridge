@@ -24,6 +24,11 @@ const LOCKBOX_ABI = [
   'function claimableTokens(address recipient) view returns (uint256)',
   'function quoteLinkStarknet(bytes32 snAccount, uint128 gasLimit) view returns (tuple(uint256 nativeFee, uint256 lzTokenFee))',
   'function linkStarknet(bytes32 snAccount, uint128 gasLimit, address refundAddress) payable returns (bytes32)',
+  // A lockbox that mirrors balance rules (kinds `rules` and `securitize`).
+  'function quoteSyncRules(address account, uint128 gasLimit) view returns (tuple(uint256 nativeFee, uint256 lzTokenFee))',
+  'function syncRules(address account, uint128 gasLimit, address refundAddress) payable returns (bytes32)',
+  'function quoteSyncTokenRules(uint128 gasLimit) view returns (tuple(uint256 nativeFee, uint256 lzTokenFee))',
+  'function syncTokenRules(uint128 gasLimit, address refundAddress) payable returns (bytes32)',
   'event BridgedOut(address indexed sender, uint256 amount, uint64 seq, bytes32 guid)',
 ];
 
@@ -499,6 +504,33 @@ export async function bridgeOut(
     } catch { /* not ours */ }
   }
   return { hash: tx.hash, guid };
+}
+
+/// Push the connected account's issuer rules to the mirror (`syncRules`), and
+/// the token-level ones too when `withToken`. Permissionless: the lockbox
+/// forwards what the issuer's own contracts say; the caller pays the LayerZero
+/// fee, quoted here.
+export async function syncRules(
+  session: EvmSession, asset: Asset, withToken: boolean
+): Promise<string[]> {
+  const signer = await session.provider.getSigner();
+  const lockbox = new Contract(asset.addresses.evm!.lockbox!, LOCKBOX_ABI, signer);
+  const hashes: string[] = [];
+  if (withToken) {
+    const fee = await lockbox.quoteSyncTokenRules(DEFAULT_GAS_LIMIT);
+    const tx = await lockbox.syncTokenRules(DEFAULT_GAS_LIMIT, session.address, {
+      value: fee.nativeFee ?? fee[0],
+    });
+    await tx.wait();
+    hashes.push(tx.hash);
+  }
+  const fee = await lockbox.quoteSyncRules(session.address, DEFAULT_GAS_LIMIT);
+  const tx = await lockbox.syncRules(session.address, DEFAULT_GAS_LIMIT, session.address, {
+    value: fee.nativeFee ?? fee[0],
+  });
+  await tx.wait();
+  hashes.push(tx.hash);
+  return hashes;
 }
 
 /// The EVM half of linking a Veil wallet: binds `starknetAddress` to the

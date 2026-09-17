@@ -305,6 +305,24 @@ export async function linkRequestOf(asset: Asset, address: string): Promise<bigi
   return felts ? BigInt(felts[0] ?? 0) : undefined;
 }
 
+/// Whether the mirror holds fresh issuer rules for `evmAccount` and for the
+/// token. `required` is false for an asset whose mirror enforces no rules, and
+/// then the other two do not matter. Undefined when the registry did not answer.
+export async function rulesFreshness(
+  asset: Asset, evmAccount: string
+): Promise<{ required: boolean; account: boolean; token: boolean } | undefined> {
+  if (IS_DEMO) return undefined;
+  const registry = asset.addresses.starknet!.registry;
+  const [required, account, token] = await Promise.all([
+    maybeFelts(registry, 'rules_required', []),
+    maybeFelts(registry, 'account_rules_fresh', [BigInt(evmAccount).toString()]),
+    maybeFelts(registry, 'token_rules_fresh', []),
+  ]);
+  if (!required || !account || !token) return undefined;
+  const yes = (f: string[]) => BigInt(f[0] ?? 0) === 1n;
+  return { required: yes(required), account: yes(account), token: yes(token) };
+}
+
 /// The Starknet half of a link: "bind me to `evmAddress`". Must be sent by the
 /// wallet being linked. The LINK message from that EVM account completes it,
 /// and a LINK without this request binds nothing.

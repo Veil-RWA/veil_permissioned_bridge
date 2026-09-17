@@ -1395,13 +1395,56 @@ async function ensureLinked(): Promise<boolean> {
   return false;
 }
 
+/// Rule pushes sent this session, keyed by account, so pressing Bridge again
+/// while one is in flight waits for it instead of paying for a second message.
+const rulesSent = new Map<string, number>();
+
+/// Make sure the mirror holds fresh issuer rules for the connected account, for
+/// an asset whose mirror enforces them (a Securitize token).
+///
+/// The pool enforces the issuer's locks, caps and whole-balance rules inside its
+/// proof, from records the lockbox pushes. The mirror fails closed: with no
+/// fresh record the holder's notes read as fully locked and a delivery is
+/// refused. Anyone may push the records, so the holder does it here, once, and
+/// again only after they expire.
+async function ensureRulesSynced(): Promise<boolean> {
+  const asset = state.asset;
+  const source = state.evmSession;
+  if (!source) return false;
+  const status = await sn.rulesFreshness(asset, source.address);
+  if (status === undefined) {
+    state.error = 'The mirrored registry did not answer, so the issuer rules could not be checked. Try again in a moment.';
+    return false;
+  }
+  if (!status.required || (status.account && status.token)) return true;
+
+  const key = source.address.toLowerCase();
+  const sentAt = rulesSent.get(key);
+  if (sentAt === undefined || Date.now() - sentAt > LINK_WAIT_MS) {
+    state.busy = `Confirm the rules update in your ${evmLabel} wallet…`; paintCta(); render();
+    await evm.syncRules(source, asset, !status.token);
+    rulesSent.set(key, Date.now());
+  }
+
+  const deadline = (rulesSent.get(key) ?? Date.now()) + LINK_WAIT_MS;
+  while (Date.now() < deadline) {
+    state.busy = 'Updating the issuer rules — delivery takes a few minutes…'; paintCta();
+    await new Promise((r) => setTimeout(r, 15000));
+    const now = await sn.rulesFreshness(asset, source.address);
+    if (now && now.account && now.token) return true;
+  }
+  state.error = 'The issuer rules update was sent but has not arrived yet. Press Bridge again in a few minutes; it will not be sent twice.';
+  return false;
+}
+
 /// Get the destination ready to receive, doing only what is still missing.
 ///
-/// Six things have to be true before a bridge-in can land in a pool note: the
+/// Seven things have to be true before a bridge-in can land in a pool note: the
 /// destination wallet is connected, its viewing key is derived, that key is
-/// registered in the pool, the wallet is linked to the source account on the
-/// mirror, an empty note exists for this asset, and that note is claimed on the
-/// gateway. None of them
+/// registered in the pool, the mirror holds fresh issuer rules where the asset
+/// has them, the wallet is linked to the source account on the mirror, an empty
+/// note exists for this asset, and that note is claimed on the gateway. None of
+/// them
 /// is something the holder asked for, so none of them gets its own button --
 /// they run inside the one press, and each is skipped when already done.
 ///
@@ -1433,7 +1476,10 @@ async function prepareDestination(): Promise<boolean> {
     return false;
   }
 
-  // 4. A fillable note. Look before making one: a note holds a single deposit,
+  // 4. Fresh issuer rules on the mirror, for an asset that enforces them.
+  if (!(await ensureRulesSynced())) return false;
+
+  // 5. A fillable note. Look before making one: a note holds a single deposit,
   //    so an unused one from a previous attempt is the one to use.
   if (!validNoteId()) {
     const found = await findFillableNote(asset, state.noteCtx);
@@ -1454,7 +1500,7 @@ async function prepareDestination(): Promise<boolean> {
     state.noteSearched = true;
   }
 
-  // 5. The claim. `fill_open_note` is one-shot and note ids are public, so an
+  // 6. The claim. `fill_open_note` is one-shot and note ids are public, so an
   //    unclaimed note could be burned with dust by anyone.
   const owner = await sn.noteOwner(asset, state.noteId).catch(() => undefined);
   state.noteClaimedBy = owner;
