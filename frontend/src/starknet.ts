@@ -311,6 +311,12 @@ export async function linkRequestOf(asset: Asset, address: string): Promise<bigi
 export async function rulesFreshness(
   asset: Asset, evmAccount: string
 ): Promise<{ required: boolean; account: boolean; token: boolean } | undefined> {
+  // Only a rules lockbox (kinds `rules` and `securitize`) pushes rules. The
+  // mirror of any other asset has none to hold.
+  const kind = asset.addresses.evm?.kind;
+  if (kind !== 'rules' && kind !== 'securitize') {
+    return { required: false, account: true, token: true };
+  }
   if (IS_DEMO) return undefined;
   const registry = asset.addresses.starknet!.registry;
   const [required, account, token] = await Promise.all([
