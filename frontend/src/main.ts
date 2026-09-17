@@ -21,7 +21,7 @@ import {
   PROVER_ENDPOINT, PROVER_MASTER_ADDRESS, IS_DEMO,
 } from './config';
 import { assets, defaultAsset, faucetTokens, faucetRouter, type Asset } from './assets';
-import { short, units, parseUnits, ago } from './format';
+import { short, units, parseUnits, ago, tokenScale, unitsToTokens, type UnitScale } from './format';
 import * as evm from './evm';
 import * as sn from './starknet';
 import { load as loadHistory, record, update, type Transfer } from './history';
@@ -61,6 +61,9 @@ type State = {
   evmSession?: evm.EvmSession;
   snSession?: sn.SnSession;
   token: { symbol: string; decimals: number };
+  /// What a whole token is worth in the twin's units (1:1 but for Securitize
+  /// assets, whose twin counts the token's shares).
+  scale: UnitScale;
   amount: string;
   recipient: string;
   /// Wallets to choose between, when more than one is installed.
@@ -100,6 +103,7 @@ const state: State = {
   noteSearched: false,
   detailsOpen: false,
   token: { symbol: initial.symbol, decimals: initial.decimals },
+  scale: tokenScale(initial.decimals),
   amount: '',
   recipient: '',
   claimableEvm: 0n,
@@ -113,6 +117,21 @@ const esc = (s: string): string =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 const tint = (a: Asset): string => `linear-gradient(150deg, ${a.tint[0]}, ${a.tint[1]})`;
 const toStarknet = () => state.direction === 'toStarknet';
+/// Whether the selected asset's source eligibility is an issuer allowlist rather
+/// than an ERC-3643 identity registry. Only the wording differs: the gates, the
+/// lockbox and the Starknet side ask the same questions of both.
+const allowlisted = () => {
+  const kind = state.asset.addresses.evm?.kind;
+  return kind === 'allowlist' || kind === 'rules';
+};
+/// A Securitize DS token: eligibility is its investor registry, the lockbox is
+/// a platform wallet, and the twin counts the token's shares.
+const securitize = () => state.asset.addresses.evm?.kind === 'securitize';
+
+/// Starknet amounts arrive in the twin's units; the UI speaks tokens.
+function inTokens<T extends { balance: bigint; pending: bigint }>(m: T): T {
+  return { ...m, balance: unitsToTokens(m.balance, state.scale), pending: unitsToTokens(m.pending, state.scale) };
+}
 
 const sourceLabel = () => (toStarknet() ? evmLabel : starknetLabel);
 const destLabel = () => (toStarknet() ? starknetLabel : evmLabel);
@@ -135,8 +154,10 @@ function gates(): Gate[] {
   if (toStarknet()) {
     out.push({
       ok: s ? s.verified : null,
-      label: 'You are verified on the source registry',
-      detail: s && !s.verified ? 'The issuer has not registered this address.' : undefined,
+      label: allowlisted() ? "You are on the issuer's allowlist" : 'You are verified on the source registry',
+      detail: s && !s.verified
+        ? (allowlisted() ? 'The issuer has not allowlisted this address.' : 'The issuer has not registered this address.')
+        : undefined,
     });
     out.push({ ok: s ? !s.frozen : null, label: 'Your address is not frozen' });
     out.push({ ok: s ? !s.paused : null, label: `${state.token.symbol} is not paused` });
@@ -144,7 +165,11 @@ function gates(): Gate[] {
       ok: s ? s.lockboxRegistered : null,
       label: 'The bridge is an approved holder',
       detail: s && !s.lockboxRegistered
-        ? 'The issuer must register the lockbox in the identity registry, or the escrow reverts inside the token.'
+        ? (securitize()
+          ? 'The issuer must register the lockbox as a platform wallet, or the escrow reverts inside the token.'
+          : allowlisted()
+          ? 'The issuer must add the lockbox to the allowlist, or the escrow reverts inside the token.'
+          : 'The issuer must register the lockbox in the identity registry, or the escrow reverts inside the token.')
         : undefined,
     });
     if (state.asset.poolReady) {
@@ -445,8 +470,8 @@ function ctaLabel(): { text: string; disabled: boolean; note: string } {
         note: 'The source chain did not answer. Nothing is sent until it does.',
       };
     }
-    if (s && !s.verified) return { text: 'Not eligible to bridge', disabled: true, note: 'Your address is not verified on the source registry.' };
-    if (s && !s.lockboxRegistered) return { text: 'Bridge not approved by issuer', disabled: true, note: 'The lockbox must be a registered identity before any escrow can succeed.' };
+    if (s && !s.verified) return { text: 'Not eligible to bridge', disabled: true, note: allowlisted() ? "Your address is not on the issuer's allowlist." : 'Your address is not verified on the source registry.' };
+    if (s && !s.lockboxRegistered) return { text: 'Bridge not approved by issuer', disabled: true, note: allowlisted() ? 'The lockbox must be on the allowlist before any escrow can succeed.' : 'The lockbox must be a registered identity before any escrow can succeed.' };
     {
       // A pool that does not exist would cost a message and land in the wallet
       // anyway, so it is stopped here rather than discovered on the far side.
@@ -919,6 +944,14 @@ async function loadWalletBalances(chain: 'evm' | 'sn'): Promise<void> {
       if (!state.noteCtx) state.noteCtx = await deriveNoteContext(session);
       const list = assets.filter((a) => a.addresses.starknet?.token);
       const read = await privateBalances(pool, state.noteCtx, list);
+      // Notes of a Securitize twin hold shares; show what they are worth.
+      await Promise.all(list.map(async (a) => {
+        const row = read[a.id];
+        if (!row || a.addresses.evm?.kind !== 'securitize') return;
+        const info = await evm.tokenInfo(a);
+        const scale = await evm.unitScale(a, info.decimals);
+        read[a.id] = { balance: unitsToTokens(row.balance, scale), decimals: info.decimals };
+      }));
       if (state.snSession?.address !== session.address) return;
       state.privateBalances = read;
     }
@@ -1017,6 +1050,7 @@ async function selectAsset(id: string): Promise<void> {
   state.asset = next;
   state.pickerOpen = false;
   state.token = { symbol: next.symbol, decimals: next.decimals };
+  state.scale = tokenScale(next.decimals);
   state.amount = '';
   state.fee = undefined;
   state.evmStatus = undefined;
@@ -1049,7 +1083,7 @@ function refreshQuote(): void {
     try {
       state.fee = toStarknet()
         ? await evm.quote(state.asset, amount, state.recipient)
-        : await sn.quoteBridgeBack(state.asset, amount, state.recipient);
+        : await sn.quoteBridgeBack(state.asset, await evm.unitsFor(state.asset, amount), state.recipient);
     } catch {
       // Usually an unwired peer; the eligibility panel explains that better.
       state.fee = undefined;
@@ -1067,6 +1101,8 @@ function refreshQuote(): void {
 async function refreshAll(): Promise<void> {
   const asset = state.asset;
   if (!asset.available) { render(); return; }
+  // A rebase re-prices the twin's units, so the scale is read with everything else.
+  state.scale = await evm.unitScale(asset, state.token.decimals).catch(() => state.scale);
   const jobs: Array<Promise<void>> = [];
 
   if (state.evmSession) {
@@ -1074,13 +1110,13 @@ async function refreshAll(): Promise<void> {
     jobs.push(evm.claimableOf(asset, state.evmSession.address).then((c) => { state.claimableEvm = c; }).catch(() => {}));
   }
   if (state.snSession) {
-    jobs.push(sn.mirrorStatus(asset, state.snSession.address).then((m) => { state.mirror = m; }).catch(() => {}));
+    jobs.push(sn.mirrorStatus(asset, state.snSession.address).then((m) => { state.mirror = inTokens(m); }).catch(() => {}));
     jobs.push(sn.feeTokenBalance(STARKNET_FEE_TOKEN, state.snSession.address).then((b) => { state.feeBalance = b; }).catch(() => {}));
   }
   // When bridging in, the mirror status we care about is the RECIPIENT's, not
   // our own wallet's.
   if (toStarknet() && state.recipient) {
-    jobs.push(sn.mirrorStatus(asset, state.recipient).then((m) => { state.mirror = m; }).catch(() => {}));
+    jobs.push(sn.mirrorStatus(asset, state.recipient).then((m) => { state.mirror = inTokens(m); }).catch(() => {}));
   }
   await Promise.all(jobs);
   render();
@@ -1291,12 +1327,81 @@ async function doClaimEvm(): Promise<void> {
   }
 }
 
+/// LINKs sent this session, keyed wallet:account, so pressing Bridge again while
+/// one is in flight waits for it instead of paying for a second message.
+const linksSent = new Map<string, number>();
+const LINK_WAIT_MS = 10 * 60 * 1000;
+
+/// Bind the Veil wallet to the connected source account on the mirror, unless it
+/// already is.
+///
+/// The pool makes an open note only for a wallet eligible under the asset's
+/// rules, and the mirror knows nothing about a wallet it has never bound. A
+/// bridge-in would bind it, but a bridge-in needs the note first. So a first
+/// bridge links: the Veil wallet asks (`request_link`), the source account
+/// agrees (`linkStarknet`, one LayerZero message), and the binding lands a few
+/// minutes later. Both keys sign, so nobody can link someone else's wallet.
+async function ensureLinked(): Promise<boolean> {
+  const asset = state.asset;
+  const wallet = state.snSession;
+  const source = state.evmSession;
+  if (!wallet || !source) return false;
+  const account = BigInt(source.address);
+
+  // A gateway deployed before linking existed has no `request_link`. Skip the
+  // step there, so those deployments behave exactly as they did before it.
+  const linking = await sn.gatewaySupportsLinking(asset);
+  if (linking === undefined) {
+    state.error = 'The bridge gateway did not answer, so your wallet link could not be checked. Try again in a moment.';
+    return false;
+  }
+  if (!linking) return true;
+
+  const identity = await sn.identityOf(asset, wallet.address);
+  if (identity === undefined) {
+    state.error = 'The mirrored registry did not answer, so your wallet link could not be checked. Try again in a moment.';
+    return false;
+  }
+  if (identity === account) return true;
+  if (identity !== 0n) {
+    state.error = `This ${starknetLabel} wallet is linked to a different ${evmLabel} account. Connect that account, or ask the operator to re-link the wallet.`;
+    return false;
+  }
+
+  const key = `${BigInt(wallet.address)}:${account}`;
+  const sentAt = linksSent.get(key);
+  if (sentAt === undefined || Date.now() - sentAt > LINK_WAIT_MS) {
+    if ((await sn.linkRequestOf(asset, wallet.address)) !== account) {
+      state.busy = `Approve the link in your ${starknetLabel} wallet…`; paintCta(); render();
+      await sn.requestLink(wallet, asset, source.address);
+    }
+    state.busy = `Confirm the link in your ${evmLabel} wallet…`; paintCta(); render();
+    await evm.linkStarknet(source, asset, wallet.address);
+    linksSent.set(key, Date.now());
+  }
+
+  const deadline = (linksSent.get(key) ?? Date.now()) + LINK_WAIT_MS;
+  while (Date.now() < deadline) {
+    state.busy = 'Linking your wallet — delivery takes a few minutes…'; paintCta();
+    await new Promise((r) => setTimeout(r, 15000));
+    const now = await sn.identityOf(asset, wallet.address);
+    if (now === account) return true;
+    if (now !== undefined && now !== 0n) {
+      state.error = `This ${starknetLabel} wallet was linked to a different ${evmLabel} account before your link arrived. Ask the operator to re-link it.`;
+      return false;
+    }
+  }
+  state.error = 'Your link was sent but has not arrived yet. Press Bridge again in a few minutes; it will not be sent twice.';
+  return false;
+}
+
 /// Get the destination ready to receive, doing only what is still missing.
 ///
-/// Five things have to be true before a bridge-in can land in a pool note: the
+/// Six things have to be true before a bridge-in can land in a pool note: the
 /// destination wallet is connected, its viewing key is derived, that key is
-/// registered in the pool, an empty note exists for this asset, and that note is
-/// claimed on the gateway. None of them
+/// registered in the pool, the wallet is linked to the source account on the
+/// mirror, an empty note exists for this asset, and that note is claimed on the
+/// gateway. None of them
 /// is something the holder asked for, so none of them gets its own button --
 /// they run inside the one press, and each is skipped when already done.
 ///
@@ -1336,6 +1441,9 @@ async function prepareDestination(): Promise<boolean> {
     state.noteSearched = true;
   }
   if (!validNoteId()) {
+    // The pool makes a note only for a wallet eligible under the asset's rules,
+    // and the mirror knows nothing of a wallet it has never bound.
+    if (!(await ensureLinked())) return false;
     state.busy = 'Creating your note…'; paintCta(); render();
     const made = await createOpenNote(asset, state.noteCtx, (line) => {
       state.busy = `Creating your note — ${line}…`; paintCta();
@@ -1405,10 +1513,12 @@ async function onCta(): Promise<void> {
       state.amount = '';
       void watchDelivery(asset, hash, state.recipient);
     } else {
-      const fee = state.fee ?? (await sn.quoteBridgeBack(asset, amount, state.recipient));
+      // The twin burns units; the amount typed is tokens.
+      const burn = await evm.unitsFor(asset, amount);
+      const fee = state.fee ?? (await sn.quoteBridgeBack(asset, burn, state.recipient));
       state.busy = 'Confirm in wallet…'; paintCta();
       const hash = await sn.bridgeBack(
-        state.snSession!, asset, amount, state.recipient, fee, STARKNET_FEE_TOKEN
+        state.snSession!, asset, burn, state.recipient, fee, STARKNET_FEE_TOKEN
       );
       record({
         direction: 'toEvm', asset: asset.id, symbol: state.token.symbol,

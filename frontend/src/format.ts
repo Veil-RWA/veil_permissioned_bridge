@@ -16,6 +16,22 @@ export function units(value: bigint, decimals = 18, maxFraction = 6): string {
   return `${negative ? '-' : ''}${grouped}${frac ? '.' + frac : ''}`;
 }
 
+/// How many bridge units one whole token is worth right now, and the token's
+/// decimals. A twin on Starknet counts in bridge units: the token's own base
+/// units for most assets, the token's 18-decimal shares for a Securitize asset.
+export type UnitScale = { unitsPerToken: bigint; decimals: number };
+
+export function tokenScale(decimals: number): UnitScale {
+  return { unitsPerToken: 10n ** BigInt(decimals), decimals };
+}
+
+/// Bridge units as token base units, rounded down (what a release would pay).
+export function unitsToTokens(value: bigint, scale: UnitScale): bigint {
+  const base = 10n ** BigInt(scale.decimals);
+  if (scale.unitsPerToken === base) return value;
+  return (value * base) / scale.unitsPerToken;
+}
+
 /// Parse a decimal string into base units. Throws on anything that is not a
 /// plain non-negative decimal, rather than silently truncating.
 export function parseUnits(input: string, decimals = 18): bigint {

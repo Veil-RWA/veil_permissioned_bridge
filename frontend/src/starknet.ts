@@ -262,6 +262,64 @@ export async function registerNote(
   return res.transaction_hash;
 }
 
+/// Whether this asset's gateway has the link entrypoints. Gateways deployed
+/// before linking existed do not. Undefined when the class could not be read.
+const linkingSupport = new Map<string, boolean>();
+
+export async function gatewaySupportsLinking(asset: Asset): Promise<boolean | undefined> {
+  const gateway = asset.addresses.starknet?.gateway;
+  if (!gateway || IS_DEMO) return undefined;
+  const cached = linkingSupport.get(gateway);
+  if (cached !== undefined) return cached;
+  try {
+    const cls: any = await snProvider.getClassAt(gateway);
+    const abi = typeof cls.abi === 'string' ? JSON.parse(cls.abi) : cls.abi;
+    const names = new Set<string>();
+    const walk = (items: any[]) => {
+      for (const e of items ?? []) {
+        if (e.type === 'function') names.add(e.name);
+        if (e.type === 'interface') walk(e.items);
+      }
+    };
+    walk(abi);
+    const supported = names.has('request_link');
+    linkingSupport.set(gateway, supported);
+    return supported;
+  } catch {
+    return undefined;
+  }
+}
+
+/// The EVM account backing a Starknet wallet on the mirror: 0n when unbound,
+/// undefined when the registry did not answer -- silence is never "unbound".
+export async function identityOf(asset: Asset, address: string): Promise<bigint | undefined> {
+  if (IS_DEMO) return undefined;
+  const felts = await maybeFelts(asset.addresses.starknet!.registry, 'identity_of', [address]);
+  return felts ? BigInt(felts[0] ?? 0) : undefined;
+}
+
+/// The EVM account this wallet has asked to be linked to; 0n for none.
+export async function linkRequestOf(asset: Asset, address: string): Promise<bigint | undefined> {
+  if (IS_DEMO) return undefined;
+  const felts = await maybeFelts(asset.addresses.starknet!.gateway, 'link_request_of', [address]);
+  return felts ? BigInt(felts[0] ?? 0) : undefined;
+}
+
+/// The Starknet half of a link: "bind me to `evmAddress`". Must be sent by the
+/// wallet being linked. The LINK message from that EVM account completes it,
+/// and a LINK without this request binds nothing.
+export async function requestLink(
+  session: SnSession, asset: Asset, evmAddress: string
+): Promise<string> {
+  const res = await session.account.execute({
+    contractAddress: asset.addresses.starknet!.gateway!,
+    entrypoint: 'request_link',
+    calldata: CallData.compile([BigInt(evmAddress).toString()]),
+  });
+  await snProvider.waitForTransaction(res.transaction_hash);
+  return res.transaction_hash;
+}
+
 export async function twinSupply(asset: Asset): Promise<bigint> {
   return u256(await callFelts(asset.addresses.starknet!.token!, 'total_supply', []).catch(() => ['0', '0']));
 }

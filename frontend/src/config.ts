@@ -7,11 +7,20 @@
 import raw from './deployment.json';
 
 export type AssetDeployment = {
-  evm?: { lockbox?: string; token?: string; complianceReader?: string };
+  evm?: {
+    lockbox?: string;
+    token?: string;
+    complianceReader?: string;
+    /// 'allowlist' for an allowlisted ERC-20; absent means ERC-3643.
+    kind?: 'erc3643' | 'allowlist';
+    allowlist?: string;
+  };
   starknet?: {
     registry?: string;
     gateway?: string;
     compliance?: string;
+    /// MirroredTransferRules, for an allowlisted twin.
+    rules?: string;
     token?: string;
     /// The Veil pool THIS asset's gateway defaults to -- what a transfer that
     /// names no pool gets. In practice the main Veil pool, the same one for

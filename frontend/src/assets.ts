@@ -21,7 +21,7 @@
 
 import { deployment } from './config';
 
-export type AssetCategory = 'Metal' | 'Treasury' | 'Credit' | 'Real estate' | 'Equity';
+export type AssetCategory = 'Metal' | 'Treasury' | 'Credit' | 'Real estate' | 'Equity' | 'Security';
 
 export type AssetMeta = {
   id: string;
@@ -35,9 +35,22 @@ export type AssetMeta = {
 };
 
 export type AssetAddresses = {
-  evm?: { lockbox?: string; token?: string; complianceReader?: string };
+  evm?: {
+    lockbox?: string; token?: string; complianceReader?: string;
+    /// Where holder eligibility lives on the source chain. Absent means
+    /// ERC-3643, which every deployment before allowlisted assets was.
+    kind?: 'erc3643' | 'allowlist' | 'rules' | 'securitize';
+    /// The allowlist an allowlisted asset's lockbox reads. Recorded for
+    /// operators; the app asks the lockbox itself.
+    allowlist?: string;
+    /// A faucet in front of the token (eToro, Securitize), when the token is
+    /// not its own faucet.
+    faucet?: string;
+  };
   starknet?: {
     token?: string; gateway?: string; registry?: string; compliance?: string; pool?: string;
+    /// MirroredTransferRules: what the Veil pool reads for an allowlisted twin.
+    rules?: string;
   };
 };
 
@@ -93,6 +106,56 @@ export const CATALOGUE: AssetMeta[] = [
     decimals: 18,
     tint: ['#f2b49e', '#d9705a'],
   },
+  // Test assets named after real tokens, on each token's own code: none is the
+  // issuer's deployment.
+  {
+    id: 'dmf',
+    symbol: 'DMF',
+    name: 'ERC-3643 test asset',
+    category: 'Security',
+    decimals: 18,
+    tint: ['#b8d4f5', '#4f7fc4'],
+  },
+  {
+    id: 'gro',
+    symbol: 'GRO',
+    name: 'ERC-3643 test asset',
+    category: 'Security',
+    decimals: 18,
+    tint: ['#c4ecd9', '#4fae84'],
+  },
+  {
+    id: 'tslax',
+    symbol: 'TSLAX',
+    name: 'eToro EToken test asset',
+    category: 'Equity',
+    decimals: 18,
+    tint: ['#f5b8b8', '#c44f4f'],
+  },
+  {
+    id: 'babax',
+    symbol: 'BABAX',
+    name: 'eToro EToken test asset',
+    category: 'Equity',
+    decimals: 18,
+    tint: ['#f5d6b8', '#d98a3f'],
+  },
+  {
+    id: 'buidl',
+    symbol: 'BUIDL',
+    name: 'Securitize DS test asset',
+    category: 'Treasury',
+    decimals: 6,
+    tint: ['#d0d4dc', '#4a5060'],
+  },
+  {
+    id: 'vbill',
+    symbol: 'VBILL',
+    name: 'Securitize DS test asset',
+    category: 'Treasury',
+    decimals: 6,
+    tint: ['#b8e6f5', '#2f8fb0'],
+  },
 ];
 
 function resolve(meta: AssetMeta): Asset {
@@ -136,7 +199,7 @@ export const assets: Asset[] = CATALOGUE.map(resolve);
 /// and wiring the Starknet side.
 export const faucetTokens = (): string[] =>
   assets.filter((a) => a.addresses.evm?.token)
-        .map((a) => a.addresses.evm!.token!);
+        .map((a) => a.addresses.evm!.faucet ?? a.addresses.evm!.token!);
 
 export const faucetRouter = (): string | undefined => deployment.faucet?.router;
 

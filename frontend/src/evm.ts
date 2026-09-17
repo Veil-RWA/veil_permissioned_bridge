@@ -11,6 +11,7 @@
 import { BrowserProvider, Contract, JsonRpcProvider, zeroPadValue, type Eip1193Provider } from 'ethers';
 import { evmChain, EVM_RPC, EXPLORER_EVM, DEFAULT_GAS_LIMIT } from './config';
 import type { Asset } from './assets';
+import { tokenScale, type UnitScale } from './format';
 
 const LOCKBOX_ABI = [
   'function quoteBridgeOut(uint256 amount, bytes32 snRecipient, uint128 gasLimit) view returns (tuple(uint256 nativeFee, uint256 lzTokenFee))',
@@ -18,7 +19,18 @@ const LOCKBOX_ABI = [
   'function totalEscrowed() view returns (uint256)',
   'function claimable(address) view returns (uint256)',
   'function claim(address recipient) returns (uint256)',
+  'function allowlist() view returns (address)',
+  'function unitsOf(uint256 tokens) view returns (uint256)',
+  'function claimableTokens(address recipient) view returns (uint256)',
+  'function quoteLinkStarknet(bytes32 snAccount, uint128 gasLimit) view returns (tuple(uint256 nativeFee, uint256 lzTokenFee))',
+  'function linkStarknet(bytes32 snAccount, uint128 gasLimit, address refundAddress) payable returns (bytes32)',
   'event BridgedOut(address indexed sender, uint256 amount, uint64 seq, bytes32 guid)',
+];
+
+const ALLOWLIST_ABI = [
+  'function isAllowed(address) view returns (bool)',
+  // SecuritizeIssuerRules only: the investor's country as two ASCII letters.
+  'function countryCode(address) view returns (uint16)',
 ];
 
 const TOKEN_ABI = [
@@ -29,6 +41,8 @@ const TOKEN_ABI = [
   'function decimals() view returns (uint8)',
   'function symbol() view returns (string)',
   'function paused() view returns (bool)',
+  // A Securitize DS token names its pause flag differently.
+  'function isPaused() view returns (bool)',
   'function isFrozen(address) view returns (bool)',
 ];
 
@@ -315,21 +329,50 @@ export type EvmStatus = {
 export async function evmStatus(asset: Asset, account: string): Promise<EvmStatus> {
   const lockbox = asset.addresses.evm!.lockbox!;
   const token = new Contract(asset.addresses.evm!.token!, TOKEN_ABI, readProvider);
-  const registryAddress: string = await token.identityRegistry();
-  const registry = new Contract(registryAddress, REGISTRY_ABI, readProvider);
+  const source = await eligibilitySource(asset);
 
   const [balance, allowance, verified, lockboxRegistered, country, frozen, paused] =
     await Promise.all([
       token.balanceOf(account).catch(() => 0n),
       token.allowance(account, lockbox).catch(() => 0n),
-      registry.isVerified(account).catch(() => false),
-      registry.isVerified(lockbox).catch(() => false),
-      registry.investorCountry(account).then(Number).catch(() => 0),
+      source.isEligible(account).catch(() => false),
+      source.isEligible(lockbox).catch(() => false),
+      source.country(account).catch(() => 0),
       token.isFrozen(account).catch(() => false),
-      token.paused().catch(() => false),
+      token.paused().catch(() => token.isPaused()).catch(() => false),
     ]);
 
   return { balance, allowance, verified, frozen, paused, lockboxRegistered, country };
+}
+
+type EligibilitySource = {
+  isEligible: (account: string) => Promise<boolean>;
+  country: (account: string) => Promise<number>;
+};
+
+/// Where this asset's holder eligibility lives on the source chain -- the same
+/// place its lockbox reads. An ERC-3643 token answers from its identity
+/// registry. An allowlisted ERC-20 answers from the issuer's allowlist, which
+/// the lockbox names (so the app asks the lockbox, not the deployment file) and
+/// which keeps no country.
+async function eligibilitySource(asset: Asset): Promise<EligibilitySource> {
+  const addrs = asset.addresses.evm!;
+  if (addrs.kind && addrs.kind !== 'erc3643') {
+    // Every other lockbox reads a list through `isAllowed`: the issuer's
+    // allowlist, or for a Securitize token the adapter over its registry.
+    const lockbox = new Contract(addrs.lockbox!, LOCKBOX_ABI, readProvider);
+    const list = new Contract(await lockbox.allowlist(), ALLOWLIST_ABI, readProvider);
+    const country = addrs.kind === 'securitize'
+      ? async (a: string) => Number(await list.countryCode(a))
+      : async () => 0;
+    return { isEligible: (a) => list.isAllowed(a), country };
+  }
+  const token = new Contract(addrs.token!, TOKEN_ABI, readProvider);
+  const registry = new Contract(await token.identityRegistry(), REGISTRY_ABI, readProvider);
+  return {
+    isEligible: (a) => registry.isVerified(a),
+    country: async (a) => Number(await registry.investorCountry(a)),
+  };
 }
 
 /// Stock the connected wallet with every faucet asset, in ONE transaction.
@@ -368,7 +411,29 @@ export async function faucetAmount(token: string): Promise<bigint> {
 export async function claimableOf(asset: Asset, account: string): Promise<bigint> {
   if (!asset.available) return 0n;
   const lockbox = new Contract(asset.addresses.evm!.lockbox!, LOCKBOX_ABI, readProvider);
+  // Held in bridge units; a Securitize lockbox says what that pays in tokens.
+  if (asset.addresses.evm!.kind === 'securitize') {
+    return await lockbox.claimableTokens(account).catch(() => 0n);
+  }
   return await lockbox.claimable(account).catch(() => 0n);
+}
+
+/// What one whole token is worth in bridge units right now. Only a Securitize
+/// lockbox counts in anything but the token's own units (its shares, which a
+/// rebase re-prices), so every other asset is 1:1 without a call.
+export async function unitScale(asset: Asset, decimals: number): Promise<UnitScale> {
+  const scale = tokenScale(decimals);
+  if (!asset.available || asset.addresses.evm?.kind !== 'securitize') return scale;
+  const lockbox = new Contract(asset.addresses.evm.lockbox!, LOCKBOX_ABI, readProvider);
+  return { unitsPerToken: BigInt(await lockbox.unitsOf(scale.unitsPerToken)), decimals };
+}
+
+/// The bridge units a burn of `tokens` needs, exactly as the lockbox prices a
+/// release. Identity for every asset but a Securitize one.
+export async function unitsFor(asset: Asset, tokens: bigint): Promise<bigint> {
+  if (asset.addresses.evm?.kind !== 'securitize') return tokens;
+  const lockbox = new Contract(asset.addresses.evm.lockbox!, LOCKBOX_ABI, readProvider);
+  return BigInt(await lockbox.unitsOf(tokens));
 }
 
 /// Permissionless: the funds can only go to the recipient the message named,
@@ -434,4 +499,22 @@ export async function bridgeOut(
     } catch { /* not ours */ }
   }
   return { hash: tx.hash, guid };
+}
+
+/// The EVM half of linking a Veil wallet: binds `starknetAddress` to the
+/// connected account on the mirror. It binds only if that wallet already asked
+/// for exactly this account on the gateway (`request_link`), so it cannot link
+/// anyone else's wallet. One LayerZero message; the fee is quoted here.
+export async function linkStarknet(
+  session: EvmSession, asset: Asset, starknetAddress: string
+): Promise<string> {
+  const signer = await session.provider.getSigner();
+  const lockbox = new Contract(asset.addresses.evm!.lockbox!, LOCKBOX_ABI, signer);
+  const word = snRecipientWord(starknetAddress);
+  const fee = await lockbox.quoteLinkStarknet(word, DEFAULT_GAS_LIMIT);
+  const tx = await lockbox.linkStarknet(word, DEFAULT_GAS_LIMIT, session.address, {
+    value: fee.nativeFee ?? fee[0],
+  });
+  await tx.wait();
+  return tx.hash;
 }

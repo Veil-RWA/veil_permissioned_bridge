@@ -158,6 +158,142 @@
           "maxBalance": "0x956d7abA7B9d5bE26972995914F2cb5e0Ed039e9"
         }
       }
+    },
+    "dmf": {
+      "evm": {
+        "token": "0x3F45Cf3043e070aA4521fa46b59A5e16aE829dFC",
+        "lockbox": "0x5678c66205D5fe9Bf5ce3230beBe09Be59aBabDf",
+        "owner": "0x878ffCF3351C6596Bd75355E00319AB5Fcf1c639",
+        "kind": "erc3643",
+        "complianceReader": "0x81605BAF7b733F2D47aB2BE6206ad96ad68a1253"
+      },
+      "starknet": {
+        "registry": "0x360c987ab168f50edfeacb40b0e5f49c94152f8187b29751371d8c72b961cfa",
+        "stalenessWindow": 86400,
+        "gateway": "0x6ed0bb7105e3a32564acefdfb5f2c89ee4d0934c22ce42ac98a979bd44e9b62",
+        "compliance": "0x56c5773601285c6a7ffb83845bd47af5aaffc5c775da537696f728ec9389251",
+        "token": "0x77549fae53f64398ffd2ea2381755b1d78016560f5a1f1c11b2f05d8d211304",
+        "name": "Bridged DMF",
+        "symbol": "bDMF",
+        "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3"
+      },
+      "wired": {
+        "peers": true,
+        "links": true,
+        "dvns": {
+          "required": [
+            "LayerZero Labs"
+          ],
+          "optional": [],
+          "threshold": 0,
+          "evmConfirmations": "2",
+          "starknetConfirmations": "1"
+        }
+      },
+      "faucet": {
+        "compliance": "0xbee734f3e463767cdA128783fA5c5f75294B50Fa"
+      }
+    },
+    "gro": {
+      "evm": {
+        "token": "0xbcea5817ee65D38f14755cc9856981df5b22C379",
+        "lockbox": "0xcF8134fc8a167c0065dD1A1B920cE6CC5e09D085",
+        "owner": "0x878ffCF3351C6596Bd75355E00319AB5Fcf1c639",
+        "kind": "erc3643",
+        "complianceReader": "0x81605BAF7b733F2D47aB2BE6206ad96ad68a1253"
+      },
+      "starknet": {
+        "registry": "0x3d3bafdca25023aa490669773873919dff360579a339f5967ccf9c2beb0310",
+        "stalenessWindow": 86400,
+        "gateway": "0x520712993e0e96578dccad2ff9753af64f74ac87f7a2bd1b3d6385d4ca2e2f0",
+        "compliance": "0x6ae5f0c409a6595e7771baf6a591b09fea3d81e686794e10bb3be3f3de9de8c",
+        "token": "0x7876d3a2b92dc6974abacdbd1b6ce0dac5b573e5ddf2f1e332a0bd10038e31e",
+        "name": "Bridged GRO",
+        "symbol": "bGRO",
+        "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3"
+      },
+      "wired": {
+        "peers": true,
+        "links": true,
+        "dvns": {
+          "required": [
+            "LayerZero Labs"
+          ],
+          "optional": [],
+          "threshold": 0,
+          "evmConfirmations": "2",
+          "starknetConfirmations": "1"
+        }
+      },
+      "faucet": {
+        "compliance": "0x0bEF90B2447777f558778795B5958Cf23Da75D64"
+      }
+    },
+    "tslax": {
+      "evm": {
+        "etoken": {
+          "faucet": "0xFFC1f2D40Dc77c90ec222a4453E78bfE0120983D"
+        },
+        "token": "0x868A50651A665f4F6ab4794dE792097370f35581",
+        "kind": "allowlist",
+        "faucet": "0xFFC1f2D40Dc77c90ec222a4453E78bfE0120983D",
+        "allowlist": "0xa8C5A2c47294E840C80E71DF26CA8EC78833F428",
+        "lockbox": "0x51E4C59fD3b69642D33b8f6DE2032c7fD24874A0",
+        "owner": "0x878ffCF3351C6596Bd75355E00319AB5Fcf1c639"
+      },
+      "starknet": {
+        "registry": "0x6ce498c058eec45e5ee860fa72e6eceb2e97b1a763412a7f932dfb502e33bb1",
+        "stalenessWindow": 86400,
+        "gateway": "0x2ff1fdee5a218522beebb09da239641101de8deccedad296dba9aaa2645b605",
+        "token": "0x30ae1253df5ab7f1bbd9fe27adfeef6c7327ceb46dbc8ace21bbb7662034ad8",
+        "name": "Bridged TSLAX",
+        "symbol": "bTSLAX",
+        "rules": "0x3e10007b5542835f398dcbd8f091a6be709ef5eeafa21bb9ac8730698260666"
+      },
+      "wired": {
+        "dvns": {
+          "required": [
+            "LayerZero Labs"
+          ],
+          "optional": [],
+          "threshold": 0,
+          "evmConfirmations": "2",
+          "starknetConfirmations": "1"
+        }
+      }
+    },
+    "babax": {
+      "evm": {
+        "etoken": {
+          "faucet": "0x9e8545256a174f0d1f6f8B509D94722F3203309D"
+        },
+        "token": "0x2E5bda0097df7D2455154252EA7deA1f14f2ca24",
+        "kind": "allowlist",
+        "faucet": "0x9e8545256a174f0d1f6f8B509D94722F3203309D",
+        "allowlist": "0xFffDDF2Acc9442957ac41c6E93AfB033bd9A9136",
+        "lockbox": "0x0A2805e08BFAdD552DA4A3bFB21A649aa474482B",
+        "owner": "0x878ffCF3351C6596Bd75355E00319AB5Fcf1c639"
+      },
+      "starknet": {
+        "registry": "0x43f86c94c543f56c4261afc159d7b06b9d0306d67b47c69a28933eefd59a13b",
+        "stalenessWindow": 86400,
+        "gateway": "0x434aa5635b50990f0c555c0c27537fd694da59dc40a42622df537542513e429",
+        "token": "0x6d45a211f817c9562afe27bfa16cb6795b0f83bfda4d399aafeae0036600413",
+        "name": "Bridged BABAX",
+        "symbol": "bBABAX",
+        "rules": "0x136df6fd718238ef2c80d0298e0803a65cd8a05da48fec7ae17e8dd8ead49b9"
+      },
+      "wired": {
+        "dvns": {
+          "required": [
+            "LayerZero Labs"
+          ],
+          "optional": [],
+          "threshold": 0,
+          "evmConfirmations": "2",
+          "starknetConfirmations": "1"
+        }
+      }
     }
   },
   "faucet": {
@@ -168,10 +304,14 @@
     "VeilMirroredRegistry": "0x52a293bee63f8b138883ce95ac06719041ad1bcfb7443524fb1ce17e11c6a52",
     "VeilBridgeGateway": "0x3e43c6f9e3ac6b7cb30cfee0feeadcd6dae2013d53769170a31763462463d62",
     "MirroredCompliance": "0x6ce29f70bb1f481bd2c560bbaf1f44c841595163c1a278628ca2dc359d8d72f",
-    "VeilBridgedERC3643": "0x6186a8a05921a1aea3bde80e717e4f0dafbe493fc9de5b7cdf0592666b4eea3"
+    "VeilBridgedERC3643": "0x6186a8a05921a1aea3bde80e717e4f0dafbe493fc9de5b7cdf0592666b4eea3",
+    "MirroredTransferRules": "0x4eb7642000918192cdf79ed44f8aec7f19f44bb7d6c962a54a53847c2ae0036"
   },
   "veil": {
     "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3",
     "factory": "0x462126c275889892df53f5902c4db2a9c90333414ab3f1660b3bb2b3b154541"
+  },
+  "etoken": {
+    "accesslist": "0x4aab327A7A5B92a37E344241fBC7a6784E805d48"
   }
 }
