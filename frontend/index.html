@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Veil Bridge — permissioned RWA across chains</title>
-    <meta name="description" content="Bridge permissioned ERC-3643 assets between EVM chains and Starknet, with compliance state carried across." />
+    <meta name="description" content="Bridge permissioned assets — ERC-3643 or gated ERC-20 — between EVM chains and Starknet, with compliance state carried across." />
     <link rel="icon" type="image/png" href="/veil-logo.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -35,8 +35,9 @@
         <span class="eyebrow">Confidential · Compliant · On-chain</span>
         <h1>Move permissioned assets,<br />keep the permissions.</h1>
         <p>
-          Escrow an ERC-3643 asset on Ethereum, mint a permissioned twin on Starknet.
-          Eligibility travels with the tokens — and expires if it goes stale.
+          Escrow a permissioned asset on Ethereum — ERC-3643, or an ERC-20 its issuer
+          gates by allowlist or by transfer rules — and mint a permissioned twin on
+          Starknet. Eligibility travels with the tokens — and expires if it goes stale.
         </p>
       </section>
 
@@ -45,7 +46,7 @@
       <section class="assurances">
         <div class="assurance">
           <h3>Compliance crosses too</h3>
-          <p>The twin runs the full ERC-3643 gate against a mirror of the source registry, not a copy made once at launch.</p>
+          <p>The twin runs the issuer's own gate — ERC-3643 registry, allowlist or transfer rules — against a mirror of the source, not a copy made once at launch.</p>
         </div>
         <div class="assurance">
           <h3>Fails closed</h3>
