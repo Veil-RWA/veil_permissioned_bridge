@@ -34,6 +34,29 @@ export type AssetDeployment = {
   wired?: { peers?: boolean; links?: boolean };
 };
 
+export type CashDeployment = {
+  /// The Veil pool USDC settles in, both legs of a DvP together.
+  pool?: string;
+  /// Circle USDC on Starknet, and Circle's CCTP there.
+  usdc?: string;
+  tokenMessenger?: string;
+  messageTransmitter?: string;
+  /// VeilCashRules: USDC's own rules (Circle's pause and blocklist) in the pool.
+  rules?: string;
+  /// VeilCashVault: CCTP in. Mint recipient AND sole relayer of a deposit.
+  vault?: string;
+  /// VeilCashExit: CCTP out, a pool invoke adapter.
+  exit?: string;
+  /// The EVM side: Circle USDC and CCTP on the source chain.
+  source?: {
+    network?: string;
+    domain?: number;
+    usdc?: string;
+    tokenMessenger?: string;
+    messageTransmitter?: string;
+  };
+};
+
 export type Deployment = {
   missing?: boolean;
   /// A stand-in deployment for looking at the app before anything is on chain.
@@ -72,6 +95,9 @@ export type Deployment = {
     /// Account the prover submits settles from.
     masterAddress?: string;
   };
+  /// The cash leg: USDC over Circle's CCTP, into and out of a Veil pool
+  /// (scripts/deploy-cash.js). Not a lockbox asset: no escrow, no twin.
+  cash?: CashDeployment;
   /// Pre-catalogue single-asset deployments. Read by assets.ts as a fallback.
   evm?: AssetDeployment['evm'];
   starknet?: AssetDeployment['starknet'];
@@ -138,6 +164,10 @@ export const PROVER_MASTER_ADDRESS: string | undefined =
   env(import.meta.env.VITE_VEIL_MASTER_ADDRESS) ?? env(deployment.veil?.masterAddress);
 
 const testnet = (deployment.evmNetwork ?? '').includes('sepolia');
+
+/// Circle's attestation service (Iris V2). Public, keyless, and it answers
+/// browsers (`access-control-allow-origin: *`).
+export const IRIS_API = testnet ? 'https://iris-api-sandbox.circle.com' : 'https://iris-api.circle.com';
 export const EXPLORER_EVM = testnet ? 'https://sepolia.etherscan.io' : 'https://etherscan.io';
 export const EXPLORER_SN = testnet ? 'https://sepolia.voyager.online' : 'https://voyager.online';
 export const LZ_SCAN = testnet ? 'https://testnet.layerzeroscan.com' : 'https://layerzeroscan.com';

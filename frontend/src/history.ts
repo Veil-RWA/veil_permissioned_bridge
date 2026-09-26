@@ -17,6 +17,8 @@ export type Transfer = {
   recipient: string;
   hash: string;
   guid?: string;
+  /** The cash leg: the USDC note a deposit fills. */
+  note?: string;
   status: Status;
   at: number;
 };

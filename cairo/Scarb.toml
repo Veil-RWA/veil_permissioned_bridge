@@ -6,7 +6,9 @@ edition = "2024_07"
 # Standalone: the bridge shares no Cairo code with the `veil` pool package. The
 # twin plugs into a Veil ERC-3643 pool by exposing the same entrypoint NAMES
 # (`transfer`, `identity_registry`, `is_verified`, ...), not by linking against
-# it, so there is deliberately no path dependency in either direction.
+# it, so there is deliberately no path dependency in either direction. The pool
+# is a DEV dependency only, so the cash leg's tests run against the real
+# VeilERC3643; nothing in `src/` links against it.
 [lib]
 
 [dependencies]
@@ -19,9 +21,15 @@ sierra-replace-ids = false
 inlining-strategy = 2
 
 [dev-dependencies]
-snforge_std = "0.58.1"
+snforge_std = "0.59.0"
 assert_macros = "2.17.0"
+openzeppelin_presets = "2.0.0"
+veil = { path = "../.." }
 
 [[target.starknet-contract]]
 casm = true
 casm-add-pythonic-hints = true
+build-external-contracts = [
+    "veil::VeilERC3643::VeilERC3643",
+    "openzeppelin_presets::account::AccountUpgradeable",
+]

@@ -8,5 +8,7 @@ echo "=== bridge: adversarial tests ==="
 (cd test && node bridge.test.js)
 echo "=== bridge: attack tests ==="
 (cd test && node attack.test.js)
+echo "=== cash leg: USDC burn into a Veil pool note (CCTP V2) ==="
+(cd test && node cash.test.js)
 echo "=== faucet: deployable ERC-3643 assets ==="
 (cd test && node faucet.test.js)

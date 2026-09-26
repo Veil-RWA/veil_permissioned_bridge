@@ -14,6 +14,10 @@ echo "=== eligibility: what the card claims vs what handle_mint does ==="
 (cd frontend && npx esbuild src/eligibility.ts --bundle --format=esm --platform=node \
    --outfile=src/eligibility.bundle.mjs --define:import.meta.env='{}' --log-level=error \
  && node src/eligibility.test.mjs && rm -f src/eligibility.bundle.mjs)
+echo "=== cash leg: CCTP encodings (app and relayer) and the exit plan ==="
+(cd frontend && npx esbuild src/cashCore.ts --bundle --format=esm --platform=node \
+   --outfile=src/cashCore.bundle.mjs --log-level=error \
+ && node src/cashCore.test.mjs && rm -f src/cashCore.bundle.mjs)
 echo "=== pool check: which Veil pool, and does it exist ==="
 (cd frontend && npx esbuild src/pools.ts --bundle --format=esm --platform=node \
    --outfile=src/pools.bundle.mjs --define:import.meta.env='{}' --log-level=error \

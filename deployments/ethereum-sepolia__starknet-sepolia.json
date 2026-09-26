@@ -495,7 +495,10 @@
     "VeilBridgeGateway": "0x645d15c2451f68e3c9e19420c85a844aef39e930a69959c84c070058a80892b",
     "MirroredCompliance": "0x6ce29f70bb1f481bd2c560bbaf1f44c841595163c1a278628ca2dc359d8d72f",
     "VeilBridgedERC3643": "0x29be37b1555de8614942263774031585da26038bc7fa680faffca585014e94f",
-    "MirroredTransferRules": "0x4eb7642000918192cdf79ed44f8aec7f19f44bb7d6c962a54a53847c2ae0036"
+    "MirroredTransferRules": "0x4eb7642000918192cdf79ed44f8aec7f19f44bb7d6c962a54a53847c2ae0036",
+    "VeilCashRules": "0x142c993bd4bd56ab60d081e3c1a5d190bf8d94fd4e312286cc6111f2e77359",
+    "VeilCashVault": "0x2cc08aee92ed6d39b6c340351278410afb4c81c10c776c170a7da96c1ffb64d",
+    "VeilCashExit": "0x1fc2f5d76be5d3d680d730d58767e48ae377d57a7aa7796f22441610f2ea1ec"
   },
   "veil": {
     "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3",
@@ -503,5 +506,21 @@
   },
   "etoken": {
     "accesslist": "0x4aab327A7A5B92a37E344241fBC7a6784E805d48"
+  },
+  "cash": {
+    "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3",
+    "usdc": "0x0512feAc6339Ff7889822cb5aA2a86C848e9D392bB0E3E237C008674feeD8343",
+    "tokenMessenger": "0x04bDdE1E09a4B09a2F95d893D94a967b7717eB85A3f6dEcA8c080Ee01fBc3370",
+    "messageTransmitter": "0x04db7926C64f1f32a840F3Fa95cB551f3801a3600Bae87aF87807A54DCE12Fe8",
+    "source": {
+      "network": "ethereum-sepolia",
+      "domain": 0,
+      "usdc": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      "tokenMessenger": "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
+      "messageTransmitter": "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275"
+    },
+    "rules": "0x3483327adfd6d27a9a057d1fba5d5e9cce5985db849e8514f47a1f09a6155aa",
+    "vault": "0x173fd94b5af4b27014b08d5c7f61c4642d9828af68cab762d725f22cff8cce6",
+    "exit": "0x3c0fee756b615421f13c8431a3087b83e43851502d5feb25ec56dea3a4451e7"
   }
 }

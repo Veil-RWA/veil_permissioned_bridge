@@ -9,3 +9,6 @@ frontend/node_modules
 frontend/dist
 frontend/src/deployment.json
 frontend/.env
+
+# cash relayer progress
+scripts/.relay-cash/
