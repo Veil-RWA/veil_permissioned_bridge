@@ -101,7 +101,45 @@ function network(name) {
   return n;
 }
 
+/// Circle's CCTP V2 and USDC per network, for the cash leg (deploy-cash.js).
+/// From Circle's developer docs, read 2026-09-26: "CCTP Starknet contracts and
+/// interfaces", "EVM Contract addresses" and "USDC contract addresses". Pinned
+/// like the endpoints: a script that followed whatever a page said at run time
+/// would route real USDC through it.
+const CCTP = {
+  'starknet-sepolia': {
+    domain: 25,
+    usdc: '0x0512feAc6339Ff7889822cb5aA2a86C848e9D392bB0E3E237C008674feeD8343',
+    tokenMessenger: '0x04bDdE1E09a4B09a2F95d893D94a967b7717eB85A3f6dEcA8c080Ee01fBc3370',
+    messageTransmitter: '0x04db7926C64f1f32a840F3Fa95cB551f3801a3600Bae87aF87807A54DCE12Fe8',
+  },
+  'starknet-mainnet': {
+    domain: 25,
+    usdc: '0x033068F6539f8e6e6b131e6B2B814e6c34A5224bC66947c47DaB9dFeE93b35fb',
+    tokenMessenger: '0x07d421B9cA8aA32DF259965cDA8ACb93F7599F69209A41872AE84638B2A20F2a',
+    messageTransmitter: '0x02EBB5777B6dD8B26ea11D68Fdf1D2c85cD2099335328Be845a28c77A8AEf183',
+  },
+  'ethereum-sepolia': {
+    domain: 0,
+    usdc: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238',
+    tokenMessenger: '0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA',
+  },
+  'ethereum-mainnet': {
+    domain: 0,
+    usdc: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+    tokenMessenger: '0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d',
+  },
+};
+
+function cctp(networkName) {
+  const c = CCTP[networkName];
+  if (!c) throw new Error(`no CCTP addresses pinned for "${networkName}"`);
+  return c;
+}
+
 module.exports = {
+  CCTP,
+  cctp,
   VEIL,
   veil,
   NETWORKS,

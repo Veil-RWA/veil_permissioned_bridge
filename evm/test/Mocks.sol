@@ -12,6 +12,7 @@ import {
     Origin
 } from "../contracts/lz/ILayerZeroEndpointV2.sol";
 import {BridgeMsgCodec} from "../contracts/BridgeMsgCodec.sol";
+import {ITokenMessengerV2, VeilCash} from "../contracts/cash/VeilCash.sol";
 
 contract MockIdentityRegistry {
     mapping(address => bool) public verified;
@@ -447,5 +448,85 @@ contract MockReentrantToken {
         balanceOf[from] -= amount;
         balanceOf[to] += amount;
         return true;
+    }
+}
+
+// ── The cash leg (USDC over CCTP) ────────────────────────────────────────────
+
+/// Plain USDC stand-in: an ERC-20 whose approve returns true.
+contract MockUSDC {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        allowance[from][msg.sender] -= amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+}
+
+/// Records what Circle's TokenMessengerV2 is asked, with its own checks
+/// (TokenMessengerV2 `depositForBurnWithHook` / `_depositForBurn`), and pulls
+/// the amount as the real one does before burning it.
+contract MockTokenMessengerV2 {
+    uint256 public lastAmount;
+    uint32 public lastDestinationDomain;
+    bytes32 public lastMintRecipient;
+    address public lastBurnToken;
+    bytes32 public lastDestinationCaller;
+    uint256 public lastMaxFee;
+    uint32 public lastMinFinality;
+    bytes public lastHookData;
+    address public lastSender;
+
+    function depositForBurnWithHook(
+        uint256 amount,
+        uint32 destinationDomain,
+        bytes32 mintRecipient,
+        address burnToken,
+        bytes32 destinationCaller,
+        uint256 maxFee,
+        uint32 minFinalityThreshold,
+        bytes calldata hookData
+    ) external {
+        require(hookData.length > 0, "Hook data is empty");
+        require(amount > 0, "Amount must be nonzero");
+        require(mintRecipient != bytes32(0), "Mint recipient must be nonzero");
+        require(maxFee < amount, "Max fee must be less than amount");
+        MockUSDC(burnToken).transferFrom(msg.sender, address(this), amount);
+        lastAmount = amount;
+        lastDestinationDomain = destinationDomain;
+        lastMintRecipient = mintRecipient;
+        lastBurnToken = burnToken;
+        lastDestinationCaller = destinationCaller;
+        lastMaxFee = maxFee;
+        lastMinFinality = minFinalityThreshold;
+        lastHookData = hookData;
+        lastSender = msg.sender;
+    }
+}
+
+/// A holder's wallet contract with the cash leg added.
+contract CashWallet {
+    function moveCashToVeil(
+        ITokenMessengerV2 messenger,
+        address usdc,
+        uint256 amount,
+        bytes32 vault,
+        bytes32 noteId,
+        uint256 maxFee,
+        uint32 minFinality
+    ) external {
+        VeilCash.toVeil(messenger, usdc, amount, vault, noteId, maxFee, minFinality);
     }
 }

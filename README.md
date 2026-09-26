@@ -171,6 +171,42 @@ and is refused on the source chain, where it is free.
 been spent to reach it, so failing loudly and leaving the amount pending is safe
 and retryable. Everything on the `lz_receive` path quarantines instead.
 
+## The cash leg: USDC over CCTP, without naming the holder
+
+A DvP in a Veil pool settles both legs inside the pool, so the cash (USDC) has
+to be there too. It does not use the lockbox: USDC is native on Starknet, and it
+moves through Circle's CCTP V2. The route has two contracts, the same pattern as
+HyperVeil's entry helper and exit vault:
+
+- **In: `VeilCashVault`** (`cairo/src/cash_vault.cairo`). The holder's account
+  creates an empty USDC open note in the pool (proven; the owner is recorded
+  only encrypted to the auditor). On Ethereum, the holder's wallet burns USDC
+  with the vault as BOTH mint recipient and destination caller, and the note id
+  as the 32-byte hook data (`evm/contracts/cash/VeilCash.sol`). Only the vault
+  can relay that message, and `receive_deposit` fills the note in the same call.
+- **Out: `VeilCashExit`** (`cairo/src/cash_exit.cairo`). A proven pool `invoke`
+  pays the adapter `amount + 1`; it burns `amount` through CCTP to the recipient
+  on Ethereum and returns 1 unit into the invoke's open note.
+
+| | Public | Not public |
+|---|---|---|
+| In | The burn on Ethereum (wallet, amount, note id); a note filled by the vault | Which Starknet account owns the note |
+| Out | The amount and the Ethereum recipient | Which Starknet account paid |
+
+A deposit the vault cannot deliver is kept, owed to that deposit alone.
+`retry_delivery` fills the note once it can take it (the pool was paused, say).
+`refund` sends it back to the wallet that burned it, on the chain it came from,
+as a Standard Transfer, and only once the note can no longer take it: the note
+was already filled, is not an empty USDC open note of this pool, or the hook
+data named none. Nothing is paid anywhere else. Both contracts are fixed at
+deployment, with no admin.
+
+Pool setup: USDC is listed as a rules token (its rules contract decides who may
+hold it, e.g. HyperVeil's `HyperVeilKycRules`), both contracts are allowed
+adapters (`set_adapter_allowed`), and the exit may hold USDC for the instant of
+an invoke. Tests: `cairo/tests/test_cash.cairo` (against the real
+`VeilERC3643`, with Circle's contracts mocked) and `evm/test/cash.test.js`.
+
 ## The three problems a naive mirror gets wrong
 
 **Address gap.** The EVM registry judges an EVM address; the holder on Starknet
@@ -271,7 +307,7 @@ against the generated ABI.
 
 The reason is version skew: the package pins `starknet = "2.14.0"`, the OZ
 umbrella crate `2.0.0` and `snforge_std = "0.49.0"`, while this package is on
-2.17.0, the split OZ crates and snforge 0.58.1 — and LayerZero's own docs warn
+2.17.0, the split OZ crates and snforge 0.59.0 — and LayerZero's own docs warn
 that mismatched versions produce class-hash mismatch errors.
 
 To swap back once versions line up: add the `layerzero` package, replace the
