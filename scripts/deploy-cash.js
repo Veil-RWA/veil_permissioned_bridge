@@ -88,7 +88,13 @@ async function main() {
     usdc: here.usdc,
     tokenMessenger: here.tokenMessenger,
     messageTransmitter: here.messageTransmitter,
-    source: { network: source, domain: there.domain, usdc: there.usdc, tokenMessenger: there.tokenMessenger },
+    source: {
+      network: source,
+      domain: there.domain,
+      usdc: there.usdc,
+      tokenMessenger: there.tokenMessenger,
+      messageTransmitter: there.messageTransmitter,
+    },
   });
   saveDeployment(args, deployment);
 

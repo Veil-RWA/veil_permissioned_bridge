@@ -201,6 +201,15 @@ was already filled, is not an empty USDC open note of this pool, or the hook
 data named none. Nothing is paid anywhere else. Both contracts are fixed at
 deployment, with no admin.
 
+In the app, USDC is the **cash** asset: Ethereum to Veil burns into the holder's
+note (the app finds or creates it), Veil to Ethereum runs the exit through the
+prover and then mints on Ethereum from the holder's wallet. Deposits are
+delivered by `scripts/relay-cash.js` (`node --env-file=.env relay-cash.js`),
+which watches Circle's TokenMessengerV2 for burns to the vault and relays them
+from a Veil account, so no holder's Starknet account appears; if none delivers
+within a few minutes of Circle's attestation, the app offers to deliver from
+the holder's own wallet and says what that reveals.
+
 Pool setup: USDC is listed as a rules token (its rules contract decides who may
 hold it, e.g. HyperVeil's `HyperVeilKycRules`), both contracts are allowed
 adapters (`set_adapter_allowed`), and the exit may hold USDC for the instant of

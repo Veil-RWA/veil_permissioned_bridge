@@ -17,10 +17,12 @@
 //   looking for it, so it does, and offers the claim.
 
 import {
-  isDeployed, evmLabel, starknetLabel, EXPLORER_EVM, EXPLORER_SN, LZ_SCAN, STARKNET_FEE_TOKEN,
+  isDeployed, deployment, evmLabel, starknetLabel, EXPLORER_EVM, EXPLORER_SN, LZ_SCAN, STARKNET_FEE_TOKEN,
   PROVER_ENDPOINT, PROVER_MASTER_ADDRESS, IS_DEMO,
 } from './config';
-import { assets, defaultAsset, faucetTokens, faucetRouter, type Asset } from './assets';
+import { assets, defaultAsset, faucetTokens, faucetRouter, isCash, type Asset } from './assets';
+import * as cash from './cash';
+import { ETHEREUM_DOMAIN, STARKNET_DOMAIN } from './cashCore';
 import { short, units, parseUnits, ago, tokenScale, unitsToTokens, type UnitScale } from './format';
 import * as evm from './evm';
 import * as sn from './starknet';
@@ -88,6 +90,29 @@ type State = {
   busy?: string;
   error?: string;
   notice?: string;
+  /// The cash leg (USDC over Circle's CCTP). Fast pays Circle to attest before
+  /// finality; Standard is free. Per direction: a Standard exit from Starknet
+  /// waits hours for L1 finality, a Standard deposit from Ethereum minutes.
+  cashFast: { toStarknet: boolean; toEvm: boolean };
+  /// The most Circle may take for a Fast Transfer of the typed amount (USDC units).
+  cashFee?: bigint;
+  /// USDC the connected Veil wallet holds in the pool, read with its viewing key.
+  cashPrivate?: bigint;
+  /// A cash deposit or exit on its way.
+  cashFlight?: CashFlight;
+};
+
+type CashFlight = {
+  direction: Direction;
+  /// The burn: on Ethereum for a deposit, the pool invoke on Starknet for an exit.
+  hash: string;
+  historyId?: string;
+  /// A deposit's note, which the vault fills.
+  noteId?: string;
+  stage: 'burned' | 'attested' | 'delivered';
+  attestedAt?: number;
+  message?: string;
+  attestation?: string;
 };
 
 const initial = defaultAsset();
@@ -110,6 +135,7 @@ const state: State = {
   feeBalance: 0n,
   balancesBusy: { evm: false, sn: false },
   balancesError: {},
+  cashFast: { toStarknet: false, toEvm: true },
 };
 
 const app = document.getElementById('app')!;
@@ -127,6 +153,9 @@ const allowlisted = () => {
 /// A Securitize DS token: eligibility is its investor registry, the lockbox is
 /// a platform wallet, and the twin counts the token's shares.
 const securitize = () => state.asset.addresses.evm?.kind === 'securitize';
+/// USDC, the cash leg: Circle's CCTP instead of a lockbox, and no twin.
+const cashAsset = () => isCash(state.asset);
+const cashFast = () => (toStarknet() ? state.cashFast.toStarknet : state.cashFast.toEvm);
 
 /// Starknet amounts arrive in the twin's units; the UI speaks tokens.
 function inTokens<T extends { balance: bigint; pending: bigint }>(m: T): T {
@@ -141,12 +170,14 @@ const destMark = () => (toStarknet() ? 'sn' : 'eth');
 /// The balance the transfer spends from, on whichever chain is the source.
 function sourceBalance(): bigint | undefined {
   if (toStarknet()) return state.evmStatus?.balance;
+  if (cashAsset()) return state.cashPrivate;
   return state.mirror?.balance;
 }
 
 // --------------------------------------------------------------- eligibility
 
 function gates(): Gate[] {
+  if (cashAsset()) return cashGates();
   const s = state.evmStatus;
   const m = state.mirror;
   const out: Gate[] = [];
@@ -266,6 +297,7 @@ function eligibilityCard(): string {
 /// surfaces both sides and offers the release. Claiming is permissionless: the
 /// funds can only reach the address the original message named.
 function claimsCard(): string {
+  if (cashAsset()) return '';
   const pending = state.mirror?.pending ?? 0n;
   const held = state.claimableEvm;
   if (pending === 0n && held === 0n) return '';
@@ -308,6 +340,7 @@ function claimsCard(): string {
 ///
 /// So this is not a choice of destination. The only choice is WHICH pool.
 function deliveryControls(): string {
+  if (cashAsset()) return cashControls();
   if (!toStarknet() || !state.asset.poolReady) return '';
   const claimed = state.noteClaimedBy;
   const mine = claimed && state.snSession &&
@@ -458,6 +491,8 @@ function ctaLabel(): { text: string; disabled: boolean; note: string } {
   const balance = sourceBalance();
   if (balance !== undefined && amount > balance) return { text: 'Insufficient balance', disabled: true, note: '' };
 
+  if (cashAsset()) return cashCta(amount);
+
   if (toStarknet()) {
     const s = state.evmStatus;
     // No status means the eligibility reads did not come back. Bridging anyway
@@ -536,7 +571,7 @@ function transferView(): string {
   const cta = ctaLabel();
   const bal = sourceBalance();
   const balance = bal !== undefined ? `${units(bal, state.token.decimals)} ${state.token.symbol}` : '—';
-  const other = toStarknet() ? state.mirror?.balance : state.evmStatus?.balance;
+  const other = toStarknet() ? (cashAsset() ? state.cashPrivate : state.mirror?.balance) : state.evmStatus?.balance;
   const destBalance = other !== undefined ? `${units(other, state.token.decimals)} ${state.token.symbol}` : '—';
 
   const banner = !isDeployed
@@ -613,9 +648,9 @@ function transferView(): string {
       <div class="detail"><dt>Route</dt><dd>${esc(sourceLabel())} → ${esc(destLabel())}</dd></div>
       ${toStarknet() && state.asset.poolReady
         ? `<div class="detail"><dt>Lands as</dt><dd>Pool note</dd></div>` : ''}
-      <div class="detail"><dt>Message fee</dt><dd>${state.fee !== undefined ? units(state.fee, 18, 6) + (toStarknet() ? ' ETH' : ' STRK') : '—'}</dd></div>
+      ${cashAsset() ? cashDetails() : `<div class="detail"><dt>Message fee</dt><dd>${state.fee !== undefined ? units(state.fee, 18, 6) + (toStarknet() ? ' ETH' : ' STRK') : '—'}</dd></div>
       <div class="detail"><dt>Bridge fee</dt><dd>0</dd></div>
-      <div class="detail"><dt>Estimated time</dt><dd>~3–10 min</dd></div>
+      <div class="detail"><dt>Estimated time</dt><dd>~3–10 min</dd></div>`}
     </dl>
     </details>
 
@@ -708,6 +743,12 @@ function render(): void {
     b.onclick = () => {
       // The same control class serves both segmented pickers, so each button
       // acts on the one it actually belongs to.
+      if (b.dataset.speed) {
+        const fast = b.dataset.speed === 'fast';
+        if (toStarknet()) state.cashFast.toStarknet = fast; else state.cashFast.toEvm = fast;
+        state.cashFee = undefined;
+        refreshQuote();
+      }
       if (b.dataset.pool) {
         state.poolChoice = b.dataset.pool as 'main' | 'custom';
         // A pool the user has moved away from must not stay approved: going
@@ -732,6 +773,11 @@ function render(): void {
 
   const connectDest = document.getElementById('connect-dest');
   if (connectDest) connectDest.onclick = () => void (toStarknet() ? doConnectStarknet() : doConnectEvm());
+
+  const selfRelay = document.getElementById('cash-self-relay');
+  if (selfRelay) selfRelay.onclick = () => void doCashSelfRelay();
+  const mint = document.getElementById('cash-mint');
+  if (mint) mint.onclick = () => void doCashMint();
 
   const claimSn = document.getElementById('claim-sn');
   if (claimSn) claimSn.onclick = () => void doClaimStarknet();
@@ -1067,8 +1113,19 @@ async function selectAsset(id: string): Promise<void> {
   state.noteSearched = false;
   state.poolCheck = undefined;
   state.poolChecking = false;
+  state.cashFee = undefined;
+  state.cashPrivate = undefined;
+  state.evmStatus = undefined;
   render();
   try { state.token = await evm.tokenInfo(next); } catch { /* catalogue stands */ }
+  // The viewing key is per wallet, not per asset: keep it, so switching to USDC
+  // (or away) does not ask for the signature again.
+  if (state.snSession && !state.noteCtx) {
+    const chainId = (await sn.snProvider.getChainId().catch(() => '')) as unknown as string;
+    if (chainId && hasCachedViewingKey(state.snSession.address, chainId)) {
+      state.noteCtx = await deriveNoteContext(state.snSession).catch(() => undefined);
+    }
+  }
   await refreshAll();
 }
 
@@ -1080,6 +1137,20 @@ function refreshQuote(): void {
     let amount = 0n;
     try { amount = parseUnits(state.amount || '0', state.token.decimals); } catch { return; }
     if (amount <= 0n) return;
+    if (cashAsset()) {
+      // Circle's fee comes out of the transfer itself, in USDC.
+      state.cashFee = cashFast()
+        ? await cash.transferParams(
+            amount, true,
+            toStarknet() ? ETHEREUM_DOMAIN : STARKNET_DOMAIN,
+            toStarknet() ? STARKNET_DOMAIN : ETHEREUM_DOMAIN,
+          ).then((p) => p.maxFee).catch(() => undefined)
+        : 0n;
+      paintCta();
+      const cell = document.getElementById('cash-fee');
+      if (cell) cell.textContent = cashFeeText();
+      return;
+    }
     try {
       state.fee = toStarknet()
         ? await evm.quote(state.asset, amount, state.recipient)
@@ -1104,6 +1175,17 @@ async function refreshAll(): Promise<void> {
   // A rebase re-prices the twin's units, so the scale is read with everything else.
   state.scale = await evm.unitScale(asset, state.token.decimals).catch(() => state.scale);
   const jobs: Array<Promise<void>> = [];
+
+  if (isCash(asset)) {
+    if (state.evmSession) {
+      jobs.push(cash.evmStatus(state.evmSession.address).then((s) => { state.evmStatus = s; }).catch(() => {}));
+    }
+    if (state.snSession && state.noteCtx) jobs.push(loadCashPrivate());
+    await Promise.all(jobs);
+    render();
+    refreshQuote();
+    return;
+  }
 
   if (state.evmSession) {
     jobs.push(evm.evmStatus(asset, state.evmSession.address).then((s) => { state.evmStatus = s; }).catch(() => {}));
@@ -1277,11 +1359,15 @@ async function doFindNote(): Promise<void> {
     state.error = /reject|denied|abort|cancel/i.test(m) ? undefined : m;
   } finally {
     state.busy = undefined;
-    if (state.noteId) await refreshNoteOwner(); else render();
+    if (state.noteId) await refreshNoteOwner();
+    else if (cashAsset()) await refreshAll();
+    else render();
   }
 }
 
 async function refreshNoteOwner(): Promise<void> {
+  // A USDC note is filled by the cash vault, not claimed on a gateway.
+  if (cashAsset()) { void refreshAll(); return; }
   if (!validNoteId() || !state.asset.poolReady) { state.noteClaimedBy = undefined; render(); return; }
   try {
     state.noteClaimedBy = await sn.noteOwner(state.asset, state.noteId);
@@ -1579,6 +1665,18 @@ async function onCta(): Promise<void> {
   }
 
   const asset = state.asset;
+  if (isCash(asset)) {
+    try {
+      if (toStarknet()) await cashToVeil(amount);
+      else await cashToEvm(amount);
+    } catch (e: any) {
+      state.error = friendlyError(e);
+    } finally {
+      state.busy = undefined;
+      await refreshAll();
+    }
+    return;
+  }
   try {
     if (toStarknet()) {
       // Everything the delivery needs, in this one press. The holder asked to
@@ -1684,6 +1782,353 @@ async function watchRelease(asset: Asset, hash: string, recipient: string): Prom
   }
 }
 
+// ------------------------------------------------------------------ cash leg
+//
+// USDC over Circle's CCTP V2. No lockbox, no twin, no LayerZero:
+//   in  -- the Ethereum wallet burns into the holder's empty USDC note, naming
+//          Veil's cash vault as mint recipient and sole relayer; once Circle
+//          attests, Veil's relayer delivers it and the vault fills the note.
+//   out -- a proven pool invoke (the prover's relayer submits it) pays Veil's
+//          cash exit, which burns to the Ethereum wallet; once Circle attests,
+//          the wallet confirms the mint.
+// The holder's Starknet account sends nothing public in either direction.
+
+/// How long after Circle's attestation to wait for Veil's relayer before
+/// offering to deliver from the holder's own wallet.
+const RELAY_GRACE_MS = 3 * 60 * 1000;
+/// The pool's side of the route, as the rest of this card names it.
+const veilLabel = starknetLabel;
+const friendlyError = (e: any): string => String(e?.shortMessage ?? e?.message ?? e);
+
+function cashGates(): Gate[] {
+  const s = state.evmStatus;
+  const verified = state.poolVerified;
+  const pool: Gate = {
+    ok: state.snSession ? (verified ?? null) : null,
+    label: `Your ${veilLabel} wallet is verified in the pool`,
+    detail: !state.snSession ? `Connect your ${veilLabel} wallet to check.`
+      : verified === undefined ? 'Sign the message in your wallet to verify it.'
+      : !verified ? 'This wallet could not be verified in the Veil pool.'
+      : undefined,
+  };
+  const out: Gate[] = [];
+  if (state.evmSession) {
+    out.push({ ok: s ? !s.frozen : null, label: `Circle has not blocklisted your ${evmLabel} address` });
+    out.push({ ok: s ? !s.paused : null, label: 'USDC is not paused' });
+  }
+  out.push(pool);
+  return out;
+}
+
+function cashFeeText(): string {
+  if (!cashFast()) return '0 (Standard)';
+  return state.cashFee !== undefined ? `up to ${units(state.cashFee, state.token.decimals)} USDC` : '…';
+}
+
+function cashDetails(): string {
+  const time = cashFast() ? '~20 seconds for Circle to attest'
+    : toStarknet() ? '~15–19 min (Ethereum finality)' : '~2–4 hours (Starknet finality on Ethereum)';
+  return `<div class="detail"><dt>Circle fee</dt><dd id="cash-fee">${esc(cashFeeText())}</dd></div>
+      <div class="detail"><dt>Carried by</dt><dd>Circle CCTP V2</dd></div>
+      <div class="detail"><dt>Estimated time</dt><dd>${esc(time)}</dd></div>`;
+}
+
+function cashControls(): string {
+  const fast = cashFast();
+  const standardTime = toStarknet() ? '~15–19 min' : '~2–4 h';
+  const toggle = `<div class="pool-choice">
+    <div class="seg seg-sm" role="radiogroup" aria-label="Transfer speed">
+      <button class="seg-btn${fast ? '' : ' is-on'}" data-speed="standard" role="radio" aria-checked="${!fast}">Standard · free · ${standardTime}</button>
+      <button class="seg-btn${fast ? ' is-on' : ''}" data-speed="fast" role="radio" aria-checked="${fast}">Fast · ~20 s · Circle fee</button>
+    </div></div>`;
+  const head = toStarknet() ? 'Lands in the Veil pool' : `Arrives on ${evmLabel}`;
+  const note = toStarknet()
+    ? `<p class="delivery-note">Burned through Circle's CCTP into your private USDC note in the Veil pool. Veil's cash vault fills it, so your ${veilLabel} account never appears on-chain.</p>`
+    : `<p class="delivery-note">Leaves the pool privately through Veil's cash exit. After Circle attests, one confirmation in your ${evmLabel} wallet mints it to you.</p>`;
+  const noteLine = toStarknet() && state.snSession && state.noteId
+    ? `<div class="note-found"><span class="note-label">Your USDC note</span>
+         <span class="note-id mono">${esc(short(state.noteId, 10, 8))}</span>
+         <span class="note-index">slot ${state.noteSlot?.index ?? 0}</span></div>`
+    : '';
+  const faucet = toStarknet() && (deployment.evmNetwork ?? '').includes('sepolia')
+    ? `<p class="delivery-note">Test USDC: <a href="https://faucet.circle.com" target="_blank" rel="noreferrer">Circle's faucet</a> (${esc(evmLabel)}).</p>`
+    : '';
+  return `<div class="delivery">
+    <div class="delivery-head">${head}</div>
+    ${toggle}${noteLine}${note}${faucet}${flightCard()}
+  </div>`;
+}
+
+/// Where the last USDC transfer in this direction is, and what (if anything)
+/// the holder can do about it.
+function flightCard(): string {
+  const f = state.cashFlight;
+  if (!f || f.direction !== state.direction) return '';
+  const burnLink = f.direction === 'toStarknet' ? `${EXPLORER_EVM}/tx/${f.hash}` : `${EXPLORER_SN}/tx/${f.hash}`;
+  const link = `<a href="${esc(burnLink)}" target="_blank" rel="noreferrer">burn</a>`;
+  let line: string;
+  let action = '';
+  if (f.stage === 'delivered') {
+    line = f.direction === 'toStarknet'
+      ? `Delivered into your private Veil note.`
+      : `Minted on ${evmLabel}.`;
+  } else if (f.stage === 'burned') {
+    line = `Burned (${link}). Waiting for Circle to attest…`;
+  } else if (f.direction === 'toStarknet') {
+    const late = f.attestedAt !== undefined && Date.now() - f.attestedAt > RELAY_GRACE_MS;
+    line = `Circle attested. Veil's relayer is delivering it into your note…`;
+    if (late) {
+      line = `Circle attested, but Veil's relayer has not delivered it yet.`;
+      action = `<button id="cash-self-relay" class="max" ${state.busy ? 'disabled' : ''}>Deliver from my ${esc(veilLabel)} wallet</button>
+        <p class="delivery-note is-warn">This sends one transaction from your ${esc(veilLabel)} wallet, which shows your account next to the note it fills. Waiting keeps it private.</p>`;
+    }
+  } else {
+    line = `Circle attested. Confirm the mint in your ${evmLabel} wallet.`;
+    action = `<button id="cash-mint" class="max" ${state.busy ? 'disabled' : ''}>Mint on ${esc(evmLabel)}</button>`;
+  }
+  return `<div class="note-found"><span class="note-label">USDC on its way</span></div>
+    <p class="delivery-note${f.stage === 'delivered' ? ' is-ok' : ''}">${line}</p>${action}`;
+}
+
+function cashCta(amount: bigint): { text: string; disabled: boolean; note: string } {
+  const sym = state.token.symbol;
+  if (!PROVER_ENDPOINT || !PROVER_MASTER_ADDRESS) {
+    return {
+      text: toStarknet() ? 'Note creation unavailable' : 'Exit unavailable', disabled: true,
+      note: 'Moving USDC in or out of the pool needs a Veil prover endpoint, which this deployment has not configured.',
+    };
+  }
+  if (amount >= (1n << 128n)) {
+    return { text: 'Amount too large for a note', disabled: true, note: 'A note holds at most 2^128 - 1 base units.' };
+  }
+  const fee = cashFast()
+    ? `Circle fee ${cashFeeText()}, taken from the amount`
+    : 'No Circle fee (Standard Transfer)';
+  const s = state.evmStatus;
+  if (toStarknet()) {
+    if (!s) {
+      return { text: 'Cannot check USDC', disabled: true, note: `${evmLabel} did not answer. Nothing is sent until it does.` };
+    }
+    if (s.frozen) return { text: 'Blocklisted by Circle', disabled: true, note: 'Circle does not let this address move USDC.' };
+    if (s.paused) return { text: 'USDC is paused', disabled: true, note: 'Circle has paused USDC.' };
+    const needsApproval = s.allowance < amount;
+    return {
+      text: `Move ${sym} into Veil`,
+      disabled: false,
+      note: needsApproval
+        ? `Two wallet confirmations: approve ${sym}, then burn through Circle's CCTP. ${fee}.`
+        : `${fee}. Lands in your private Veil note.`,
+    };
+  }
+  if (state.cashPrivate === undefined) {
+    return { text: `Reading your ${veilLabel} USDC…`, disabled: true, note: 'Sign in your wallet if it asks: your notes are read with your viewing key.' };
+  }
+  if (amount + 1n > state.cashPrivate) {
+    return { text: 'Insufficient balance', disabled: true, note: 'The exit keeps 1 unit (0.000001 USDC) back in the pool as change.' };
+  }
+  if (s?.frozen) {
+    return { text: 'Recipient blocklisted by Circle', disabled: true, note: 'Circle does not mint USDC to a blocklisted address.' };
+  }
+  return {
+    text: `Move ${sym} to ${evmLabel}`,
+    disabled: false,
+    note: `${fee}. Proven in ${veilLabel}; then you confirm the mint on ${evmLabel}.`,
+  };
+}
+
+async function loadCashPrivate(): Promise<void> {
+  const pool = state.asset.addresses.starknet?.pool;
+  if (!pool || !state.noteCtx) return;
+  const read = await privateBalances(pool, state.noteCtx, [state.asset]).catch(() => undefined);
+  if (read) state.cashPrivate = read[state.asset.id]?.balance ?? 0n;
+}
+
+/// The destination note for a deposit: registered, empty, and not already the
+/// target of a burn on its way.
+async function prepareCashNote(): Promise<boolean> {
+  if (!state.snSession) {
+    await doConnectStarknet();
+    if (!state.snSession) {
+      state.error = state.error ?? `Connect your ${veilLabel} wallet to receive.`;
+      return false;
+    }
+  }
+  if (!state.noteCtx) {
+    state.busy = 'Check your wallet to sign…'; paintCta(); render();
+    state.noteCtx = await deriveNoteContext(state.snSession);
+  }
+  if (!(await ensureRegistered())) {
+    state.error = state.error ?? 'Your wallet is not registered in the Veil pool yet.';
+    return false;
+  }
+  const busy = cash.inFlightNotes();
+  if (validNoteId() && !busy.has(BigInt(state.noteId))) return true;
+
+  let slot = await cash.findFreeNote(state.noteCtx, busy);
+  if (!slot) {
+    state.busy = 'Creating your USDC note…'; paintCta(); render();
+    const made = await createOpenNote(state.asset, state.noteCtx, (line) => {
+      state.busy = `Creating your USDC note — ${line}…`; paintCta();
+    });
+    if (!made.ok) { state.error = made.reason; return false; }
+    // `createOpenNote` reports the FIRST empty note, which may be one a burn is
+    // already on its way to. Look again, skipping those, until the new one shows.
+    for (let attempt = 0; attempt < 20 && !slot; attempt++) {
+      slot = await cash.findFreeNote(state.noteCtx, busy);
+      if (!slot) await new Promise((r) => setTimeout(r, 3000));
+    }
+    if (!slot) {
+      state.error = 'Your note was created, but this RPC cannot see it yet. It is not lost: press the button again in a moment.';
+      return false;
+    }
+  }
+  state.noteSlot = slot;
+  state.noteId = slot.noteId;
+  state.noteSearched = true;
+  return true;
+}
+
+async function cashToVeil(amount: bigint): Promise<void> {
+  if (!(await prepareCashNote())) return;
+  const session = state.evmSession!;
+  if (!state.evmStatus || state.evmStatus.allowance < amount) {
+    state.busy = 'Approve USDC in wallet…'; paintCta(); render();
+    await cash.approve(session, amount);
+  }
+  const noteId = state.noteId;
+  state.busy = 'Confirm the burn in wallet…'; paintCta(); render();
+  const hash = await cash.burnToVeil(session, amount, noteId, state.cashFast.toStarknet);
+  cash.markInFlight(noteId);
+  const item = record({
+    direction: 'toStarknet', asset: state.asset.id, symbol: state.token.symbol,
+    amount: units(amount, state.token.decimals), recipient: state.recipient, hash, note: noteId, status: 'sent',
+  });
+  const flight: CashFlight = { direction: 'toStarknet', hash, historyId: item.id, noteId, stage: 'burned' };
+  state.cashFlight = flight;
+  state.notice = `Burned on ${evmLabel}. Once Circle attests, Veil's relayer fills your note — nothing to sign on ${veilLabel}.`;
+  state.amount = '';
+  // The note is spoken for until the vault fills it; the next deposit gets another.
+  state.noteId = '';
+  state.noteSlot = undefined;
+  void watchCashIn(flight);
+}
+
+async function cashToEvm(amount: bigint): Promise<void> {
+  if (!state.snSession) return doConnectStarknet();
+  if (!state.evmSession) return doConnectEvm();
+  if (!state.noteCtx) {
+    state.busy = 'Check your wallet to sign…'; paintCta(); render();
+    state.noteCtx = await deriveNoteContext(state.snSession);
+  }
+  if (!(await ensureRegistered())) {
+    state.error = state.error ?? 'Your wallet is not registered in the Veil pool yet.';
+    return;
+  }
+  const recipient = state.evmSession.address;
+  state.busy = 'Leaving the pool…'; paintCta(); render();
+  const hash = await cash.exitToEvm(state.noteCtx, amount, recipient, state.cashFast.toEvm, (line) => {
+    state.busy = `Leaving the pool — ${line}…`; paintCta();
+  });
+  const item = record({
+    direction: 'toEvm', asset: state.asset.id, symbol: state.token.symbol,
+    amount: units(amount, state.token.decimals), recipient, hash, status: 'sent',
+  });
+  const flight: CashFlight = { direction: 'toEvm', hash, historyId: item.id, stage: 'burned' };
+  state.cashFlight = flight;
+  state.notice = state.cashFast.toEvm
+    ? `Burned in the Veil pool. Circle attests in about 20 seconds; then confirm the mint.`
+    : `Burned in the Veil pool. Circle attests a Standard Transfer from Starknet in about 2 to 4 hours; then confirm the mint.`;
+  state.amount = '';
+  void watchCashOut(flight);
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const WATCH_MS = 6 * 60 * 60 * 1000;
+
+async function watchCashIn(f: CashFlight): Promise<void> {
+  const deadline = Date.now() + WATCH_MS;
+  while (Date.now() < deadline && state.cashFlight === f && f.stage !== 'delivered') {
+    await sleep(15000);
+    try {
+      if (f.stage === 'burned') {
+        const m = await cash.irisMessage(ETHEREUM_DOMAIN, f.hash);
+        if (m?.attested) {
+          f.stage = 'attested'; f.message = m.message; f.attestation = m.attestation; f.attestedAt = Date.now();
+        }
+      }
+      if (f.noteId && cash.isFilled(await cash.noteValue(f.noteId))) {
+        f.stage = 'delivered';
+        cash.forgetInFlight(f.noteId);
+        if (f.historyId) update(f.historyId, 'minted');
+        state.notice = `Delivered into your private Veil note.`;
+        await refreshAll();
+        return;
+      }
+      render();
+    } catch { /* transient: keep watching */ }
+  }
+}
+
+async function watchCashOut(f: CashFlight): Promise<void> {
+  const deadline = Date.now() + WATCH_MS;
+  while (Date.now() < deadline && state.cashFlight === f && f.stage === 'burned') {
+    await sleep(15000);
+    try {
+      const m = await cash.irisMessage(STARKNET_DOMAIN, f.hash);
+      if (m?.attested) {
+        f.stage = 'attested'; f.message = m.message; f.attestation = m.attestation; f.attestedAt = Date.now();
+        state.notice = `Circle attested. Confirm the mint in your ${evmLabel} wallet.`;
+        render();
+        return;
+      }
+    } catch { /* transient: keep watching */ }
+  }
+}
+
+async function doCashSelfRelay(): Promise<void> {
+  const f = state.cashFlight;
+  if (!f?.message || !f.attestation) return;
+  if (!state.snSession) return doConnectStarknet();
+  state.busy = 'Delivering from your wallet…'; paintCta(); render();
+  try {
+    await cash.relayFromWallet(state.snSession, f.message, f.attestation);
+    state.notice = 'Delivered from your wallet.';
+  } catch (e: any) {
+    state.error = friendlyError(e);
+  } finally {
+    state.busy = undefined;
+    render();
+  }
+}
+
+async function doCashMint(): Promise<void> {
+  const f = state.cashFlight;
+  if (!f?.message || !f.attestation) return;
+  if (!state.evmSession) return doConnectEvm();
+  state.busy = 'Confirm the mint in wallet…'; paintCta(); render();
+  try {
+    await cash.mintOnEvm(state.evmSession, f.message, f.attestation);
+    f.stage = 'delivered';
+    if (f.historyId) update(f.historyId, 'minted');
+    state.notice = `Minted on ${evmLabel}.`;
+  } catch (e: any) {
+    state.error = friendlyError(e);
+  } finally {
+    state.busy = undefined;
+    await refreshAll();
+  }
+}
+
+/// A USDC transfer outlives the page: an exit's Standard attestation takes
+/// hours. Pick the newest unfinished one back up from the history.
+function resumeCashFlight(): void {
+  const t = loadHistory().find((x) => x.asset === 'usdc' && x.status === 'sent');
+  if (!t) return;
+  const f: CashFlight = { direction: t.direction, hash: t.hash, historyId: t.id, noteId: t.note, stage: 'burned' };
+  state.cashFlight = f;
+  if (t.direction === 'toStarknet') void watchCashIn(f); else void watchCashOut(f);
+}
+
 // ---------------------------------------------------------------------- boot
 
 async function boot(): Promise<void> {
@@ -1713,6 +2158,7 @@ async function boot(): Promise<void> {
     if (!toStarknet()) state.recipient = evmSession.address;
     watchEvm();
   }
+  resumeCashFlight();
   if (!snSession && !evmSession) return;
 
   await refreshAll();

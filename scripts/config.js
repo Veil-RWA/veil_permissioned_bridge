@@ -123,11 +123,13 @@ const CCTP = {
     domain: 0,
     usdc: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238',
     tokenMessenger: '0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA',
+    messageTransmitter: '0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275',
   },
   'ethereum-mainnet': {
     domain: 0,
     usdc: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
     tokenMessenger: '0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d',
+    messageTransmitter: '0x81D40F21F12A8F0E3252Bccb954D722d4c464B64',
   },
 };
 

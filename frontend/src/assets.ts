@@ -21,7 +21,7 @@
 
 import { deployment } from './config';
 
-export type AssetCategory = 'Metal' | 'Treasury' | 'Credit' | 'Real estate' | 'Equity' | 'Security';
+export type AssetCategory = 'Metal' | 'Treasury' | 'Credit' | 'Real estate' | 'Equity' | 'Security' | 'Cash';
 
 export type AssetMeta = {
   id: string;
@@ -39,7 +39,7 @@ export type AssetAddresses = {
     lockbox?: string; token?: string; complianceReader?: string;
     /// Where holder eligibility lives on the source chain. Absent means
     /// ERC-3643, which every deployment before allowlisted assets was.
-    kind?: 'erc3643' | 'allowlist' | 'rules' | 'securitize';
+    kind?: 'erc3643' | 'allowlist' | 'rules' | 'securitize' | 'cash';
     /// The allowlist an allowlisted asset's lockbox reads. Recorded for
     /// operators; the app asks the lockbox itself.
     allowlist?: string;
@@ -156,7 +156,38 @@ export const CATALOGUE: AssetMeta[] = [
     decimals: 6,
     tint: ['#b8e6f5', '#2f8fb0'],
   },
+  // The cash leg. Circle's USDC, not an issuer asset: it moves over CCTP into
+  // the same Veil pool as the instruments, so both legs of a DvP settle there.
+  {
+    id: 'usdc',
+    symbol: 'USDC',
+    name: 'USD Coin (cash leg)',
+    category: 'Cash',
+    decimals: 6,
+    tint: ['#b9d3f7', '#2775ca'],
+  },
 ];
+
+/// The cash leg's catalogue id. Its addresses come from `deployment.cash`,
+/// not from `deployment.assets`.
+export const CASH_ID = 'usdc';
+
+/// USDC over CCTP rather than a lockbox asset.
+export const isCash = (a: Pick<Asset, 'id'>): boolean => a.id === CASH_ID;
+
+function resolveCash(meta: AssetMeta): Asset {
+  const c = deployment.cash ?? {};
+  const addresses: AssetAddresses = {
+    evm: { token: c.source?.usdc, kind: 'cash' },
+    starknet: { token: c.usdc, pool: c.pool },
+  };
+  const available = Boolean(
+    c.pool && c.usdc && c.vault && c.exit && c.source?.usdc && c.source?.tokenMessenger
+      && c.source?.messageTransmitter,
+  );
+  return { ...meta, addresses, available, poolReady: Boolean(c.pool) };
+}
+
 
 function resolve(meta: AssetMeta): Asset {
   const configured = (deployment.assets ?? {})[meta.id] ?? {};
@@ -188,7 +219,7 @@ function resolve(meta: AssetMeta): Asset {
   return { ...meta, addresses, available, poolReady: Boolean(pool) };
 }
 
-export const assets: Asset[] = CATALOGUE.map(resolve);
+export const assets: Asset[] = CATALOGUE.map((m) => (m.id === CASH_ID ? resolveCash(m) : resolve(m)));
 
 /// Faucet tokens on the source chain, for "Get faucets".
 ///
@@ -198,7 +229,8 @@ export const assets: Asset[] = CATALOGUE.map(resolve);
 /// during exactly the window it exists for, between deploying the faucet assets
 /// and wiring the Starknet side.
 export const faucetTokens = (): string[] =>
-  assets.filter((a) => a.addresses.evm?.token)
+  // USDC comes from Circle's own faucet, not from ours.
+  assets.filter((a) => a.addresses.evm?.token && !isCash(a))
         .map((a) => a.addresses.evm!.faucet ?? a.addresses.evm!.token!);
 
 export const faucetRouter = (): string | undefined => deployment.faucet?.router;
