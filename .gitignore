@@ -12,3 +12,5 @@ frontend/.env
 
 # cash relayer progress
 scripts/.relay-cash/
+scripts/aws/dist/
+scripts/aws/tick.zip

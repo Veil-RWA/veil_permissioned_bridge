@@ -106,4 +106,18 @@ test('Relayer reads the CCTP header fields it checks', () => {
   assert.deepEqual([f.sourceDomain, f.destinationDomain, f.nonce, f.destinationCaller, f.mintRecipient], [0, 25, 9n, 0x42n, 0x42n]);
 });
 
+test('Relayer reads a held deposit and applies the vault\'s own fillable test', () => {
+  // CashDeposit { note_id, amount, source_domain, sender: u256 (low, high), status }
+  const d = relayer.readDeposit(['0x77', '0x2dc6c0', '0x0', '0xabc', '0x0', '0x2']);
+  assert.deepEqual([d.noteId, d.amount, d.status], [0x77n, 3_000_000n, 2]);
+  assert.equal(relayer.readDeposit([]).status, 0);
+  const E = relayer.EMPTY_OPEN_NOTE;
+  assert.equal(E, 1n << 128n);
+  assert.equal(relayer.fillable(0x77n, USDC, E, USDC), true);
+  assert.equal(relayer.fillable(0n, USDC, E, USDC), false);            // no note named
+  assert.equal(relayer.fillable(0x77n, 0n, 0n, USDC), false);          // not created yet
+  assert.equal(relayer.fillable(0x77n, 0x9n, E, USDC), false);         // an open note for another token
+  assert.equal(relayer.fillable(0x77n, USDC, E + 5n, USDC), false);    // already filled
+});
+
 console.log(`\n${pass} passed`);
