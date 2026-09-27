@@ -27,6 +27,9 @@
 // (the relayer account pays Starknet fees), and EVM_RPC_URL when set. The
 // progress (last blocks scanned, deposits seen and held) is kept in
 // .relay-cash/, so a restart resumes where it stopped.
+//
+// Deployed, it runs as a Lambda on a one-minute schedule, the way HyperVeil's
+// keeper does, with its progress in DynamoDB: see aws/deploy.sh.
 
 const fs = require('fs');
 const path = require('path');
@@ -39,7 +42,8 @@ const STARKNET_DOMAIN = 25;
 const POLL_MS = 15_000;
 const CHUNK = 2_000;
 const PENDING_TTL_MS = 24 * 60 * 60 * 1000;
-const RETRY_MS = 60_000;
+const RETRY_MS = 45_000;
+const DONE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 // cash_vault.cairo and cash_cctp.cairo.
 const CASH_DELIVERED = 1;
@@ -96,34 +100,32 @@ function fillable(noteId, openNoteToken, encryptedAmount, usdc) {
   return noteId !== 0n && openNoteToken === usdc && encryptedAmount === EMPTY_OPEN_NOTE;
 }
 
+const emptyState = () => ({ lastBlock: null, pending: {}, done: {} });
+
 function loadState(file) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return { lastBlock: null, pending: {}, done: {} }; }
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return emptyState(); }
 }
 function saveState(file, state) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(state, null, 2) + '\n');
 }
 
-async function main() {
-  const args = parseArgs(process.argv);
-  const deployment = loadDeployment(args);
+/// The relayer for one deployment's cash leg. `pass(st, save)` runs its three
+/// steps once over the state `st` and calls `save(st)` after each. The loop
+/// below drives it every POLL_MS, keeping state in .relay-cash/; the Lambda
+/// (aws/tick.js) drives it once per schedule, keeping state in DynamoDB.
+async function createRelayer({ deployment, evmNetwork, starknetNetwork }) {
   const c = deployment.cash;
   if (!c?.vault || !c.source?.tokenMessenger) throw new Error('no cash leg in this deployment: run deploy-cash.js');
   const [rpc, address, key] = requireEnv('STARKNET_RPC_URL', 'STARKNET_ACCOUNT_ADDRESS', 'STARKNET_PRIVATE_KEY');
   const { provider: sn, account } = starknetAccount(rpc, address, key);
   const evmUrl = process.env.EVM_RPC_URL && !process.env.EVM_RPC_URL.includes('<')
     ? process.env.EVM_RPC_URL
-    : (args.evm.includes('sepolia') ? 'https://ethereum-sepolia-rpc.publicnode.com' : 'https://ethereum-rpc.publicnode.com');
+    : (evmNetwork.includes('sepolia') ? 'https://ethereum-sepolia-rpc.publicnode.com' : 'https://ethereum-rpc.publicnode.com');
   const evm = new ethers.JsonRpcProvider(evmUrl);
-  const iris = network(args.starknet).eid >= 40000 ? IRIS.testnet : IRIS.mainnet;
+  const iris = network(starknetNetwork).eid >= 40000 ? IRIS.testnet : IRIS.mainnet;
   const vault = BigInt(c.vault);
   const vaultWord = word(c.vault).toLowerCase();
-  const stateFile = path.join(__dirname, '.relay-cash', `${args.evm}__${args.starknet}.json`);
-  const st = loadState(stateFile);
-
-  console.log(`relayer   ${address}`);
-  console.log(`vault     ${c.vault}`);
-  console.log(`watching  TokenMessengerV2 ${c.source.tokenMessenger} on ${args.evm}`);
 
   const read = async (to, entrypoint, calldata) =>
     asFelts(await sn.callContract({ contractAddress: to, entrypoint, calldata }));
@@ -133,10 +135,6 @@ async function main() {
       [String(c.source.domain ?? 0), hex(nonce & ((1n << 128n) - 1n)), hex(nonce >> 128n)]))[0];
     return (await depositOf(id)).status;
   };
-
-  // Held deposits of this vault, and how far its events have been read.
-  if (st.held?.vault !== c.vault) st.held = { vault: c.vault, block: -1, deposits: {} };
-  const held = st.held;
   const pool = hex(BigInt((await read(c.vault, 'pool', []))[0]));
   const usdc = BigInt(c.usdc);
   const noteFillable = async (noteId) => {
@@ -145,7 +143,7 @@ async function main() {
     const encrypted = BigInt((await read(pool, 'get_notes_batch', ['1', hex(noteId)]))[1] ?? 0);
     return fillable(noteId, token, encrypted, usdc);
   };
-  const scanHeld = async () => {
+  const scanHeld = async (held) => {
     const latest = await sn.getBlockNumber();
     if (held.block >= latest) return;
     let token;
@@ -164,12 +162,17 @@ async function main() {
     held.block = latest;
   };
 
-  for (;;) {
+  async function pass(st, save = () => {}, { fromBlock } = {}) {
+    st.pending ??= {};
+    st.done ??= {};
+    // Held deposits of this vault, and how far its events have been read.
+    if (st.held?.vault !== c.vault) st.held = { vault: c.vault, block: -1, deposits: {} };
+    const held = st.held;
+
     // 1. New burns addressed to the vault.
     try {
       const latest = await evm.getBlockNumber();
-      let from = args['from-block'] ? Number(args['from-block']) : (st.lastBlock ?? latest - 5_000) + 1;
-      if (args['from-block']) delete args['from-block'];
+      let from = fromBlock ?? (st.lastBlock ?? latest - 5_000) + 1;
       while (from <= latest) {
         const to = Math.min(from + CHUNK - 1, latest);
         const logs = await evm.getLogs({
@@ -190,7 +193,10 @@ async function main() {
         st.lastBlock = to;
         from = to + 1;
       }
-      saveState(stateFile, st);
+      // Blocks already read are never read again, so `done` only needs to
+      // outlive a --from-block rescan.
+      for (const [tx, at] of Object.entries(st.done)) if (Date.now() - at > DONE_TTL_MS) delete st.done[tx];
+      await save(st);
     } catch (e) {
       console.error(`scan: ${e.shortMessage ?? e.message}`);
     }
@@ -230,11 +236,11 @@ async function main() {
         console.error(`iris ${tx}: ${e.message}`);
       }
     }
-    saveState(stateFile, st);
+    await save(st);
 
     // 3. Retry held deposits once their note can take them.
     try {
-      await scanHeld();
+      await scanHeld(held);
       for (const [id, h] of Object.entries(held.deposits)) {
         if (Date.now() - h.triedAt < RETRY_MS) continue;
         h.triedAt = Date.now();
@@ -262,7 +268,28 @@ async function main() {
     } catch (e) {
       console.error(`held: ${String(e.message ?? e).split('\n')[0]}`);
     }
-    saveState(stateFile, st);
+    await save(st);
+  }
+
+  return { address, vault: c.vault, tokenMessenger: c.source.tokenMessenger, pass };
+}
+
+async function main() {
+  const args = parseArgs(process.argv);
+  const relayer = await createRelayer({
+    deployment: loadDeployment(args), evmNetwork: args.evm, starknetNetwork: args.starknet,
+  });
+  const stateFile = path.join(__dirname, '.relay-cash', `${args.evm}__${args.starknet}.json`);
+  const st = loadState(stateFile);
+
+  console.log(`relayer   ${relayer.address}`);
+  console.log(`vault     ${relayer.vault}`);
+  console.log(`watching  TokenMessengerV2 ${relayer.tokenMessenger} on ${args.evm}`);
+
+  let fromBlock = args['from-block'] ? Number(args['from-block']) : undefined;
+  for (;;) {
+    await relayer.pass(st, (s) => saveState(stateFile, s), { fromBlock });
+    fromBlock = undefined;
     if (args.once) return;
     await new Promise((r) => setTimeout(r, POLL_MS));
   }
@@ -272,4 +299,4 @@ if (require.main === module) {
   main().catch((e) => { console.error(e); process.exit(1); });
 }
 
-module.exports = { byteArrayCalldata, readMessage, readDeposit, fillable, EMPTY_OPEN_NOTE };
+module.exports = { createRelayer, emptyState, byteArrayCalldata, readMessage, readDeposit, fillable, EMPTY_OPEN_NOTE };

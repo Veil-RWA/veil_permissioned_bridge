@@ -10,5 +10,9 @@
   "dependencies": {
     "ethers": "^6",
     "starknet": "^10.0.2"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1141.0",
+    "esbuild": "^0.28.2"
   }
 }
