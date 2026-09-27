@@ -206,7 +206,9 @@ note (the app finds or creates it), Veil to Ethereum runs the exit through the
 prover and then mints on Ethereum from the holder's wallet. Deposits are
 delivered by `scripts/relay-cash.js` (`node --env-file=.env relay-cash.js`),
 which watches Circle's TokenMessengerV2 for burns to the vault and relays them
-from a Veil account, so no holder's Starknet account appears; if none delivers
+from a Veil account, so no holder's Starknet account appears. It also retries
+held deposits: it watches the vault's `CashHeld` events and calls
+`retry_delivery` once the note can take the deposit. If none delivers
 within a few minutes of Circle's attestation, the app offers to deliver from
 the holder's own wallet and says what that reveals.
 
