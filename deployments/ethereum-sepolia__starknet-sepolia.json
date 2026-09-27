@@ -13,12 +13,15 @@
       "starknet": {
         "registry": "0x1aa0cbb0793c47fd478bd7cc11e755c8533edc1543505e944dd4d4770e83a19",
         "stalenessWindow": 86400,
-        "gateway": "0x1c88e111c19cc4a4c4e38ddb5a3aaf5c2228606f1f8a4cceb2c7439b638b276",
+        "gateway": "0x2df93308b3e3703d3d7c8581af320ea8fdd195406ede8fc80b0337a401977d5",
         "compliance": "0x1c40e4f5d1d646ea6caa3c424f0b7a4f88f9b7b266fb935340c77acbbdbdeff",
         "token": "0x69ea48277f2bf6aeed487e3bb3a15f7d1e08e69264e3590cdb5b407bf060e95",
         "name": "Bridged Gold",
         "symbol": "bXAU",
-        "pool": "0x6666b9bbf5f51d831c1939ee4b4d6628358725516d181756ffdbfa726abc0aa"
+        "pool": "0x6666b9bbf5f51d831c1939ee4b4d6628358725516d181756ffdbfa726abc0aa",
+        "previousGateways": [
+          "0x1c88e111c19cc4a4c4e38ddb5a3aaf5c2228606f1f8a4cceb2c7439b638b276"
+        ]
       },
       "wired": {
         "peers": true,
@@ -44,12 +47,15 @@
       "starknet": {
         "registry": "0x4490170947af3e7e387808f411403b92a4ac149d096361a5db813159a492702",
         "stalenessWindow": 86400,
-        "gateway": "0x9e37f35156db2ab8b8b9259f89d3d97c3e2c50914197eec3d417f0ac85085a",
+        "gateway": "0x66cd19aea33f6391f57683b3a07efc1cc4a9324b3763fd23c62e31fa0d88bb5",
         "compliance": "0x53806bcc81f2e9f89e33355e5dbf8e77f6e17298b6819da95641161bdc64f06",
         "token": "0x192d44cd471cf60c7061a9ca87626766f18f44abd627c94abb8fe487889b026",
         "name": "Bridged Silver",
         "symbol": "bXAG",
-        "pool": "0x6666b9bbf5f51d831c1939ee4b4d6628358725516d181756ffdbfa726abc0aa"
+        "pool": "0x6666b9bbf5f51d831c1939ee4b4d6628358725516d181756ffdbfa726abc0aa",
+        "previousGateways": [
+          "0x9e37f35156db2ab8b8b9259f89d3d97c3e2c50914197eec3d417f0ac85085a"
+        ]
       },
       "wired": {
         "peers": true,
@@ -75,12 +81,15 @@
       "starknet": {
         "registry": "0x10faa9192b2e947db03ac92b841a3f4ac9442bcbb21326ec92b56a37de31b18",
         "stalenessWindow": 86400,
-        "gateway": "0x56321b8993a2e84f1980b4e5a3d7605bd6e930b35c262b9a1c7fdf1adf79749",
+        "gateway": "0x9b9f4ad7ccbb99abc1c6e7334351912db6f5e7546f5e54d89aeae327ae8720",
         "compliance": "0x10aec7c1490aca4aaa44dfc9eca33fd85511fadd8193362b59e5d3fba733d66",
         "token": "0x65446b29129e56a195b72904e0b35bc2cbaca579a8b43512e9f4f7d85e18fbf",
         "name": "Bridged Treasuries",
         "symbol": "bTBILL",
-        "pool": "0x6666b9bbf5f51d831c1939ee4b4d6628358725516d181756ffdbfa726abc0aa"
+        "pool": "0x6666b9bbf5f51d831c1939ee4b4d6628358725516d181756ffdbfa726abc0aa",
+        "previousGateways": [
+          "0x56321b8993a2e84f1980b4e5a3d7605bd6e930b35c262b9a1c7fdf1adf79749"
+        ]
       },
       "wired": {
         "peers": true,
@@ -106,12 +115,15 @@
       "starknet": {
         "registry": "0x645dc3aa13aef695168865c453a629d54556c41738a7e2637fc6af0c6e14ae3",
         "stalenessWindow": 86400,
-        "gateway": "0x12c6ad0dd3b26ea54328aaf1c77b59d1d1f74821053e23a4ec3b81feae0cc56",
+        "gateway": "0x1bbf096cdcda897dc1fa7490b4cc7795df76c86e562abeb10cdba09926139f8",
         "compliance": "0x1edd4a76f0c8eb9b8029f62a5eebf00b003391b8eb61d0be7806d6b620f857e",
         "token": "0x2348eba3fcf733f8787b97326211cea231d5270af3ef86aba30ca4efcd8066e",
         "name": "Bridged Credit",
         "symbol": "bCREDIT",
-        "pool": "0x6666b9bbf5f51d831c1939ee4b4d6628358725516d181756ffdbfa726abc0aa"
+        "pool": "0x6666b9bbf5f51d831c1939ee4b4d6628358725516d181756ffdbfa726abc0aa",
+        "previousGateways": [
+          "0x12c6ad0dd3b26ea54328aaf1c77b59d1d1f74821053e23a4ec3b81feae0cc56"
+        ]
       },
       "wired": {
         "peers": true,
@@ -137,12 +149,15 @@
       "starknet": {
         "registry": "0x6fdb1e34f82ffa21f65ebf0a05d4da1a540c5e61d2b5c898132e7270b709efe",
         "stalenessWindow": 86400,
-        "gateway": "0x709bd101d5d315e6fcb4cac47e1d2e8e8bdb5ae875b58166435fd61d8fb412f",
+        "gateway": "0x29b878446d95f1439ef4664e13268242e439e1777035ee72ccf3a65968555f",
         "compliance": "0x28c1ff6f99aceae283c67adb9616fe67f94cc086215e1f55d4b512423e35c23",
         "token": "0x9cc14e5789bf98503e36e7989b9d3b89c3aa0705db71723550101d6e8aa88a",
         "name": "Bridged Estate",
         "symbol": "bESTATE",
-        "pool": "0x6666b9bbf5f51d831c1939ee4b4d6628358725516d181756ffdbfa726abc0aa"
+        "pool": "0x6666b9bbf5f51d831c1939ee4b4d6628358725516d181756ffdbfa726abc0aa",
+        "previousGateways": [
+          "0x709bd101d5d315e6fcb4cac47e1d2e8e8bdb5ae875b58166435fd61d8fb412f"
+        ]
       },
       "wired": {
         "peers": true,
@@ -492,7 +507,7 @@
   },
   "classes": {
     "VeilMirroredRegistry": "0x20587df003f259d1751e3891a110672ca862a66718ddaef93ac379ed4d72fde",
-    "VeilBridgeGateway": "0x645d15c2451f68e3c9e19420c85a844aef39e930a69959c84c070058a80892b",
+    "VeilBridgeGateway": "0x2b7a039d03d036d1672c630c19844a91a0aacfa18e2d30796cae30413d66b1a",
     "MirroredCompliance": "0x6ce29f70bb1f481bd2c560bbaf1f44c841595163c1a278628ca2dc359d8d72f",
     "VeilBridgedERC3643": "0x29be37b1555de8614942263774031585da26038bc7fa680faffca585014e94f",
     "MirroredTransferRules": "0x4eb7642000918192cdf79ed44f8aec7f19f44bb7d6c962a54a53847c2ae0036",
