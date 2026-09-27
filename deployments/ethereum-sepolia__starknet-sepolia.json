@@ -18,7 +18,7 @@
         "token": "0x69ea48277f2bf6aeed487e3bb3a15f7d1e08e69264e3590cdb5b407bf060e95",
         "name": "Bridged Gold",
         "symbol": "bXAU",
-        "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3"
+        "pool": "0x6e86ea9821f64d792d6f91aaeeea1531f571c7f123abb3bb8c6111ade2c92d2"
       },
       "wired": {
         "peers": true,
@@ -49,7 +49,7 @@
         "token": "0x192d44cd471cf60c7061a9ca87626766f18f44abd627c94abb8fe487889b026",
         "name": "Bridged Silver",
         "symbol": "bXAG",
-        "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3"
+        "pool": "0x6e86ea9821f64d792d6f91aaeeea1531f571c7f123abb3bb8c6111ade2c92d2"
       },
       "wired": {
         "peers": true,
@@ -80,7 +80,7 @@
         "token": "0x65446b29129e56a195b72904e0b35bc2cbaca579a8b43512e9f4f7d85e18fbf",
         "name": "Bridged Treasuries",
         "symbol": "bTBILL",
-        "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3"
+        "pool": "0x6e86ea9821f64d792d6f91aaeeea1531f571c7f123abb3bb8c6111ade2c92d2"
       },
       "wired": {
         "peers": true,
@@ -111,7 +111,7 @@
         "token": "0x2348eba3fcf733f8787b97326211cea231d5270af3ef86aba30ca4efcd8066e",
         "name": "Bridged Credit",
         "symbol": "bCREDIT",
-        "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3"
+        "pool": "0x6e86ea9821f64d792d6f91aaeeea1531f571c7f123abb3bb8c6111ade2c92d2"
       },
       "wired": {
         "peers": true,
@@ -142,7 +142,7 @@
         "token": "0x9cc14e5789bf98503e36e7989b9d3b89c3aa0705db71723550101d6e8aa88a",
         "name": "Bridged Estate",
         "symbol": "bESTATE",
-        "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3"
+        "pool": "0x6e86ea9821f64d792d6f91aaeeea1531f571c7f123abb3bb8c6111ade2c92d2"
       },
       "wired": {
         "peers": true,
@@ -175,7 +175,7 @@
         "token": "0x73cf1dc82ed7b5b6e2d114bad71c6317ba111820f4a1488a21c1ec0c82b6040",
         "name": "Bridged DMF",
         "symbol": "bDMF",
-        "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3"
+        "pool": "0x6e86ea9821f64d792d6f91aaeeea1531f571c7f123abb3bb8c6111ade2c92d2"
       },
       "wired": {
         "peers": true,
@@ -222,7 +222,7 @@
         "token": "0x57c8ae3c13f8c506b4ab1764cce020d42e26adadeb0112f4f4174effe69577a",
         "name": "Bridged GRO",
         "symbol": "bGRO",
-        "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3"
+        "pool": "0x6e86ea9821f64d792d6f91aaeeea1531f571c7f123abb3bb8c6111ade2c92d2"
       },
       "wired": {
         "peers": true,
@@ -274,7 +274,7 @@
         "symbol": "bTSLAX",
         "rules": "0xf4d5e7b12bf51b110b3e21a276237caa9a14542f22e4bfc682a73077c50846",
         "spenderRule": true,
-        "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3"
+        "pool": "0x6e86ea9821f64d792d6f91aaeeea1531f571c7f123abb3bb8c6111ade2c92d2"
       },
       "wired": {
         "peers": true,
@@ -322,7 +322,7 @@
         "symbol": "bBABAX",
         "rules": "0x7a349cf633947819764784e544d029aa36df11057e5c584afd12d533b037616",
         "spenderRule": true,
-        "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3"
+        "pool": "0x6e86ea9821f64d792d6f91aaeeea1531f571c7f123abb3bb8c6111ade2c92d2"
       },
       "wired": {
         "peers": true,
@@ -401,7 +401,7 @@
         "rules": "0x5eb19a1fda79496ce830d0066500da73965d2ba4ad2d5c756a12d780a66278e",
         "rulesMirror": true,
         "poolBound": true,
-        "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3"
+        "pool": "0x6e86ea9821f64d792d6f91aaeeea1531f571c7f123abb3bb8c6111ade2c92d2"
       },
       "wired": {
         "peers": true,
@@ -469,7 +469,7 @@
         "rules": "0x4dbd45f3a668b979c4c3f0f9fdce44b4ea22aa5e2edd4a8715455215172052a",
         "rulesMirror": true,
         "poolBound": true,
-        "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3"
+        "pool": "0x6e86ea9821f64d792d6f91aaeeea1531f571c7f123abb3bb8c6111ade2c92d2"
       },
       "wired": {
         "peers": true,
@@ -501,16 +501,17 @@
     "VeilCashExit": "0x1fc2f5d76be5d3d680d730d58767e48ae377d57a7aa7796f22441610f2ea1ec"
   },
   "veil": {
-    "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3",
-    "factory": "0x462126c275889892df53f5902c4db2a9c90333414ab3f1660b3bb2b3b154541",
+    "pool": "0x6e86ea9821f64d792d6f91aaeeea1531f571c7f123abb3bb8c6111ade2c92d2",
+    "factory": "0x3a571e24822507d8c3131cf2b74accdea94feecc758dc963b962308cdae308a",
     "proverEndpoint": "https://pd69khdynb.execute-api.us-east-1.amazonaws.com",
-    "masterAddress": "0x07f69F195543eE9Bc33E3Fb1BF4609e96d49a7Cc9e22A136eD4A3F80570C7121"
+    "masterAddress": "0x07f69F195543eE9Bc33E3Fb1BF4609e96d49a7Cc9e22A136eD4A3F80570C7121",
+    "previousPool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3"
   },
   "etoken": {
     "accesslist": "0x4aab327A7A5B92a37E344241fBC7a6784E805d48"
   },
   "cash": {
-    "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3",
+    "pool": "0x6e86ea9821f64d792d6f91aaeeea1531f571c7f123abb3bb8c6111ade2c92d2",
     "usdc": "0x0512feAc6339Ff7889822cb5aA2a86C848e9D392bB0E3E237C008674feeD8343",
     "tokenMessenger": "0x04bDdE1E09a4B09a2F95d893D94a967b7717eB85A3f6dEcA8c080Ee01fBc3370",
     "messageTransmitter": "0x04db7926C64f1f32a840F3Fa95cB551f3801a3600Bae87aF87807A54DCE12Fe8",
@@ -522,7 +523,14 @@
       "messageTransmitter": "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275"
     },
     "rules": "0x3483327adfd6d27a9a057d1fba5d5e9cce5985db849e8514f47a1f09a6155aa",
-    "vault": "0x173fd94b5af4b27014b08d5c7f61c4642d9828af68cab762d725f22cff8cce6",
-    "exit": "0x3c0fee756b615421f13c8431a3087b83e43851502d5feb25ec56dea3a4451e7"
+    "previous": [
+      {
+        "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3",
+        "vault": "0x173fd94b5af4b27014b08d5c7f61c4642d9828af68cab762d725f22cff8cce6",
+        "exit": "0x3c0fee756b615421f13c8431a3087b83e43851502d5feb25ec56dea3a4451e7"
+      }
+    ],
+    "vault": "0x3d35b50d5108b7335882053a11c5f9c5531b26a976d86c4e2ce17f54dcba6e2",
+    "exit": "0x422ed01a860be13e7005514e263075e90ac20f6941612f065ec617af31cb2be"
   }
 }

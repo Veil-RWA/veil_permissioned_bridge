@@ -80,8 +80,13 @@ async function main() {
   const pool = args.pool || deployment.veil?.pool || veil(args.starknet).pool;
   if (!pool) throw new Error('no Veil pool: pass --pool');
   const cash = (deployment.cash = deployment.cash || {});
+  // The vault and the exit are bound to one pool; the rules read only the token.
+  // Moving to another pool keeps the rules and redeploys the other two.
   if (cash.pool && BigInt(cash.pool) !== BigInt(pool)) {
-    throw new Error(`deployment already has a cash leg for pool ${cash.pool}; this run names ${pool}`);
+    cash.previous = [...(cash.previous ?? []), { pool: cash.pool, vault: cash.vault, exit: cash.exit }];
+    delete cash.vault;
+    delete cash.exit;
+    console.log(`moving the cash leg from pool ${cash.pool}`);
   }
   Object.assign(cash, {
     pool,
