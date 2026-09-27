@@ -502,7 +502,9 @@
   },
   "veil": {
     "pool": "0x3d1e717b761ea66b915669b4990568c3d77ed3179cab997d2b77ccccc5182b3",
-    "factory": "0x462126c275889892df53f5902c4db2a9c90333414ab3f1660b3bb2b3b154541"
+    "factory": "0x462126c275889892df53f5902c4db2a9c90333414ab3f1660b3bb2b3b154541",
+    "proverEndpoint": "https://pd69khdynb.execute-api.us-east-1.amazonaws.com",
+    "masterAddress": "0x07f69F195543eE9Bc33E3Fb1BF4609e96d49a7Cc9e22A136eD4A3F80570C7121"
   },
   "etoken": {
     "accesslist": "0x4aab327A7A5B92a37E344241fBC7a6784E805d48"
