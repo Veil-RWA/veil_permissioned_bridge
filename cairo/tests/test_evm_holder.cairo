@@ -112,9 +112,11 @@ fn setup() -> Env {
     stop_cheat_caller_address(gateway);
 
     let p = IVeilERC3643Dispatcher { contract_address: pool };
+    let verifier = *declare("VeilEvmVerifier").unwrap().contract_class().class_hash;
     start_cheat_caller_address(pool, owner());
     p.add_token(token, registry, 0.try_into().unwrap());
     p.set_adapter_allowed(gateway, true);
+    p.set_evm_verifier(verifier);
     stop_cheat_caller_address(pool);
 
     let e = IMockEndpointExtDispatcher { contract_address: endpoint };

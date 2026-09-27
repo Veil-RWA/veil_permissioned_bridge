@@ -75,7 +75,7 @@ async function main() {
   if ((await call(pool, 'get_auditor_public_key'))[0] !== auditor) throw new Error('auditor key differs from the old pool');
 
   // ---- 2. the old pool's setup, replicated ------------------------------
-  step(2, 3, 'tokens and adapters, as the old pool has them');
+  step(2, 4, 'tokens and adapters, as the old pool has them');
   const names = ['TokenAllowed', 'AllowlistTokenAllowed', 'RulesTokenAllowed', 'AdapterSet'];
   const sel = Object.fromEntries(names.map((n) => [BigInt(hash.getSelectorFromName(n)), n]));
   const tokens = new Set();
@@ -155,6 +155,17 @@ async function main() {
     done('already', open ? 'open' : 'closed');
   } else {
     await run('set', [{ contractAddress: pool, entrypoint: 'set_direct_access', calldata: [open ? '1' : '0'] }]);
+  }
+
+  // The class that checks EVM wallet signatures (set-pool-class.js declared it).
+  const verifier = args['evm-verifier'] ?? d.veil?.evmVerifierClass;
+  if (verifier) {
+    step(4, 4, 'EVM wallet signature check (set_evm_verifier)');
+    if ((await call(pool, 'get_evm_verifier'))[0] === BigInt(verifier)) {
+      done('already', verifier);
+    } else {
+      await run('set', [{ contractAddress: pool, entrypoint: 'set_evm_verifier', calldata: [verifier] }]);
+    }
   }
 
   d.veil = { ...(d.veil ?? {}), previousPool: oldPool, pool, factory: args.factory };
