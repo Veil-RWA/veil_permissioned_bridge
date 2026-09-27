@@ -46,8 +46,8 @@ const NOTE: felt252 = 0xBEEF;
 const NOTE_B: felt252 = 0xCAFE;
 
 fn owner() -> ContractAddress { 1000.try_into().unwrap() }
-fn alice() -> ContractAddress { 101.try_into().unwrap() }
-fn entity() -> ContractAddress { 202.try_into().unwrap() }
+fn alice() -> ContractAddress { 0x100000000000000000000000000000000000000000000000065.try_into().unwrap() }
+fn entity() -> ContractAddress { 0x1000000000000000000000000000000000000000000000000ca.try_into().unwrap() }
 fn evm_alice() -> felt252 { 0xA11CE }
 fn peer() -> Bytes32 { Bytes32 { value: 0xDEADBEEF } }
 fn amt(n: u128) -> u256 { u256 { low: n, high: 0 } }

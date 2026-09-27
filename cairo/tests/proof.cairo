@@ -5,15 +5,21 @@
 // committing to exactly that message before the settle.
 
 use core::ec::{EcPointTrait, EcStateTrait, stark_curve};
+use core::integer::u128_byte_reverse;
+use core::keccak::compute_keccak_byte_array;
 use core::poseidon::poseidon_hash_span;
 use snforge_std::signature::KeyPairTrait;
+use snforge_std::signature::secp256k1_curve::{Secp256k1CurveKeyPairImpl, Secp256k1CurveSignerImpl};
 use snforge_std::signature::stark_curve::{StarkCurveKeyPairImpl, StarkCurveSignerImpl};
+use starknet::eth_signature::public_key_point_to_eth_address;
+use starknet::secp256_trait::{Secp256PointTrait, Secp256Trait, Signature, recover_public_key};
+use starknet::secp256k1::Secp256k1Point;
 use snforge_std::{
     ContractClassTrait, DeclareResultTrait, MessageToL1, MessageToL1Spy, MessageToL1SpyTrait,
     declare, get_class_hash, spy_messages_to_l1, start_cheat_block_number_global,
     start_cheat_proof_facts_global, start_cheat_resource_bounds_global, start_cheat_tip_global,
 };
-use starknet::{ContractAddress, ResourcesBounds};
+use starknet::{ContractAddress, EthAddress, ResourcesBounds, SyscallResultTrait};
 use veil::interfaces::IVeilERC3643::{
     DepositNote, IVeilERC3643Dispatcher, IVeilERC3643DispatcherTrait, InvokeSwap, MakerOpening,
     OpenNoteOpening,
@@ -97,8 +103,64 @@ pub fn ensure_account(who: ContractAddress) {
     class.deploy_at(@array![public_key_of(who)], who).unwrap();
 }
 
-/// `who`'s STARK signature over `hash`.
+// ── The EVM wallet holder ────────────────────────────────────────────────────
+// A holder with no Starknet account: its 20-byte address, signing with its
+// secp256k1 key (`personal_sign`). `sign` signs for it that way, so every
+// helper below drives it unchanged.
+
+pub const EVM_HOLDER_SECRET: u256 = 0xe5a1;
+
+/// The Ethereum address of the secp256k1 key `secret`.
+pub fn evm_address_of(secret: u256) -> ContractAddress {
+    let key = KeyPairTrait::<u256, Secp256k1Point>::from_secret_key(secret).public_key;
+    let address: EthAddress = public_key_point_to_eth_address(key);
+    let address: felt252 = address.into();
+    address.try_into().unwrap()
+}
+
+pub fn evm_holder() -> ContractAddress {
+    evm_address_of(EVM_HOLDER_SECRET)
+}
+
+/// `personal_sign` of `hash` by `secret`, as [r.low, r.high, s.low, s.high,
+/// y_parity], low-s as wallets emit it.
+pub fn evm_personal_sign(secret: u256, hash: felt252) -> Array<felt252> {
+    let mut msg: ByteArray = "";
+    msg.append_byte(0x19);
+    msg.append(@"Ethereum Signed Message:");
+    msg.append_byte(0x0a);
+    msg.append(@"32");
+    let h: u256 = hash.into();
+    msg.append_word(h.high.into(), 16);
+    msg.append_word(h.low.into(), 16);
+    let le = compute_keccak_byte_array(@msg);
+    let digest = u256 { low: u128_byte_reverse(le.high), high: u128_byte_reverse(le.low) };
+    let key = KeyPairTrait::<u256, Secp256k1Point>::from_secret_key(secret);
+    let (r, s) = key.sign(digest).unwrap();
+    let n = Secp256Trait::<Secp256k1Point>::get_curve_size();
+    let s = if s > n / 2 {
+        n - s
+    } else {
+        s
+    };
+    let (x, y) = key.public_key.get_coordinates().unwrap_syscall();
+    let even = recover_public_key::<Secp256k1Point>(digest, Signature { r, s, y_parity: false })
+        .unwrap();
+    let (ex, ey) = even.get_coordinates().unwrap_syscall();
+    let parity = if ex == x && ey == y {
+        0
+    } else {
+        1
+    };
+    array![r.low.into(), r.high.into(), s.low.into(), s.high.into(), parity]
+}
+
+/// `who`'s signature over `hash`: the EVM holder's `personal_sign`, or a
+/// Starknet account's STARK signature.
 pub fn sign(who: ContractAddress, hash: felt252) -> Array<felt252> {
+    if who == evm_holder() {
+        return evm_personal_sign(EVM_HOLDER_SECRET, hash);
+    }
     ensure_account(who);
     let (r, s) = KeyPairTrait::<felt252, felt252>::from_secret_key(secret_of(who))
         .sign(hash)

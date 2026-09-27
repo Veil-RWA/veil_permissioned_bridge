@@ -41,8 +41,8 @@ const NOTE: felt252 = 0xBEEF;
 const OTHER_NOTE: felt252 = 0xF00D;
 
 fn owner() -> ContractAddress { 1000.try_into().unwrap() }
-fn alice() -> ContractAddress { 101.try_into().unwrap() }
-fn mallory() -> ContractAddress { 666.try_into().unwrap() }
+fn alice() -> ContractAddress { 0x100000000000000000000000000000000000000000000000065.try_into().unwrap() }
+fn mallory() -> ContractAddress { 0x10000000000000000000000000000000000000000000000029a.try_into().unwrap() }
 fn evm_alice() -> felt252 { 0xA11CE }
 fn evm_mallory() -> felt252 { 0xBAD }
 fn peer() -> Bytes32 { Bytes32 { value: 0xDEADBEEF } }
