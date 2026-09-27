@@ -216,6 +216,13 @@ adapters (`set_adapter_allowed`), and the exit may hold USDC for the instant of
 an invoke. Tests: `cairo/tests/test_cash.cairo` (against the real
 `VeilERC3643`, with Circle's contracts mocked) and `evm/test/cash.test.js`.
 
+Moving to a new pool: `scripts/migrate-pool.js --factory <factory>` creates it
+with the old pool's auditor key, copies the old pool's token listings and
+adapters (read from its own events and getters), points every gateway at it and
+admits it as a holder in every mirrored registry. `deploy-cash.js` then keeps
+the rules and redeploys the vault and the exit, which are bound to one pool.
+Notes held in the old pool stay there.
+
 ## The three problems a naive mirror gets wrong
 
 **Address gap.** The EVM registry judges an EVM address; the holder on Starknet
