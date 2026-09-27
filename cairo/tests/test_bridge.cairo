@@ -58,19 +58,19 @@ fn owner() -> ContractAddress {
     1000.try_into().unwrap()
 }
 fn alice() -> ContractAddress {
-    101.try_into().unwrap()
+    0x100000000000000000000000000000000000000000000000065.try_into().unwrap()
 }
 fn bob() -> ContractAddress {
-    202.try_into().unwrap()
+    0x1000000000000000000000000000000000000000000000000ca.try_into().unwrap()
 }
 fn carol() -> ContractAddress {
-    303.try_into().unwrap()
+    0x10000000000000000000000000000000000000000000000012f.try_into().unwrap()
 }
 fn endpoint_addr() -> ContractAddress {
     9999.try_into().unwrap()
 }
 fn mallory() -> ContractAddress {
-    666.try_into().unwrap()
+    0x10000000000000000000000000000000000000000000000029a.try_into().unwrap()
 }
 
 /// EVM identities, as the 20-byte addresses the source registry keys on.

@@ -17,13 +17,35 @@
 // message kind, a truncated payload, a malformed address — do revert, because
 // those are bugs and a stuck retryable message is the right way to surface one.
 //
+// EVM holders. A Veil pool accepts an EVM wallet itself as a note holder (its
+// 20-byte address, no Starknet account; the pool checks its secp256k1
+// signature inside the proof). For such a holder this gateway:
+//   * binds the address to its OWN EVM identity whenever that identity's
+//     snapshot arrives (a `syncCompliance` or a bridge-out it sent), so it is
+//     eligible without ever linking a Starknet wallet, and never binds it to a
+//     different sender's identity;
+//   * takes the holder's own bridge-out naming a note as its claim on that
+//     note (the claim `register_note` makes for a Starknet wallet), or a claim
+//     it signed (`register_note_evm`);
+//   * is the adapter of the way back: a proven pool `invoke` pays the twin here
+//     and `privacy_invoke` burns it and asks the lockbox to release it, paying
+//     LayerZero from this gateway's own balance, since the holder has no
+//     Starknet account to pay from.
+//
 // Replay is the endpoint's job: it executes each (src_eid, sender, nonce) at
 // most once, so this contract keeps no nonce bookkeeping of its own. Ordering
 // is not the endpoint's job in unordered mode, which is why every compliance
 // record carries its own `seq` and the mirror drops anything out of date.
 
 use starknet::ContractAddress;
+use super::cash_cctp::OpenNoteDeposit;
 use super::lz::{Bytes32, MessagingFee};
+
+/// An EVM address: 20 bytes.
+pub const EVM_ADDRESS_BOUND: u256 = 0x10000000000000000000000000000000000000000;
+/// What an exit hands back into the invoke's open note: a pool invoke must
+/// return a non-zero deposit.
+pub const EXIT_CHANGE: u128 = 1;
 
 #[starknet::interface]
 pub trait IVeilBridgeGateway<TContractState> {
@@ -88,6 +110,37 @@ pub trait IVeilBridgeGateway<TContractState> {
     /// and only a transfer addressed to that same owner may fill it.
     fn register_note(ref self: TContractState, note_id: felt252);
     fn note_owner(self: @TContractState, note_id: felt252) -> ContractAddress;
+
+    // ── EVM holders ─────────────────────────────────────────────────────────
+    /// The way back for a holder with no Starknet account. The pool only
+    /// (invoke adapter, selector `privacy_invoke`): a proven `invoke` with
+    /// in = out = this gateway's twin has just paid `amount + 1` here. Burns
+    /// `amount`, asks the lockbox to release it to `evm_recipient`, and hands 1
+    /// unit back into the invoke's open note. The LayerZero fee is paid from
+    /// this gateway's native balance, at most `max_fee`, which the holder signed
+    /// as part of the invoke calldata.
+    fn privacy_invoke(
+        ref self: TContractState,
+        open_note_id: felt252,
+        amount: u128,
+        evm_recipient: felt252,
+        max_fee: u256,
+        gas_limit: u128,
+    ) -> Array<OpenNoteDeposit>;
+    /// `register_note` for an EVM wallet holder: anyone submits the wallet's
+    /// `personal_sign` of `note_claim_hash(note_id)`, as
+    /// [r.low, r.high, s.low, s.high, y_parity].
+    fn register_note_evm(
+        ref self: TContractState,
+        note_id: felt252,
+        owner: ContractAddress,
+        signature: Array<felt252>,
+    );
+    /// What an EVM wallet signs to claim `note_id` on this gateway.
+    fn note_claim_hash(self: @TContractState, note_id: felt252) -> felt252;
+    /// Sends native token (the exit fee float) out. Owner only.
+    fn sweep_native(ref self: TContractState, to: ContractAddress, amount: u256);
+
     fn dst_eid(self: @TContractState) -> u32;
     fn token(self: @TContractState) -> ContractAddress;
     fn registry(self: @TContractState) -> ContractAddress;
@@ -99,13 +152,22 @@ pub trait IVeilBridgeGateway<TContractState> {
 
 #[starknet::contract]
 pub mod VeilBridgeGateway {
+    use core::integer::u128_byte_reverse;
+    use core::keccak::compute_keccak_byte_array;
     use core::num::traits::Zero;
+    use core::poseidon::poseidon_hash_span;
     use openzeppelin_token::erc20::interface::{IERC20Dispatcher, IERC20DispatcherTrait};
+    use starknet::eth_signature::is_eth_signature_valid;
+    use starknet::secp256_trait::Signature;
     use starknet::storage::{
         Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
         StoragePointerWriteAccess,
     };
-    use starknet::{ContractAddress, get_caller_address, get_contract_address};
+    use starknet::syscalls::get_class_hash_at_syscall;
+    use starknet::{
+        ContractAddress, EthAddress, SyscallResultTrait, get_caller_address, get_contract_address,
+        get_tx_info,
+    };
     use super::super::bridged_token::{
         IVeilBridgedERC3643Dispatcher, IVeilBridgedERC3643DispatcherTrait,
     };
@@ -128,7 +190,7 @@ pub mod VeilBridgeGateway {
     // nothing has been spent to reach it, so a revert there is safe and tells
     // the caller what went wrong.
     use super::super::pool::{IVeilPoolDispatcher, IVeilPoolDispatcherTrait};
-    use super::IVeilBridgeGateway;
+    use super::{EVM_ADDRESS_BOUND, EXIT_CHANGE, IVeilBridgeGateway, OpenNoteDeposit};
 
     /// Deliberately carries no source identity. A Map cannot be enumerated, so
     /// storage only answers questions about an address you already have --
@@ -200,6 +262,14 @@ pub mod VeilBridgeGateway {
         pub nonce: u64,
     }
 
+    /// An exit through a pool `invoke`. Carries no account: the holder is
+    /// hidden, and the recipient is in the outgoing message.
+    #[derive(Drop, starknet::Event)]
+    pub struct PrivateBridgeBackSent {
+        pub amount: u256,
+        pub nonce: u64,
+    }
+
     #[derive(Drop, starknet::Event)]
     pub struct PeerSet {
         #[key]
@@ -225,6 +295,7 @@ pub mod VeilBridgeGateway {
         NoteRegistered: NoteRegistered,
         PendingClaimed: PendingClaimed,
         BridgeBackSent: BridgeBackSent,
+        PrivateBridgeBackSent: PrivateBridgeBackSent,
         PeerSet: PeerSet,
         OwnershipTransferred: OwnershipTransferred,
     }
@@ -301,6 +372,7 @@ pub mod VeilBridgeGateway {
                         snapshot.frozen,
                         snapshot.country,
                     );
+                self.bind_evm_holder(snapshot.evm_account);
             } else if message_kind == KIND_GLOBAL {
                 let params = decode_global(@message);
                 self.registry_dispatcher().apply_global(params.seq, params.paused);
@@ -487,6 +559,95 @@ pub mod VeilBridgeGateway {
             self.note_owners.read(note_id)
         }
 
+        fn privacy_invoke(
+            ref self: ContractState,
+            open_note_id: felt252,
+            amount: u128,
+            evm_recipient: felt252,
+            max_fee: u256,
+            gas_limit: u128,
+        ) -> Array<OpenNoteDeposit> {
+            // Only a pool this gateway delivers into: the default one, or one
+            // the factory deployed.
+            let pool = get_caller_address();
+            let (trusted, reason) = self.resolve_pool(pool);
+            assert(reason == 0 && trusted == pool, 'ONLY_POOL');
+            assert(amount != 0, 'ZERO_AMOUNT');
+            let recipient: u256 = evm_recipient.into();
+            assert(recipient != 0 && recipient < EVM_ADDRESS_BOUND, 'BAD_RECIPIENT');
+
+            let token = self.token_dispatcher();
+            let this = get_contract_address();
+            // The pool paid `amount + change` just before this call, in the same
+            // transaction. The holder's own gate (frozen, eligible, the issuer's
+            // transfer rules) was checked inside the proof, and the pool's
+            // payment ran the twin's gate for (pool -> gateway).
+            assert(
+                token.balance_of(this) >= amount.into() + EXIT_CHANGE.into(), 'TWIN_NOT_RECEIVED',
+            );
+            token.bridge_burn(this, amount.into());
+
+            let dst_eid = self.dst_eid.read();
+            let message = encode_unlock(evm_recipient, amount.into());
+            let options = build_lz_receive_options(gas_limit);
+            let fee = IEndpointV2Dispatcher { contract_address: self.endpoint.read() }
+                .quote(
+                    MessagingParams {
+                        dst_eid,
+                        receiver: self.peer_or_revert(dst_eid),
+                        message: message.clone(),
+                        options: options.clone(),
+                        pay_in_lz_token: false,
+                    },
+                    this,
+                );
+            assert(fee.native_fee <= max_fee, 'EXIT_FEE_ABOVE_MAX');
+            let receipt = self.lz_send(this, dst_eid, message, options, fee, this);
+            self.emit(PrivateBridgeBackSent { amount: amount.into(), nonce: receipt.nonce });
+
+            // The change goes back into the invoke's open note; the pool pulls it.
+            token.approve(pool, EXIT_CHANGE.into());
+            array![
+                OpenNoteDeposit {
+                    note_id: open_note_id, token: token.contract_address, amount: EXIT_CHANGE,
+                },
+            ]
+        }
+
+        fn register_note_evm(
+            ref self: ContractState,
+            note_id: felt252,
+            owner: ContractAddress,
+            signature: Array<felt252>,
+        ) {
+            assert(note_id != 0, 'ZERO_NOTE_ID');
+            assert(is_evm_wallet(owner), 'NOT_AN_EVM_WALLET');
+            assert(
+                is_personal_signature(owner, self.note_claim_hash(note_id), signature.span()),
+                'INVALID_SIGNATURE',
+            );
+            let existing = self.note_owners.read(note_id);
+            assert(existing.is_zero() || existing == owner, 'NOTE_ALREADY_CLAIMED');
+            self.note_owners.write(note_id, owner);
+            self.emit(NoteRegistered { note_id, owner });
+        }
+
+        fn note_claim_hash(self: @ContractState, note_id: felt252) -> felt252 {
+            poseidon_hash_span(
+                array![
+                    'VEIL_NOTE_CLAIM', get_tx_info().unbox().chain_id,
+                    get_contract_address().into(), note_id,
+                ]
+                    .span(),
+            )
+        }
+
+        fn sweep_native(ref self: ContractState, to: ContractAddress, amount: u256) {
+            self.assert_owner();
+            assert(!to.is_zero(), 'ZERO_RECIPIENT');
+            IERC20Dispatcher { contract_address: self.native_token.read() }.transfer(to, amount);
+        }
+
         fn token(self: @ContractState) -> ContractAddress {
             self.token.read()
         }
@@ -558,10 +719,32 @@ pub mod VeilBridgeGateway {
                     decoded.identity.country,
                 );
 
-            let bound = registry.bind(decoded.sn_recipient, decoded.identity.evm_account);
+            // The sender's own EVM address may hold as itself from now on.
+            self.bind_evm_holder(decoded.identity.evm_account);
+
+            // An EVM wallet named as the recipient holds as ITSELF: bound to its
+            // own identity, never to the sender's, or any sender could tie
+            // someone else's wallet to their own eligibility.
+            let recipient = decoded.sn_recipient;
+            let evm_holder = is_evm_wallet(recipient);
+            let identity = if evm_holder {
+                recipient.into()
+            } else {
+                decoded.identity.evm_account
+            };
+            let bound = registry.bind(recipient, identity);
             if !bound {
-                self.quarantine(decoded.sn_recipient, decoded.amount, 'BINDING_CONFLICT');
+                self.quarantine(recipient, decoded.amount, 'BINDING_CONFLICT');
                 return;
+            }
+
+            // An EVM wallet bridging to itself names its note in its own
+            // authenticated bridge-out: the same claim `register_note` makes
+            // from a Starknet wallet, and just as write-once.
+            if evm_holder && identity == decoded.identity.evm_account && decoded.note_id != 0
+                && self.note_owners.read(decoded.note_id).is_zero() {
+                self.note_owners.write(decoded.note_id, recipient);
+                self.emit(NoteRegistered { note_id: decoded.note_id, owner: recipient });
             }
 
             if !self.token_dispatcher().can_bridge_mint(decoded.sn_recipient, decoded.amount) {
@@ -716,6 +899,18 @@ pub mod VeilBridgeGateway {
             self.emit(DeliveredToPool { recipient, note_id, amount });
         }
 
+        /// Binds an EVM address, as a pool holder, to its own identity. Never
+        /// reverts: an address already bound elsewhere keeps its binding.
+        fn bind_evm_holder(ref self: ContractState, evm_account: felt252) {
+            let account: ContractAddress = match evm_account.try_into() {
+                Option::Some(a) => a,
+                Option::None => { return; },
+            };
+            if is_evm_wallet(account) {
+                self.registry_dispatcher().bind(account, evm_account);
+            }
+        }
+
         fn quarantine(
             ref self: ContractState, recipient: ContractAddress, amount: u256, reason: felt252,
         ) {
@@ -769,5 +964,63 @@ pub mod VeilBridgeGateway {
                     refund_address,
                 )
         }
+    }
+
+    /// An EVM wallet as a pool holder: a 160-bit address with no Starknet
+    /// contract at it (a deployed address is a Pedersen hash; landing one on a
+    /// chosen 160-bit value is a 2^160 search).
+    fn is_evm_wallet(account: ContractAddress) -> bool {
+        let a: felt252 = account.into();
+        let a: u256 = a.into();
+        if a == 0 || a >= EVM_ADDRESS_BOUND {
+            return false;
+        }
+        get_class_hash_at_syscall(account).unwrap_syscall().is_zero()
+    }
+
+    /// Whether `signature` = [r.low, r.high, s.low, s.high, y_parity] is
+    /// `wallet`'s `personal_sign` of `hash` (its 32 bytes, big-endian).
+    fn is_personal_signature(
+        wallet: ContractAddress, hash: felt252, signature: Span<felt252>,
+    ) -> bool {
+        if signature.len() != 5 {
+            return false;
+        }
+        let (Some(r_low), Some(r_high), Some(s_low), Some(s_high)) = (
+            (*signature.at(0)).try_into(), (*signature.at(1)).try_into(),
+            (*signature.at(2)).try_into(), (*signature.at(3)).try_into(),
+        ) else {
+            return false;
+        };
+        let parity = *signature.at(4);
+        if parity != 0 && parity != 1 {
+            return false;
+        }
+        let wallet: felt252 = wallet.into();
+        let eth: EthAddress = match wallet.try_into() {
+            Option::Some(a) => a,
+            Option::None => { return false; },
+        };
+        let signature = Signature {
+            r: u256 { low: r_low, high: r_high },
+            s: u256 { low: s_low, high: s_high },
+            y_parity: parity == 1,
+        };
+        is_eth_signature_valid(personal_sign_digest(hash), signature, eth).is_ok()
+    }
+
+    /// keccak256("\x19Ethereum Signed Message:\n32" ‖ hash): what
+    /// `personal_sign` signs for 32 bytes.
+    fn personal_sign_digest(hash: felt252) -> u256 {
+        let mut msg: ByteArray = "";
+        msg.append_byte(0x19);
+        msg.append(@"Ethereum Signed Message:");
+        msg.append_byte(0x0a);
+        msg.append(@"32");
+        let h: u256 = hash.into();
+        msg.append_word(h.high.into(), 16);
+        msg.append_word(h.low.into(), 16);
+        let le = compute_keccak_byte_array(@msg);
+        u256 { low: u128_byte_reverse(le.high), high: u128_byte_reverse(le.low) }
     }
 }

@@ -2,6 +2,7 @@
 // Move the bridge onto a new main Veil pool.
 //
 //   node --env-file=.env migrate-pool.js --factory 0x... [--new-pool 0x...]
+//                                        [--direct-access open|closed]
 //
 //   1. create_pool on `--factory`, with the OLD pool's auditor key (skipped
 //      when --new-pool names one already created);
@@ -12,7 +13,11 @@
 //      and are redeployed with deploy-cash.js;
 //   3. per asset: the gateway delivers into the new pool (set_pool) and
 //      trusts the new factory (set_factory), and the mirrored registry admits
-//      the new pool as a holder with the country it gave the old one.
+//      the new pool as a holder with the country it gave the old one;
+//   4. direct access: a new pool starts with `deposit` / `withdraw` closed (a
+//      bridge pool: value in only through adapter-filled notes, out only
+//      through `invoke`). The main pool operates inside Starknet, so it is
+//      opened unless `--direct-access closed`.
 //
 // Idempotent: every step reads first and skips what is already right. The old
 // pool is recorded as `veil.previousPool`; notes held there stay there.
@@ -50,7 +55,7 @@ async function main() {
   };
 
   // ---- 1. the new pool --------------------------------------------------
-  step(1, 3, 'the new pool');
+  step(1, 4, 'the new pool');
   const auditor = (await call(oldPool, 'get_auditor_public_key'))[0];
   let pool = args['new-pool'] ?? d.veil?.migratingTo;
   if (pool) {
@@ -70,7 +75,7 @@ async function main() {
   if ((await call(pool, 'get_auditor_public_key'))[0] !== auditor) throw new Error('auditor key differs from the old pool');
 
   // ---- 2. the old pool's setup, replicated ------------------------------
-  step(2, 3, 'tokens and adapters, as the old pool has them');
+  step(2, 4, 'tokens and adapters, as the old pool has them');
   const names = ['TokenAllowed', 'AllowlistTokenAllowed', 'RulesTokenAllowed', 'AdapterSet'];
   const sel = Object.fromEntries(names.map((n) => [BigInt(hash.getSelectorFromName(n)), n]));
   const tokens = new Set();
@@ -120,7 +125,7 @@ async function main() {
   await run('adapters', allow);
 
   // ---- 3. every bridge asset delivers into it ---------------------------
-  step(3, 3, 'gateways deliver into the new pool; registries admit it as a holder');
+  step(3, 4, 'gateways deliver into the new pool; registries admit it as a holder');
   const wiring = [];
   for (const [id, slot] of Object.entries(d.assets ?? {})) {
     const sn = slot.starknet ?? {};
@@ -141,6 +146,27 @@ async function main() {
     console.log(`      ${id}`);
   }
   await run('wired', wiring);
+
+  // ---- 4. direct access -------------------------------------------------
+  const open = (args['direct-access'] ?? 'open') !== 'closed';
+  step(4, 4, `direct access ${open ? 'open' : 'closed'} (deposit / withdraw)`);
+  const enabled = (await call(pool, 'is_direct_access_enabled'))[0] === 1n;
+  if (enabled === open) {
+    done('already', open ? 'open' : 'closed');
+  } else {
+    await run('set', [{ contractAddress: pool, entrypoint: 'set_direct_access', calldata: [open ? '1' : '0'] }]);
+  }
+
+  // The class that checks EVM wallet signatures (set-pool-class.js declared it).
+  const verifier = args['evm-verifier'] ?? d.veil?.evmVerifierClass;
+  if (verifier) {
+    step(4, 4, 'EVM wallet signature check (set_evm_verifier)');
+    if ((await call(pool, 'get_evm_verifier'))[0] === BigInt(verifier)) {
+      done('already', verifier);
+    } else {
+      await run('set', [{ contractAddress: pool, entrypoint: 'set_evm_verifier', calldata: [verifier] }]);
+    }
+  }
 
   d.veil = { ...(d.veil ?? {}), previousPool: oldPool, pool, factory: args.factory };
   delete d.veil.migratingTo;
