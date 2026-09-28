@@ -760,15 +760,22 @@ async function refreshHistoryStatus(): Promise<void> {
   if (state.view === 'history') render();
 }
 
+/// The wallet History last looked up, so a wallet connecting (or restoring)
+/// while History is open is looked up at once, not on the next tick.
+let historyWallet: string | undefined;
+
 /// While History is open, keep its statuses current.
 function watchHistory(): void {
   if (state.view !== 'history') {
     if (historyTimer !== undefined) { window.clearInterval(historyTimer); historyTimer = undefined; }
+    historyWallet = undefined;
     return;
   }
-  if (historyTimer !== undefined) return;
+  const wallet = state.evmSession?.address.toLowerCase();
+  if (historyTimer !== undefined && wallet === historyWallet) return;
+  historyWallet = wallet;
   void refreshHistoryStatus();
-  historyTimer = window.setInterval(() => void refreshHistoryStatus(), 20000);
+  if (historyTimer === undefined) historyTimer = window.setInterval(() => void refreshHistoryStatus(), 20000);
 }
 
 // -------------------------------------------------------------------- render
