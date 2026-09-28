@@ -21,6 +21,8 @@ const LOCKBOX_ABI = [
   'function claimable(address) view returns (uint256)',
   'function claim(address recipient) returns (uint256)',
   'function allowlist() view returns (address)',
+  'function role() view returns (bytes32)',
+  'function rules() view returns (address)',
   'function unitsOf(uint256 tokens) view returns (uint256)',
   'function claimableTokens(address recipient) view returns (uint256)',
   'function quoteSyncCompliance(address account, uint128 gasLimit) view returns (tuple(uint256 nativeFee, uint256 lzTokenFee))',
@@ -33,10 +35,15 @@ const LOCKBOX_ABI = [
   'event BridgedOut(address indexed sender, uint256 amount, uint64 seq, bytes32 guid)',
 ];
 
+/// The issuer's allowlist an allowlisted ERC-20's lockbox reads (OpenZeppelin
+/// AccessControl's shape).
 const ALLOWLIST_ABI = [
-  'function isAllowed(address) view returns (bool)',
-  // SecuritizeIssuerRules only: the investor's country as two ASCII letters.
-  'function countryCode(address) view returns (uint16)',
+  'function hasRole(bytes32 role, address account) view returns (bool)',
+];
+/// The issuer's rules a rule-gated ERC-20's lockbox reads (IVeilRulesSource).
+const RULES_ABI = [
+  'function holderRules(address account) view returns (tuple(bool canHold, bool frozen, bool isInvestor, uint256 locked))',
+  'function paused() view returns (bool)',
 ];
 
 const TOKEN_ABI = [
@@ -345,7 +352,7 @@ export async function evmStatus(asset: Asset, account: string): Promise<EvmStatu
       source.isEligible(account).catch(() => false),
       source.isEligible(lockbox).catch(() => false),
       source.country(account).catch(() => 0),
-      token.isFrozen(account).catch(() => false),
+      (source.isFrozen ?? ((a: string) => token.isFrozen(a)))(account).catch(() => false),
       token.paused().catch(() => token.isPaused()).catch(() => false),
     ]);
 
@@ -355,24 +362,30 @@ export async function evmStatus(asset: Asset, account: string): Promise<EvmStatu
 type EligibilitySource = {
   isEligible: (account: string) => Promise<boolean>;
   country: (account: string) => Promise<number>;
+  /// The issuer's freeze, where it is not the token's own `isFrozen`.
+  isFrozen?: (account: string) => Promise<boolean>;
 };
 
 /// Where this asset's holder eligibility lives on the source chain -- the same
-/// place its lockbox reads. An ERC-3643 token answers from its identity
-/// registry. An allowlisted ERC-20 answers from the issuer's allowlist, which
-/// the lockbox names (so the app asks the lockbox, not the deployment file) and
-/// which keeps no country.
+/// place its lockbox reads, named by the lockbox itself so the app never asks a
+/// contract the bridge does not. An ERC-3643 token answers from its identity
+/// registry; an allowlisted ERC-20 from the issuer's allowlist (no country); a
+/// rule-gated ERC-20 from the issuer's rules adapter (no country).
 async function eligibilitySource(asset: Asset): Promise<EligibilitySource> {
   const addrs = asset.addresses.evm!;
-  if (addrs.kind && addrs.kind !== 'erc3643') {
-    // Every other lockbox reads a list through `isAllowed`: the issuer's
-    // allowlist, or for a Securitize token the adapter over its registry.
-    const lockbox = new Contract(addrs.lockbox!, LOCKBOX_ABI, readProvider);
-    const list = new Contract(await lockbox.allowlist(), ALLOWLIST_ABI, readProvider);
-    const country = addrs.kind === 'securitize'
-      ? async (a: string) => Number(await list.countryCode(a))
-      : async () => 0;
-    return { isEligible: (a) => list.isAllowed(a), country };
+  const lockbox = new Contract(addrs.lockbox!, LOCKBOX_ABI, readProvider);
+  if (addrs.kind === 'allowlist') {
+    const [list, role] = await Promise.all([lockbox.allowlist(), lockbox.role()]);
+    const allowlist = new Contract(list, ALLOWLIST_ABI, readProvider);
+    return { isEligible: (a) => allowlist.hasRole(role, a), country: async () => 0 };
+  }
+  if (addrs.kind === 'rules') {
+    const rules = new Contract(await lockbox.rules(), RULES_ABI, readProvider);
+    return {
+      isEligible: async (a) => Boolean((await rules.holderRules(a)).canHold),
+      country: async () => 0,
+      isFrozen: async (a) => Boolean((await rules.holderRules(a)).frozen),
+    };
   }
   const token = new Contract(addrs.token!, TOKEN_ABI, readProvider);
   const registry = new Contract(await token.identityRegistry(), REGISTRY_ABI, readProvider);

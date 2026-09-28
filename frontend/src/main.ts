@@ -154,16 +154,40 @@ const esc = (s: string): string =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 const tint = (a: Asset): string => `linear-gradient(150deg, ${a.tint[0]}, ${a.tint[1]})`;
 const toStarknet = () => state.direction === 'toStarknet';
-/// Whether the selected asset's source eligibility is an issuer allowlist rather
-/// than an ERC-3643 identity registry. Only the wording differs: the gates, the
-/// lockbox and the Starknet side ask the same questions of both.
-const allowlisted = () => {
-  const kind = state.asset.addresses.evm?.kind;
-  return kind === 'allowlist' || kind === 'rules';
-};
+/// Where the selected asset's source eligibility lives: an ERC-3643 identity
+/// registry, an issuer allowlist, or an issuer's rules. Only the wording
+/// differs: the gates, the lockbox and the Starknet side ask the same questions
+/// of each.
+const allowlisted = () => state.asset.addresses.evm?.kind === 'allowlist';
+const ruled = () => state.asset.addresses.evm?.kind === 'rules';
 /// A Securitize DS token: eligibility is its investor registry, the lockbox is
 /// a platform wallet, and the twin counts the token's shares.
 const securitize = () => state.asset.addresses.evm?.kind === 'securitize';
+
+/// The source gate, in the words of the asset's kind.
+function eligibilityWords(): { label: string; refused: string; lockbox: string } {
+  if (allowlisted()) {
+    return {
+      label: "You are on the issuer's allowlist",
+      refused: 'The issuer has not allowlisted this address.',
+      lockbox: 'The issuer must add the lockbox to the allowlist, or the escrow reverts inside the token.',
+    };
+  }
+  if (ruled()) {
+    return {
+      label: `The issuer's rules let you hold ${state.token.symbol}`,
+      refused: "The issuer's rules do not admit this address as a holder.",
+      lockbox: "The issuer's rules must admit the lockbox as a platform wallet, or the escrow reverts inside the token.",
+    };
+  }
+  return {
+    label: 'You are verified on the source registry',
+    refused: 'The issuer has not registered this address.',
+    lockbox: securitize()
+      ? 'The issuer must register the lockbox as a platform wallet, or the escrow reverts inside the token.'
+      : 'The issuer must register the lockbox in the identity registry, or the escrow reverts inside the token.',
+  };
+}
 /// USDC, the cash leg: Circle's CCTP instead of a lockbox, and no twin.
 const cashAsset = () => isCash(state.asset);
 const cashFast = () => (toStarknet() ? state.cashFast.toStarknet : state.cashFast.toEvm);
@@ -194,25 +218,18 @@ function gates(): Gate[] {
   const out: Gate[] = [];
 
   if (toStarknet()) {
+    const words = eligibilityWords();
     out.push({
       ok: s ? s.verified : null,
-      label: allowlisted() ? "You are on the issuer's allowlist" : 'You are verified on the source registry',
-      detail: s && !s.verified
-        ? (allowlisted() ? 'The issuer has not allowlisted this address.' : 'The issuer has not registered this address.')
-        : undefined,
+      label: words.label,
+      detail: s && !s.verified ? words.refused : undefined,
     });
     out.push({ ok: s ? !s.frozen : null, label: 'Your address is not frozen' });
     out.push({ ok: s ? !s.paused : null, label: `${state.token.symbol} is not paused` });
     out.push({
       ok: s ? s.lockboxRegistered : null,
       label: 'The bridge is an approved holder',
-      detail: s && !s.lockboxRegistered
-        ? (securitize()
-          ? 'The issuer must register the lockbox as a platform wallet, or the escrow reverts inside the token.'
-          : allowlisted()
-          ? 'The issuer must add the lockbox to the allowlist, or the escrow reverts inside the token.'
-          : 'The issuer must register the lockbox in the identity registry, or the escrow reverts inside the token.')
-        : undefined,
+      detail: s && !s.lockboxRegistered ? words.lockbox : undefined,
     });
     // Registering the wallet in the pool is not a gate: Bridge does it, with one
     // signature, the first time. Only a wallet the pool already holds under a
@@ -521,8 +538,8 @@ function ctaLabel(): { text: string; disabled: boolean; note: string } {
         note: 'The source chain did not answer. Nothing is sent until it does.',
       };
     }
-    if (s && !s.verified) return { text: 'Not eligible to bridge', disabled: true, note: allowlisted() ? "Your address is not on the issuer's allowlist." : 'Your address is not verified on the source registry.' };
-    if (s && !s.lockboxRegistered) return { text: 'Bridge not approved by issuer', disabled: true, note: allowlisted() ? 'The lockbox must be on the allowlist before any escrow can succeed.' : 'The lockbox must be a registered identity before any escrow can succeed.' };
+    if (s && !s.verified) return { text: 'Not eligible to bridge', disabled: true, note: eligibilityWords().refused };
+    if (s && !s.lockboxRegistered) return { text: 'Bridge not approved by issuer', disabled: true, note: eligibilityWords().lockbox };
     {
       // A pool that does not exist would cost a message and land in the wallet
       // anyway, so it is stopped here rather than discovered on the far side.
@@ -1562,7 +1579,13 @@ async function ensureRulesSynced(): Promise<boolean> {
     state.error = 'The mirrored registry did not answer, so the issuer rules could not be checked. Try again in a moment.';
     return false;
   }
-  if (!status.required || (status.account && status.token)) return true;
+  if (!status.required || (status.account && status.token)) {
+    if (status.required && !status.canHold) {
+      state.error = `The issuer's rules do not let this account hold ${state.token.symbol}.`;
+      return false;
+    }
+    return true;
+  }
 
   let msg = await pendingMessage('rules', asset, source.address);
   if (!msg) {
@@ -1577,7 +1600,8 @@ async function ensureRulesSynced(): Promise<boolean> {
   }
   return waitForMessage(msg!, 'issuer rules update', async () => {
     const now = await sn.rulesFreshness(asset, source.address);
-    return Boolean(now && now.account && now.token);
+    if (!now || !now.account || !now.token) return false;
+    return now.canHold ? true : `The issuer's rules do not let this account hold ${state.token.symbol}.`;
   });
 }
 

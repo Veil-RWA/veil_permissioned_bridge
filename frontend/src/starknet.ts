@@ -10,7 +10,7 @@
 // 0.10.x and v6 speaks 0.7 -- a v6 client cannot talk to the network at all.
 
 import { RpcProvider, CallData, uint256 } from 'starknet';
-import { STARKNET_RPC, RELEASE_GAS_LIMIT, deployment, IS_DEMO } from './config';
+import { STARKNET_RPC, RELEASE_GAS_LIMIT, IS_DEMO } from './config';
 import type { Asset } from './assets';
 
 export const snProvider = new RpcProvider({ nodeUrl: STARKNET_RPC });
@@ -151,28 +151,40 @@ export async function identityFreshness(
   return { verified, fresh: BigInt(fresh[0] ?? 0) === 1n };
 }
 
-/// Whether the mirror holds fresh issuer rules for `evmAccount` and for the
-/// token. `required` is false for an asset whose mirror enforces no rules, and
-/// then the other two do not matter. Undefined when the registry did not answer.
+/// Whether the rules mirror holds fresh issuer rules for `evmAccount` and for
+/// the token, for a rule-gated asset. `required` is false for any other kind,
+/// and then the rest does not matter. `canHold` is what the issuer's fresh
+/// rules say about the holder. Undefined when a contract did not answer.
 export async function rulesFreshness(
   asset: Asset, evmAccount: string
-): Promise<{ required: boolean; account: boolean; token: boolean } | undefined> {
-  // Only a rules lockbox (kinds `rules` and `securitize`) pushes rules. The
-  // mirror of any other asset has none to hold.
-  const kind = asset.addresses.evm?.kind;
-  if (kind !== 'rules' && kind !== 'securitize') {
-    return { required: false, account: true, token: true };
+): Promise<{ required: boolean; account: boolean; token: boolean; canHold: boolean } | undefined> {
+  if (asset.addresses.evm?.kind !== 'rules') {
+    return { required: false, account: true, token: true, canHold: true };
   }
   if (IS_DEMO) return undefined;
-  const registry = asset.addresses.starknet!.registry;
-  const [required, account, token] = await Promise.all([
-    maybeFelts(registry, 'rules_required', []),
-    maybeFelts(registry, 'account_rules_fresh', [BigInt(evmAccount).toString()]),
-    maybeFelts(registry, 'token_rules_fresh', []),
+  const rules = asset.addresses.starknet?.rules;
+  const registry = asset.addresses.starknet?.registry;
+  if (!rules || !registry) return undefined;
+  const [holder, token, window, block] = await Promise.all([
+    // HolderRulesRecord: seq, synced_at, can_hold, frozen, is_investor, locked (u256)
+    maybeFelts(rules, 'holder_rules', [BigInt(evmAccount).toString()]),
+    // TokenRulesRecord: seq, synced_at, transfers_enabled, cap, full, strict, min (u256)
+    maybeFelts(rules, 'token_rules', []),
+    maybeFelts(registry, 'staleness_window', []),
+    snProvider.getBlock('latest').catch(() => undefined),
   ]);
-  if (!required || !account || !token) return undefined;
-  const yes = (f: string[]) => BigInt(f[0] ?? 0) === 1n;
-  return { required: yes(required), account: yes(account), token: yes(token) };
+  if (!holder || !token || !window || !block) return undefined;
+  const now = BigInt((block as { timestamp: number | string }).timestamp);
+  const w = BigInt(window[0] ?? 0);
+  const fresh = (seq: string | undefined, at: string | undefined) =>
+    BigInt(seq ?? 0) !== 0n && (w === 0n || now <= BigInt(at ?? 0) + w);
+  const account = fresh(holder[0], holder[1]);
+  return {
+    required: true,
+    account,
+    token: fresh(token[0], token[1]),
+    canHold: account && BigInt(holder[2] ?? 0) === 1n && BigInt(holder[3] ?? 0) === 0n,
+  };
 }
 
 export async function twinSupply(asset: Asset): Promise<bigint> {
@@ -192,29 +204,26 @@ export async function quoteBridgeBack(
   return u256(felts);
 }
 
-/// Does this asset's gateway take EVM wallets as holders? Only a gateway on the
-/// current class does: it binds an EVM wallet to its own identity, lets a
-/// wallet's own bridge-in claim its note, and carries the private way back
-/// (`privacy_invoke`). One on an older class needs a Starknet account for all
-/// three, so the app cannot use it. Undefined when the gateway did not answer.
-const gatewayClass = new Map<string, Promise<string | undefined>>();
+/// Does this asset's gateway take EVM wallets as holders? A gateway whose class
+/// has the private way back (`privacy_invoke`) does: it binds an EVM wallet to
+/// its own identity, lets a wallet's own bridge-in claim its note, and burns on
+/// a proven pool invoke. One on an older class needs a Starknet account for all
+/// three, so the app cannot use it. Asked of the class itself, once per class,
+/// so any later gateway class that keeps the entrypoint keeps working.
+/// Undefined when the gateway did not answer.
+const classAnswers = new Map<string, Promise<boolean | undefined>>();
 
 export async function supportsEvmHolders(asset: Asset): Promise<boolean | undefined> {
   const gateway = asset.addresses.starknet?.gateway;
   if (!gateway || IS_DEMO) return undefined;
-  if (!gatewayClass.has(gateway)) {
-    gatewayClass.set(gateway, snProvider.getClassHashAt(gateway).then((h) => String(h)).catch(() => undefined));
-  }
-  const hash = await gatewayClass.get(gateway)!;
+  const hash = await snProvider.getClassHashAt(gateway).then((h) => String(h)).catch(() => undefined);
   if (hash === undefined) return undefined;
-  const current = deployment.classes?.VeilBridgeGateway;
-  if (current) return BigInt(hash) === BigInt(current);
-  // No class recorded: ask the class itself.
-  try {
-    const cls: any = await snProvider.getClass(hash);
-    const abi = typeof cls.abi === 'string' ? JSON.parse(cls.abi) : cls.abi;
-    return JSON.stringify(abi).includes('"privacy_invoke"');
-  } catch {
-    return undefined;
+  const key = BigInt(hash).toString(16);
+  if (!classAnswers.has(key)) {
+    classAnswers.set(key, snProvider.getClass(hash).then((cls: any) => {
+      const abi = typeof cls.abi === 'string' ? JSON.parse(cls.abi) : cls.abi;
+      return JSON.stringify(abi).includes('"privacy_invoke"');
+    }).catch(() => undefined));
   }
+  return classAnswers.get(key)!;
 }

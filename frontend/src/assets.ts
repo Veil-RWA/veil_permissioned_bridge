@@ -49,7 +49,8 @@ export type AssetAddresses = {
   };
   starknet?: {
     token?: string; gateway?: string; registry?: string; compliance?: string; pool?: string;
-    /// MirroredTransferRules: what the Veil pool reads for an allowlisted twin.
+    /// A rule-gated asset's rules mirror (VeilMirroredRules): what the Veil
+    /// pool reads for its twin.
     rules?: string;
   };
 };
@@ -162,6 +163,22 @@ export const CATALOGUE: AssetMeta[] = [
   },
   // The cash leg. Circle's USDC, not an issuer asset: it moves over CCTP into
   // the same Veil pool as the instruments, so both legs of a DvP settle there.
+  {
+    id: 'mmf',
+    symbol: 'MMF',
+    name: 'Money market fund (allowlisted)',
+    category: 'Treasury',
+    decimals: 18,
+    tint: ['#cfe8d8', '#3f8f63'],
+  },
+  {
+    id: 'pef',
+    symbol: 'PEF',
+    name: 'Private equity fund (rule-gated)',
+    category: 'Equity',
+    decimals: 18,
+    tint: ['#e6d3f5', '#8a4fc4'],
+  },
   {
     id: 'usdc',
     symbol: 'USDC',
