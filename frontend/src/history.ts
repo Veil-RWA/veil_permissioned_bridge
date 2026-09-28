@@ -52,8 +52,9 @@ function save(items: Transfer[]): void {
   } catch { /* nothing we can do, and nothing depends on it */ }
 }
 
-export function record(t: Omit<Transfer, 'id' | 'at'>): Transfer {
-  const item: Transfer = { ...t, id: `${t.hash}:${Date.now()}`, at: Date.now() };
+/// `at` is when it was sent: now, unless it is being logged after the fact.
+export function record(t: Omit<Transfer, 'id' | 'at'>, at = Date.now()): Transfer {
+  const item: Transfer = { ...t, id: `${t.hash}:${Date.now()}`, at };
   save([item, ...load()]);
   return item;
 }

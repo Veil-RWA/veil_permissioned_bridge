@@ -707,11 +707,15 @@ function pill(t: Transfer): string {
 }
 
 function historyView(): string {
-  const items = loadHistory();
+  const items = loadHistory().sort((a, b) => b.at - a.at);
+  // Messages sent from another device, or before this browser logged them, are
+  // found through the wallet -- so without one, say so rather than look empty.
+  const connectHint = state.evmSession ? '' : `<p class="history-hint">Connect your wallet to also see its
+    updates and transfers still on their way, wherever they were sent from.</p>`;
   if (!items.length) {
     return `<div class="history"><div class="history-empty">
       <p style="margin:0 0 6px;font-weight:600;color:var(--ink)">No transfers yet</p>
-      <p style="margin:0">Bridged transfers from this browser will appear here.</p></div></div>`;
+      <p style="margin:0">Bridged transfers from this browser will appear here.</p>${connectHint}</div></div>`;
   }
   const rows = items.map((t: Transfer) => {
     const kind = t.kind ?? 'transfer';
@@ -735,7 +739,7 @@ function historyView(): string {
         <a href="${explorer}/tx/${esc(t.hash)}" target="_blank" rel="noreferrer">tx</a>${lzLink}
       </div>${where}</div>`;
   }).join('');
-  return `<div class="history">${rows}</div>`;
+  return `<div class="history">${connectHint}${rows}</div>`;
 }
 
 /// Ask LayerZero where every message still on its way is. A message logged
@@ -1440,10 +1444,11 @@ async function adoptInFlight(address: string): Promise<void> {
     const kind = (Object.keys(MESSAGE_KINDS) as Exclude<Kind, 'transfer'>[])
       .find((k) => MESSAGE_KINDS[k].includes(m.kind));
     if (!asset || !kind) continue;
+    // Logged when LayerZero first saw it, not now: it was sent earlier.
     record({
       kind, direction: 'toStarknet', asset: asset.id, symbol: asset.symbol,
       amount: '', recipient: address, hash: m.hash, status: 'sent',
-    });
+    }, m.status.since);
     lzSeen.set(m.hash, m.status);
   }
 }

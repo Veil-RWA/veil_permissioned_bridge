@@ -330,6 +330,7 @@ a { color: inherit; }
 .row-lz.delivering, .row-lz.verifying, .row-lz.confirming { color: var(--warn); }
 .row-lz.failed { color: var(--bad); }
 .row-lz-raw { display: block; font-size: 11.5px; color: var(--faint); font-family: var(--mono); }
+.history-hint { margin: 0 0 10px; font-size: 12.5px; color: var(--dim); }
 
 /* -------------------------------------------------------- assurances */
 
