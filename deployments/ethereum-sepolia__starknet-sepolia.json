@@ -499,6 +499,54 @@
           "starknetConfirmations": "1"
         }
       }
+    },
+    "mmf": {
+      "evm": {
+        "kind": "allowlist",
+        "owner": "0x878ffCF3351C6596Bd75355E00319AB5Fcf1c639",
+        "allowlist": "0xB1B9C70381D93e72CD98cC2c61814a6887002891",
+        "role": "0x8429d542926e6695b59ac6fbdcd9b37e8b1aeb757afab06ab60b1bb5878c3b49",
+        "token": "0xeB1513e10a16900ceeB1399A76a45eF44e781EC4",
+        "faucet": "0xeB1513e10a16900ceeB1399A76a45eF44e781EC4",
+        "lockbox": "0x593926cb72d3ca98A5e98Fe97517539b3740949F"
+      },
+      "starknet": {
+        "registry": "0x2b5be89c51ac915a09f870e2c6219f989c4a8b8763d7bb7559451f4ef082574",
+        "stalenessWindow": 86400,
+        "gateway": "0x3e099f9ac01ae8036a1d250360322a2008ff63cc3eba11705203010d2484c89",
+        "token": "0x4d8285593b8654bd4bd20a68c399be1e24e22166c8b683cd192a202adcbbc71",
+        "name": "Bridged Money Market Fund",
+        "symbol": "bMMF",
+        "pool": "0x6666b9bbf5f51d831c1939ee4b4d6628358725516d181756ffdbfa726abc0aa"
+      },
+      "wired": {
+        "peers": true,
+        "links": true
+      }
+    },
+    "pef": {
+      "evm": {
+        "kind": "rules",
+        "owner": "0x878ffCF3351C6596Bd75355E00319AB5Fcf1c639",
+        "rules": "0xC7499c281117607B3a83598c652d8b6B6cEFA55E",
+        "token": "0x4Dfc3c254E45ba8F257FBEEea707Ce1e6b7C7855",
+        "faucet": "0x4Dfc3c254E45ba8F257FBEEea707Ce1e6b7C7855",
+        "lockbox": "0x189a19f0202F19c5FD4803e92f8d0761bfF17479"
+      },
+      "starknet": {
+        "registry": "0x39e0a5eb300687d3f6e9ab6a28ec79e54050674f47c3197248b624996a45642",
+        "stalenessWindow": 86400,
+        "gateway": "0x33d810864b662dd88f475e7bd0c414abadb6392c9c505fab006681ccc4dd490",
+        "token": "0x4077ae542ff4c0370f2916f2277ad15c18b73231a878caf538c149dc55f507d",
+        "name": "Bridged Private Equity Fund",
+        "symbol": "bPEF",
+        "rules": "0x723f75ae7967450e65b209319ab028a52e34247780723b125af14fa8a026280",
+        "pool": "0x6666b9bbf5f51d831c1939ee4b4d6628358725516d181756ffdbfa726abc0aa"
+      },
+      "wired": {
+        "peers": true,
+        "links": true
+      }
     }
   },
   "faucet": {
@@ -506,14 +554,15 @@
     "router": "0xFA2b72AA67032dB594DD2b7AbAA72AB7b4CA0AA5"
   },
   "classes": {
-    "VeilMirroredRegistry": "0x20587df003f259d1751e3891a110672ca862a66718ddaef93ac379ed4d72fde",
-    "VeilBridgeGateway": "0x2b7a039d03d036d1672c630c19844a91a0aacfa18e2d30796cae30413d66b1a",
+    "VeilMirroredRegistry": "0x2ed06cb2fdb6ef87e332d883e774f07eeb74dd29ff0344f0db02dc57b47f0c6",
+    "VeilBridgeGateway": "0x251e2cb66d435339c95bd53a696412fa5429b5aa933f6e1e51daddaf3ae08ae",
     "MirroredCompliance": "0x6ce29f70bb1f481bd2c560bbaf1f44c841595163c1a278628ca2dc359d8d72f",
-    "VeilBridgedERC3643": "0x29be37b1555de8614942263774031585da26038bc7fa680faffca585014e94f",
+    "VeilBridgedERC3643": "0x6186a8a05921a1aea3bde80e717e4f0dafbe493fc9de5b7cdf0592666b4eea3",
     "MirroredTransferRules": "0x4eb7642000918192cdf79ed44f8aec7f19f44bb7d6c962a54a53847c2ae0036",
     "VeilCashRules": "0x142c993bd4bd56ab60d081e3c1a5d190bf8d94fd4e312286cc6111f2e77359",
     "VeilCashVault": "0x2cc08aee92ed6d39b6c340351278410afb4c81c10c776c170a7da96c1ffb64d",
-    "VeilCashExit": "0x1fc2f5d76be5d3d680d730d58767e48ae377d57a7aa7796f22441610f2ea1ec"
+    "VeilCashExit": "0x1fc2f5d76be5d3d680d730d58767e48ae377d57a7aa7796f22441610f2ea1ec",
+    "VeilMirroredRules": "0x30dff810603dc49e359e34be10228731d4b212e018a6b50bc33b22d04fce73d"
   },
   "veil": {
     "pool": "0x6666b9bbf5f51d831c1939ee4b4d6628358725516d181756ffdbfa726abc0aa",

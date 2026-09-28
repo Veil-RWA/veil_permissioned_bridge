@@ -14,7 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { CallData, hash, byteArray } = require('starknet');
-const { network } = require('./config');
+const { network, ASSET_KINDS } = require('./config');
 const {
   parseArgs, loadDeployment, saveDeployment, requireEnv, assetSlot, starknetAccount, step, done,
 } = require('./lib');
@@ -33,13 +33,15 @@ function artifact(contract) {
   };
 }
 
+/// Declare the class the BUILT artifact is, not whatever the deployment file
+/// last recorded: a contract changed since then must deploy its new class.
 async function declareIfNeeded(account, contract, deployment) {
   deployment.classes = deployment.classes || {};
-  if (deployment.classes[contract]) {
-    return deployment.classes[contract];
-  }
   const { sierra, casm } = artifact(contract);
   const classHash = hash.computeContractClassHash(sierra);
+  if (deployment.classes[contract] && BigInt(deployment.classes[contract]) === BigInt(classHash)) {
+    return classHash;
+  }
   // `declareIfNot` is a no-op (empty tx hash) when the class is already on
   // chain, which is the common case for the second asset onward.
   const res = await account.declareIfNot({ contract: sierra, casm });
@@ -75,6 +77,11 @@ async function main() {
   // Expiry in seconds. A day is a starting point, not a recommendation: it is
   // the maximum time a revocation on the source chain can go unenforced here.
   const staleness = Number(args.staleness || 86400);
+  // ERC-3643 unless the catalogue says otherwise. An allowlisted or rule-gated
+  // ERC-20 has no T-REX modules to replicate, so no MirroredCompliance; a
+  // rule-gated one gets a rules mirror instead.
+  const kind = ASSET_KINDS[args.asset] ?? 'erc3643';
+  const steps = kind === 'rules' ? 5 : 4;
   const name = args.name || `Bridged ${args.asset}`;
   const symbol = args.symbol || `b${args.asset.toUpperCase()}`;
 
@@ -82,10 +89,10 @@ async function main() {
   console.log(`account      ${accountAddress}`);
   console.log(`endpoint     ${net.endpoint}`);
   console.log(`fee token    ${net.nativeToken}`);
-  console.log(`asset        ${args.asset}`);
+  console.log(`asset        ${args.asset} (${kind})`);
   console.log(`staleness    ${staleness}s`);
 
-  step(1, 4, 'VeilMirroredRegistry');
+  step(1, steps, 'VeilMirroredRegistry');
   if (slot.starknet.registry) {
     done('already deployed', slot.starknet.registry);
   } else {
@@ -98,7 +105,7 @@ async function main() {
     done('deployed', address, `${net.explorer}/contract/${address}`);
   }
 
-  step(2, 4, 'VeilBridgeGateway');
+  step(2, steps, 'VeilBridgeGateway');
   if (slot.starknet.gateway) {
     done('already deployed', slot.starknet.gateway);
   } else {
@@ -117,8 +124,10 @@ async function main() {
     done('deployed', address, `${net.explorer}/contract/${address}`);
   }
 
-  step(3, 4, 'MirroredCompliance');
-  if (slot.starknet.compliance) {
+  step(3, steps, 'MirroredCompliance');
+  if (kind !== 'erc3643') {
+    done('not for this kind', 'the Veil pool applies its rules itself');
+  } else if (slot.starknet.compliance) {
     done('already deployed', slot.starknet.compliance);
   } else {
     const classHash = await declareIfNeeded(account, 'MirroredCompliance', deployment);
@@ -132,7 +141,7 @@ async function main() {
     done('deployed', address, `${net.explorer}/contract/${address}`);
   }
 
-  step(4, 4, 'VeilBridgedERC3643');
+  step(4, steps, 'VeilBridgedERC3643');
   if (slot.starknet.token) {
     done('already deployed', slot.starknet.token);
   } else {
@@ -143,7 +152,7 @@ async function main() {
       byteArray.byteArrayFromString(symbol),
       accountAddress,
       slot.starknet.registry,
-      slot.starknet.compliance,
+      slot.starknet.compliance ?? '0',
     ]);
     const address = await deployContract(account, classHash, calldata);
     slot.starknet.token = address;
@@ -151,6 +160,20 @@ async function main() {
     slot.starknet.symbol = symbol;
     saveDeployment(args, deployment);
     done('deployed', address, `${net.explorer}/contract/${address}`);
+  }
+
+  if (kind === 'rules') {
+    step(5, steps, 'VeilMirroredRules (the issuer rules the Veil pool reads)');
+    if (slot.starknet.rules) {
+      done('already deployed', slot.starknet.rules);
+    } else {
+      const classHash = await declareIfNeeded(account, 'VeilMirroredRules', deployment);
+      saveDeployment(args, deployment);
+      const address = await deployContract(account, classHash, [accountAddress, slot.starknet.registry]);
+      slot.starknet.rules = address;
+      saveDeployment(args, deployment);
+      done('deployed', address, `${net.explorer}/contract/${address}`);
+    }
   }
 
   const file = saveDeployment(args, deployment);

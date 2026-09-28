@@ -58,7 +58,13 @@ const DEFAULT_STARKNET = 'starknet-sepolia';
 ///
 /// The Veil pool on the far side is the opposite and is NOT per asset: one pool
 /// carries any number of them. See VEIL below.
-const ASSET_IDS = ['gold', 'silver', 'tbill', 'credit', 'estate'];
+const ASSET_IDS = ['gold', 'silver', 'tbill', 'credit', 'estate', 'mmf', 'pef'];
+
+/// The kind of permissioned asset each id is, when it is not ERC-3643: which
+/// lockbox escrows it and how the Veil pool lists its twin.
+///   allowlist  an ERC-20 whose transfers need both sides on the issuer's list
+///   rules      an ERC-20 whose transfers the issuer's rules engine decides
+const ASSET_KINDS = { mmf: 'allowlist', pef: 'rules' };
 
 /// Veil itself, per Starknet network. Not per asset: a Veil pool is
 /// multi-asset, so every asset this bridge carries lands in the same pool
@@ -146,6 +152,7 @@ module.exports = {
   veil,
   NETWORKS,
   ASSET_IDS,
+  ASSET_KINDS,
   DEFAULT_EVM,
   DEFAULT_STARKNET,
   DEPLOYMENTS_DIR,

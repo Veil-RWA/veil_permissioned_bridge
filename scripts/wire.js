@@ -15,7 +15,7 @@
 const { ethers } = require('ethers');
 
 const { compile } = require('../evm/test/harness');
-const { network, veil } = require('./config');
+const { network, veil, ASSET_KINDS } = require('./config');
 const {
   parseArgs, loadDeployment, saveDeployment, requireEnv, assetSlot, starknetPeer, evmPeer,
   peerCalldata, starknetAccount, feltToBigInt, step, done,
@@ -32,15 +32,18 @@ async function main() {
   const snNet = network(args.starknet);
   const d = loadDeployment(args);
   const slot = assetSlot(d, args.asset);
-  console.log(`asset        ${args.asset}`);
+  const kind = ASSET_KINDS[args.asset] ?? 'erc3643';
+  console.log(`asset        ${args.asset} (${kind})`);
 
-  for (const [k, v] of Object.entries({
+  const required = {
     'evm.lockbox': slot.evm.lockbox,
     'starknet.registry': slot.starknet.registry,
     'starknet.gateway': slot.starknet.gateway,
-    'starknet.compliance': slot.starknet.compliance,
     'starknet.token': slot.starknet.token,
-  })) {
+  };
+  if (kind === 'erc3643') required['starknet.compliance'] = slot.starknet.compliance;
+  if (kind === 'rules') required['starknet.rules'] = slot.starknet.rules;
+  for (const [k, v] of Object.entries(required)) {
     if (!v) throw new Error(`${args.asset}: ${k} not deployed yet -- run deploy-evm.js and deploy-starknet.js with --asset ${args.asset} first`);
   }
 
@@ -83,17 +86,33 @@ async function main() {
   } else {
     await invoke('tx', slot.starknet.token, 'set_gateway', [slot.starknet.gateway]);
   }
-  if (asFelt(await call(slot.starknet.token, 'compliance')) === BigInt(slot.starknet.compliance)) {
+  if (kind !== 'erc3643') {
+    done('no T-REX compliance', 'the Veil pool applies this kind\'s rules itself');
+  } else if (asFelt(await call(slot.starknet.token, 'compliance')) === BigInt(slot.starknet.compliance)) {
     done('compliance already set', slot.starknet.compliance);
   } else {
     await invoke('tx', slot.starknet.token, 'set_compliance', [slot.starknet.compliance]);
   }
 
-  step(3, 8, 'compliance.set_token');
-  if (asFelt(await call(slot.starknet.compliance, 'token')) === BigInt(slot.starknet.token)) {
-    done('already set', slot.starknet.token);
-  } else {
-    await invoke('tx', slot.starknet.compliance, 'set_token', [slot.starknet.token]);
+  if (kind === 'erc3643') {
+    step(3, 8, 'compliance.set_token');
+    if (asFelt(await call(slot.starknet.compliance, 'token')) === BigInt(slot.starknet.token)) {
+      done('already set', slot.starknet.token);
+    } else {
+      await invoke('tx', slot.starknet.compliance, 'set_token', [slot.starknet.token]);
+    }
+  } else if (kind === 'rules') {
+    step(3, 8, 'rules.set_gateway + gateway.set_rules');
+    if (asFelt(await call(slot.starknet.rules, 'gateway')) === BigInt(slot.starknet.gateway)) {
+      done('rules already written by the gateway', slot.starknet.gateway);
+    } else {
+      await invoke('tx', slot.starknet.rules, 'set_gateway', [slot.starknet.gateway]);
+    }
+    if (asFelt(await call(slot.starknet.gateway, 'rules')) === BigInt(slot.starknet.rules)) {
+      done('gateway already routes the rules', slot.starknet.rules);
+    } else {
+      await invoke('tx', slot.starknet.gateway, 'set_rules', [slot.starknet.rules]);
+    }
   }
 
   step(4, 8, 'gateway.set_token');
@@ -161,7 +180,9 @@ async function main() {
   // A pool has no EVM identity to mirror, so it is registered as a LOCAL
   // identity: infrastructure that may hold, not an investor. Defaults to the
   // pool being wired, since that is the one that has to work.
-  const holders = [].concat(args.holder ?? [], wantPool ?? []).filter(Boolean);
+  // The gateway holds the twin for the length of an exit (the pool pays it,
+  // it burns), so it is a holder too.
+  const holders = [].concat(args.holder ?? [], wantPool ?? [], slot.starknet.gateway).filter(Boolean);
   const seen = new Set();
   for (const holder of holders) {
     const key = BigInt(holder).toString();
@@ -174,6 +195,44 @@ async function main() {
     } else {
       await invoke('tx', slot.starknet.registry, 'set_local_identity', [holder, '1', '840']);
     }
+  }
+
+  // ---- Veil: the pool carries the twin under its kind ---------------------
+  if (wantPool) {
+    step(10, 12, `pool lists the twin (${kind})`);
+    const listed = asFelt(await call(wantPool, 'is_token_allowed', [slot.starknet.token])) === 1n;
+    const kindNow = asFelt(await call(wantPool, 'get_token_kind', [slot.starknet.token]));
+    const wantKind = { erc3643: 1n, allowlist: 2n, rules: 3n }[kind];
+    if (listed && kindNow === wantKind) {
+      done('already listed', slot.starknet.token);
+    } else if (kind === 'allowlist') {
+      // The mirrored registry is the permission manager: a holder has the role
+      // exactly when the mirror verifies it. 0 = the pool's default role.
+      await invoke('tx', wantPool, 'add_allowlisted_token', [slot.starknet.token, slot.starknet.registry, '0']);
+    } else if (kind === 'rules') {
+      await invoke('tx', wantPool, 'add_rules_token', [slot.starknet.token, slot.starknet.rules]);
+    } else {
+      await invoke('tx', wantPool, 'add_token', [slot.starknet.token, slot.starknet.registry, slot.starknet.compliance]);
+    }
+
+    step(11, 12, 'pool allows the gateway as an adapter (fills and exits)');
+    if (asFelt(await call(wantPool, 'is_adapter_allowed', [slot.starknet.gateway])) === 1n) {
+      done('already allowed', slot.starknet.gateway);
+    } else {
+      await invoke('tx', wantPool, 'set_adapter_allowed', [slot.starknet.gateway, '1']);
+    }
+  }
+
+  step(12, 12, 'gateway native float for exit fees');
+  const nativeToken = snNet.nativeToken;
+  const float = BigInt(Math.round(Number(args.float ?? 20) * 1e6)) * 10n ** 12n;
+  const bal = await call(nativeToken, 'balance_of', [slot.starknet.gateway]);
+  const floatHave = BigInt(Array.isArray(bal) ? bal[0] : bal.result[0]);
+  if (floatHave >= float) {
+    done('already funded', `${Number(floatHave) / 1e18} STRK`);
+  } else {
+    await invoke(`sent ${Number(float - floatHave) / 1e18} STRK`, nativeToken, 'transfer',
+      [slot.starknet.gateway, '0x' + (float - floatHave).toString(16), '0x0']);
   }
 
   // Recorded once at deployment level, not per asset, because one pool serves
@@ -190,6 +249,11 @@ async function main() {
   saveDeployment(args, d);
 
   console.log('\nwired.');
+  if (kind !== 'erc3643') {
+    console.log(`\nThe issuer's consent (the lockbox ${kind === 'rules' ? 'as a platform wallet' : 'on the allowlist'}) is given by deploy-kinds.js on testnet.`);
+    console.log('Holders sync before their first bridge-in: syncCompliance(wallet)' + (kind === 'rules' ? ', syncRules(wallet) and syncTokenRules().' : '.'));
+    return;
+  }
   console.log('\nSTILL REQUIRED BEFORE ANY VALUE MOVES:');
   console.log(`  1. Issuer registers the lockbox as a verified identity:`);
   console.log(`       identityRegistry.registerIdentity(${slot.evm.lockbox}, ...)`);
