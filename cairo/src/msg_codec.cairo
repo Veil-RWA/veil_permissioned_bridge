@@ -53,6 +53,28 @@
 //     1    b32   evm_recipient
 //     33   u256  amount
 //
+//   HOLDER_RULES (EVM -> Starknet), 76 bytes -- a rule-gated asset only
+//     0    u8    kind = 5
+//     1    b32   evm_account
+//     33   u64   seq                 the lockbox's per-account counter
+//     41   u8    can_hold
+//     42   u8    frozen
+//     43   u8    is_investor
+//     44   u256  locked              what stays unspent in the holder's notes
+//
+//   TOKEN_RULES (EVM -> Starknet), 45 bytes -- a rule-gated asset only
+//     0    u8    kind = 6
+//     1    u64   seq                 the lockbox's token-level counter
+//     9    u8    transfers_enabled
+//     10   u8    investor_cap_reached
+//     11   u8    full_balance_required
+//     12   u8    min_holding_strict
+//     13   u256  min_holding
+//
+//   The two rules kinds carry the issuer's rules for a rule-gated ERC-20 (its
+//   `IVeilRulesSource` on EVM) into `VeilMirroredRules`, which answers the
+//   Veil pool's `ITransferRules` from them.
+//
 // A MINT carries the sender's compliance snapshot alongside the transfer so a
 // bridge-in is always accompanied by fresh eligibility data — the mirror never
 // has to mint against a record it has never seen.
@@ -66,6 +88,8 @@ pub const KIND_MINT: u8 = 1;
 pub const KIND_IDENTITY: u8 = 2;
 pub const KIND_GLOBAL: u8 = 3;
 pub const KIND_UNLOCK: u8 = 4;
+pub const KIND_HOLDER_RULES: u8 = 5;
+pub const KIND_TOKEN_RULES: u8 = 6;
 
 /// 2^160: one past the largest EVM address.
 pub const EVM_ADDRESS_BOUND: u256 = 0x10000000000000000000000000000000000000000;
@@ -95,6 +119,28 @@ pub struct MintMessage {
 pub struct GlobalMessage {
     pub seq: u64,
     pub paused: bool,
+}
+
+/// A rule-gated asset's rules for one holder, as its issuer states them.
+#[derive(Copy, Drop, Serde, PartialEq, Debug)]
+pub struct HolderRulesMessage {
+    pub evm_account: felt252,
+    pub seq: u64,
+    pub can_hold: bool,
+    pub frozen: bool,
+    pub is_investor: bool,
+    pub locked: u256,
+}
+
+/// A rule-gated asset's token-level rules.
+#[derive(Copy, Drop, Serde, PartialEq, Debug)]
+pub struct TokenRulesMessage {
+    pub seq: u64,
+    pub transfers_enabled: bool,
+    pub investor_cap_reached: bool,
+    pub full_balance_required: bool,
+    pub min_holding_strict: bool,
+    pub min_holding: u256,
 }
 
 pub fn kind(message: @ByteArray) -> u8 {
@@ -147,6 +193,32 @@ pub fn decode_global(message: @ByteArray) -> GlobalMessage {
     GlobalMessage { seq: read_u64(message, 1), paused: read_bool(message, 9) }
 }
 
+pub fn decode_holder_rules(message: @ByteArray) -> HolderRulesMessage {
+    assert(read_u8(message, 0) == KIND_HOLDER_RULES, 'BRIDGE_KIND_MISMATCH');
+    assert(message.len() == 76, 'BRIDGE_BAD_LENGTH');
+    HolderRulesMessage {
+        evm_account: word_to_evm_address(read_u256(message, 1)),
+        seq: read_u64(message, 33),
+        can_hold: read_bool(message, 41),
+        frozen: read_bool(message, 42),
+        is_investor: read_bool(message, 43),
+        locked: read_u256(message, 44),
+    }
+}
+
+pub fn decode_token_rules(message: @ByteArray) -> TokenRulesMessage {
+    assert(read_u8(message, 0) == KIND_TOKEN_RULES, 'BRIDGE_KIND_MISMATCH');
+    assert(message.len() == 45, 'BRIDGE_BAD_LENGTH');
+    TokenRulesMessage {
+        seq: read_u64(message, 1),
+        transfers_enabled: read_bool(message, 9),
+        investor_cap_reached: read_bool(message, 10),
+        full_balance_required: read_bool(message, 11),
+        min_holding_strict: read_bool(message, 12),
+        min_holding: read_u256(message, 13),
+    }
+}
+
 /// Built on Starknet, consumed by the lockbox's `_lzReceive`.
 pub fn encode_unlock(evm_recipient: felt252, amount: u256) -> ByteArray {
     let recipient_word: u256 = evm_recipient.into();
@@ -196,5 +268,29 @@ pub fn encode_global(msg: GlobalMessage) -> ByteArray {
     append_u8(ref out, KIND_GLOBAL);
     append_u64(ref out, msg.seq);
     append_bool(ref out, msg.paused);
+    out
+}
+
+pub fn encode_holder_rules(msg: HolderRulesMessage) -> ByteArray {
+    let mut out: ByteArray = Default::default();
+    append_u8(ref out, KIND_HOLDER_RULES);
+    append_u256(ref out, msg.evm_account.into());
+    append_u64(ref out, msg.seq);
+    append_bool(ref out, msg.can_hold);
+    append_bool(ref out, msg.frozen);
+    append_bool(ref out, msg.is_investor);
+    append_u256(ref out, msg.locked);
+    out
+}
+
+pub fn encode_token_rules(msg: TokenRulesMessage) -> ByteArray {
+    let mut out: ByteArray = Default::default();
+    append_u8(ref out, KIND_TOKEN_RULES);
+    append_u64(ref out, msg.seq);
+    append_bool(ref out, msg.transfers_enabled);
+    append_bool(ref out, msg.investor_cap_reached);
+    append_bool(ref out, msg.full_balance_required);
+    append_bool(ref out, msg.min_holding_strict);
+    append_u256(ref out, msg.min_holding);
     out
 }

@@ -75,6 +75,13 @@ pub trait IVeilMirroredRegistry<TContractState> {
     fn is_verified(self: @TContractState, account: ContractAddress) -> bool;
     fn investor_country(self: @TContractState, account: ContractAddress) -> u16;
 
+    // ── Allowlist surface: what the Veil pool calls for an allowlisted twin ─
+    /// The pool's `IPermissionManager`: for an allowlisted ERC-20, a holder is
+    /// allowed exactly when this mirror verifies it -- its record, replayed from
+    /// the issuer's allowlist, is present, allowed, not frozen and fresh. The
+    /// role is the pool's own configuration; the list has one.
+    fn has_role(self: @TContractState, role: felt252, account: ContractAddress) -> bool;
+
     // ── Written only by the gateway, from inbound LayerZero messages ────────
     /// Returns false when the update is dropped as stale or out of order.
     fn apply_identity(
@@ -247,24 +254,11 @@ pub mod VeilMirroredRegistry {
     #[abi(embed_v0)]
     impl VeilMirroredRegistryImpl of IVeilMirroredRegistry<ContractState> {
         fn is_verified(self: @ContractState, account: ContractAddress) -> bool {
-            // A global pause stops everything, infrastructure included.
-            if self.global_paused.read() {
-                return false;
-            }
-            // Locally registered infrastructure short-circuits the binding: it
-            // has no source record, so there is nothing to look up or expire.
-            if self.local_identities.read(account).allowed {
-                return true;
-            }
-            let evm_account = self.bindings.read(account);
-            if evm_account == 0 {
-                return false;
-            }
-            let record = self.identities.read(evm_account);
-            if record.seq == 0 || !record.verified || record.frozen {
-                return false;
-            }
-            self.record_is_fresh(record)
+            self.verified(account)
+        }
+
+        fn has_role(self: @ContractState, role: felt252, account: ContractAddress) -> bool {
+            self.verified(account)
         }
 
         fn investor_country(self: @ContractState, account: ContractAddress) -> u16 {
@@ -429,6 +423,27 @@ pub mod VeilMirroredRegistry {
 
     #[generate_trait]
     impl Internal of InternalTrait {
+        fn verified(self: @ContractState, account: ContractAddress) -> bool {
+            // A global pause stops everything, infrastructure included.
+            if self.global_paused.read() {
+                return false;
+            }
+            // Locally registered infrastructure short-circuits the binding: it
+            // has no source record, so there is nothing to look up or expire.
+            if self.local_identities.read(account).allowed {
+                return true;
+            }
+            let evm_account = self.bindings.read(account);
+            if evm_account == 0 {
+                return false;
+            }
+            let record = self.identities.read(evm_account);
+            if record.seq == 0 || !record.verified || record.frozen {
+                return false;
+            }
+            self.record_is_fresh(record)
+        }
+
         fn assert_owner(self: @ContractState) {
             assert(get_caller_address() == self.owner.read(), 'ONLY_OWNER');
         }

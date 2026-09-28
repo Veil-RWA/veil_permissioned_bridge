@@ -106,6 +106,11 @@ pub trait IVeilBridgeGateway<TContractState> {
     /// Zero means only the default pool is reachable.
     fn set_factory(ref self: TContractState, factory: ContractAddress);
     fn factory(self: @TContractState) -> ContractAddress;
+    /// A rule-gated asset's rules mirror (`VeilMirroredRules`), which the
+    /// HOLDER_RULES and TOKEN_RULES messages write. Zero for any other kind of
+    /// asset: such a message is then a wiring error and reverts.
+    fn set_rules(ref self: TContractState, rules: ContractAddress);
+    fn rules(self: @TContractState) -> ContractAddress;
     /// Claim an open note for pool delivery. The caller becomes its owner here,
     /// and only a transfer addressed to that same owner may fill it.
     fn register_note(ref self: TContractState, note_id: felt252);
@@ -178,9 +183,10 @@ pub mod VeilBridgeGateway {
     use super::super::mirrored_registry::{
         IVeilMirroredRegistryDispatcher, IVeilMirroredRegistryDispatcherTrait,
     };
+    use super::super::mirrored_rules::{IVeilMirroredRulesDispatcher, IVeilMirroredRulesDispatcherTrait};
     use super::super::msg_codec::{
-        KIND_GLOBAL, KIND_IDENTITY, KIND_MINT, decode_global, decode_identity,
-        decode_mint, encode_unlock, kind,
+        KIND_GLOBAL, KIND_HOLDER_RULES, KIND_IDENTITY, KIND_MINT, KIND_TOKEN_RULES, decode_global,
+        decode_holder_rules, decode_identity, decode_mint, decode_token_rules, encode_unlock, kind,
     };
     // On the INBOUND path the pool and the factory are called through caught
     // syscalls, never dispatchers: a third-party contract that reverts must not
@@ -312,6 +318,8 @@ pub mod VeilBridgeGateway {
         pool: ContractAddress,
         /// Vouches for a pool the message names instead of the default one.
         factory: ContractAddress,
+        /// A rule-gated asset's rules mirror; zero for other kinds.
+        rules: ContractAddress,
         /// note_id -> the address allowed to have it filled. Claimed by the
         /// holder, write-once, so a claim cannot be taken over later.
         note_owners: Map<felt252, ContractAddress>,
@@ -376,6 +384,27 @@ pub mod VeilBridgeGateway {
             } else if message_kind == KIND_GLOBAL {
                 let params = decode_global(@message);
                 self.registry_dispatcher().apply_global(params.seq, params.paused);
+            } else if message_kind == KIND_HOLDER_RULES {
+                let r = decode_holder_rules(@message);
+                self
+                    .rules_dispatcher()
+                    .apply_holder_rules(
+                        r.evm_account, r.seq, r.can_hold, r.frozen, r.is_investor, r.locked,
+                    );
+                // An EVM wallet the rules are about holds as itself.
+                self.bind_evm_holder(r.evm_account);
+            } else if message_kind == KIND_TOKEN_RULES {
+                let t = decode_token_rules(@message);
+                self
+                    .rules_dispatcher()
+                    .apply_token_rules(
+                        t.seq,
+                        t.transfers_enabled,
+                        t.investor_cap_reached,
+                        t.full_balance_required,
+                        t.min_holding_strict,
+                        t.min_holding,
+                    );
             } else {
                 // A kind we do not understand can only come from a peer we
                 // configured, so it is a wiring or version bug. Revert and let
@@ -535,6 +564,15 @@ pub mod VeilBridgeGateway {
             self.factory.read()
         }
 
+        fn set_rules(ref self: ContractState, rules: ContractAddress) {
+            self.assert_owner();
+            self.rules.write(rules);
+        }
+
+        fn rules(self: @ContractState) -> ContractAddress {
+            self.rules.read()
+        }
+
         /// Claim a note before bridging into it.
         ///
         /// The pool cannot tell the gateway who owns a note -- `get_open_note`
@@ -687,6 +725,14 @@ pub mod VeilBridgeGateway {
             let token = self.token.read();
             assert(!token.is_zero(), 'TOKEN_UNSET');
             IVeilBridgedERC3643Dispatcher { contract_address: token }
+        }
+
+        /// The rules mirror. A rules message for an asset that has none is a
+        /// wiring bug: revert, so the endpoint keeps it for retry after a fix.
+        fn rules_dispatcher(self: @ContractState) -> IVeilMirroredRulesDispatcher {
+            let rules = self.rules.read();
+            assert(!rules.is_zero(), 'RULES_UNSET');
+            IVeilMirroredRulesDispatcher { contract_address: rules }
         }
 
         fn registry_dispatcher(self: @ContractState) -> IVeilMirroredRegistryDispatcher {

@@ -225,6 +225,37 @@ contract CodecHarness {
     {
         return BridgeMsgCodec.decodeMint(message);
     }
+
+    function encodeHolderRules(
+        address evmAccount, uint64 seq, bool canHold, bool frozen, bool isInvestor, uint256 locked
+    ) external pure returns (bytes memory) {
+        return BridgeMsgCodec.encodeHolderRules(evmAccount, seq, canHold, frozen, isInvestor, locked);
+    }
+
+    function encodeTokenRules(
+        uint64 seq, bool transfersEnabled, bool investorCapReached, bool fullBalanceRequired,
+        bool minHoldingStrict, uint256 minHolding
+    ) external pure returns (bytes memory) {
+        return BridgeMsgCodec.encodeTokenRules(
+            seq, transfersEnabled, investorCapReached, fullBalanceRequired, minHoldingStrict, minHolding
+        );
+    }
+
+    function decodeHolderRules(bytes calldata message)
+        external
+        pure
+        returns (address, uint64, bool, bool, bool, uint256)
+    {
+        return BridgeMsgCodec.decodeHolderRules(message);
+    }
+
+    function decodeTokenRules(bytes calldata message)
+        external
+        pure
+        returns (uint64, bool, bool, bool, bool, uint256)
+    {
+        return BridgeMsgCodec.decodeTokenRules(message);
+    }
 }
 
 // ------------------------------------------------- T-REX modular compliance

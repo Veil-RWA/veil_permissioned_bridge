@@ -13,11 +13,17 @@ library BridgeMsgCodec {
     uint8 internal constant KIND_IDENTITY = 2;
     uint8 internal constant KIND_GLOBAL = 3;
     uint8 internal constant KIND_UNLOCK = 4;
+    /// A rule-gated asset's per-holder rules (`VeilRulesLockbox.syncRules`).
+    uint8 internal constant KIND_HOLDER_RULES = 5;
+    /// A rule-gated asset's token-level rules (`VeilRulesLockbox.syncTokenRules`).
+    uint8 internal constant KIND_TOKEN_RULES = 6;
 
     uint256 internal constant MINT_LEN = 173;
     uint256 internal constant IDENTITY_LEN = 45;
     uint256 internal constant GLOBAL_LEN = 10;
     uint256 internal constant UNLOCK_LEN = 65;
+    uint256 internal constant HOLDER_RULES_LEN = 76;
+    uint256 internal constant TOKEN_RULES_LEN = 45;
 
     error BadKind(uint8 kind);
     error BadLength(uint256 length);
@@ -77,6 +83,47 @@ library BridgeMsgCodec {
     /// `MirroredCompliance`, which is their single home. See ../README.md.
     function encodeGlobal(uint64 seq, bool paused) internal pure returns (bytes memory) {
         return abi.encodePacked(KIND_GLOBAL, seq, paused);
+    }
+
+    /// Per-holder rules of a rule-gated asset. Sequenced with IDENTITY: both
+    /// draw on the lockbox's one per-account counter.
+    function encodeHolderRules(
+        address evmAccount,
+        uint64 seq,
+        bool canHold,
+        bool frozen,
+        bool isInvestor,
+        uint256 locked
+    ) internal pure returns (bytes memory) {
+        return abi.encodePacked(
+            KIND_HOLDER_RULES,
+            bytes32(uint256(uint160(evmAccount))),
+            seq,
+            canHold,
+            frozen,
+            isInvestor,
+            locked
+        );
+    }
+
+    /// Token-level rules of a rule-gated asset. Sequenced with GLOBAL.
+    function encodeTokenRules(
+        uint64 seq,
+        bool transfersEnabled,
+        bool investorCapReached,
+        bool fullBalanceRequired,
+        bool minHoldingStrict,
+        uint256 minHolding
+    ) internal pure returns (bytes memory) {
+        return abi.encodePacked(
+            KIND_TOKEN_RULES,
+            seq,
+            transfersEnabled,
+            investorCapReached,
+            fullBalanceRequired,
+            minHoldingStrict,
+            minHolding
+        );
     }
 
     // ------------------------------------------------------------- decoding
@@ -141,6 +188,50 @@ library BridgeMsgCodec {
         verified = uint8(message[41]) != 0;
         frozen = uint8(message[42]) != 0;
         country = uint16(bytes2(message[43:45]));
+    }
+
+    function decodeHolderRules(bytes calldata message)
+        internal
+        pure
+        returns (
+            address evmAccount,
+            uint64 seq,
+            bool canHold,
+            bool frozen,
+            bool isInvestor,
+            uint256 locked
+        )
+    {
+        if (message.length != HOLDER_RULES_LEN) revert BadLength(message.length);
+        if (uint8(message[0]) != KIND_HOLDER_RULES) revert BadKind(uint8(message[0]));
+        evmAccount = address(uint160(uint256(bytes32(message[1:33]))));
+        seq = uint64(bytes8(message[33:41]));
+        canHold = uint8(message[41]) != 0;
+        frozen = uint8(message[42]) != 0;
+        isInvestor = uint8(message[43]) != 0;
+        locked = uint256(bytes32(message[44:76]));
+    }
+
+    function decodeTokenRules(bytes calldata message)
+        internal
+        pure
+        returns (
+            uint64 seq,
+            bool transfersEnabled,
+            bool investorCapReached,
+            bool fullBalanceRequired,
+            bool minHoldingStrict,
+            uint256 minHolding
+        )
+    {
+        if (message.length != TOKEN_RULES_LEN) revert BadLength(message.length);
+        if (uint8(message[0]) != KIND_TOKEN_RULES) revert BadKind(uint8(message[0]));
+        seq = uint64(bytes8(message[1:9]));
+        transfersEnabled = uint8(message[9]) != 0;
+        investorCapReached = uint8(message[10]) != 0;
+        fullBalanceRequired = uint8(message[11]) != 0;
+        minHoldingStrict = uint8(message[12]) != 0;
+        minHolding = uint256(bytes32(message[13:45]));
     }
 
     function decodeGlobal(bytes calldata message)
