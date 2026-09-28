@@ -60,6 +60,10 @@ export type Asset = AssetMeta & {
   available: boolean;
   /** A Veil pool is configured, so a transfer may be addressed to a note. */
   poolReady: boolean;
+  /** Its gateway takes EVM wallets as holders. Set once the gateway has been
+   *  asked (`supportsEvmHolders`); undefined until then. The app has no other
+   *  kind of holder, so an asset whose gateway says no cannot be used here. */
+  evmReady?: boolean;
 };
 
 /// Instrument types, not products: an ERC-3643 asset belongs to its issuer, and

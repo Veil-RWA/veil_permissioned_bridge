@@ -178,6 +178,23 @@ export function buildExecuteBatchDeriveCalldata(args) {
     }
     return out.map(hex);
 }
+/** Calldata for `venue_fill_derive(receipt_ids: Array<felt252>,
+ *  makers: Array<MakerOpening>)`, before the authorization is appended. */
+export function buildVenueFillDeriveCalldata(args) {
+    const { receiptIds, makers } = args;
+    if (receiptIds.length === 0)
+        throw new Error("venueFill: no receipts");
+    if (receiptIds.length !== makers.length) {
+        throw new Error("venueFill: receiptIds and makers length mismatch");
+    }
+    const out = [BigInt(receiptIds.length), ...receiptIds, BigInt(makers.length)];
+    for (const m of makers) {
+        if (m.makerSalt === 0n)
+            throw new Error("makerSalt must be non-zero");
+        out.push(m.maker, m.makerSalt, ...rulesFelts(m.makerRules));
+    }
+    return out.map(hex);
+}
 // ── Note-amount classification (mirror read_note_amount_internal, §10.6) ─────
 /** Classify a raw note `encrypted_amount` cell.
  *  - `open`: salt=1 reserved → the low 128 bits are the PLAINTEXT amount (a DvP

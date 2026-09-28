@@ -9,6 +9,7 @@
 // wallets too old to announce.
 
 import { BrowserProvider, Contract, JsonRpcProvider, zeroPadValue, type Eip1193Provider } from 'ethers';
+import { evmAuthorizationSigner, type EvmAuthorizationSigner } from 'veil-sdk';
 import { evmChain, EVM_RPC, EXPLORER_EVM, DEFAULT_GAS_LIMIT } from './config';
 import type { Asset } from './assets';
 import { tokenScale, type UnitScale } from './format';
@@ -22,8 +23,6 @@ const LOCKBOX_ABI = [
   'function allowlist() view returns (address)',
   'function unitsOf(uint256 tokens) view returns (uint256)',
   'function claimableTokens(address recipient) view returns (uint256)',
-  'function quoteLinkStarknet(bytes32 snAccount, uint128 gasLimit) view returns (tuple(uint256 nativeFee, uint256 lzTokenFee))',
-  'function linkStarknet(bytes32 snAccount, uint128 gasLimit, address refundAddress) payable returns (bytes32)',
   'function quoteSyncCompliance(address account, uint128 gasLimit) view returns (tuple(uint256 nativeFee, uint256 lzTokenFee))',
   'function syncCompliance(address account, uint128 gasLimit, address refundAddress) payable returns (bytes32)',
   // A lockbox that mirrors balance rules (kinds `rules` and `securitize`).
@@ -471,12 +470,21 @@ export async function claimHeld(
   return tx.hash;
 }
 
-export const snRecipientWord = (starknetAddress: string): string =>
-  zeroPadValue('0x' + BigInt(starknetAddress).toString(16).padStart(64, '0'), 32);
+/// The holder inside Veil, as the lockbox's 32-byte `snRecipient`: the EVM
+/// wallet's own address, left-padded. The wallet holds as itself on both chains.
+export const holderWord = (address: string): string =>
+  zeroPadValue('0x' + BigInt(address).toString(16).padStart(64, '0'), 32);
+
+/// The wallet as a Veil signer: each action in the pool is authorized by its
+/// `personal_sign`, checked inside the proof. No Starknet account is involved.
+export function authorizationSigner(session: EvmSession): EvmAuthorizationSigner {
+  return evmAuthorizationSigner(session.address, async (message) =>
+    (await session.provider.getSigner(session.address)).signMessage(message));
+}
 
 export async function quote(asset: Asset, amount: bigint, recipient: string): Promise<bigint> {
   const lockbox = new Contract(asset.addresses.evm!.lockbox!, LOCKBOX_ABI, readProvider);
-  const fee = await lockbox.quoteBridgeOut(amount, snRecipientWord(recipient), DEFAULT_GAS_LIMIT);
+  const fee = await lockbox.quoteBridgeOut(amount, holderWord(recipient), DEFAULT_GAS_LIMIT);
   return fee.nativeFee ?? fee[0];
 }
 
@@ -509,7 +517,7 @@ export async function bridgeOut(
   // Same message width either way, so the quote holds for both.
   // One entrypoint: a bridge-in always lands in a Veil pool note.
   const tx = await lockbox.bridgeOut(
-    amount, snRecipientWord(recipient), word(noteId), pool ? word(pool) : ZERO_WORD,
+    amount, holderWord(recipient), word(noteId), pool ? word(pool) : ZERO_WORD,
     DEFAULT_GAS_LIMIT, session.address, { value: fee }
   );
   const receipt = await tx.wait();
@@ -565,22 +573,4 @@ export async function syncRules(
   await tx.wait();
   hashes.push(tx.hash);
   return hashes;
-}
-
-/// The EVM half of linking a Veil wallet: binds `starknetAddress` to the
-/// connected account on the mirror. It binds only if that wallet already asked
-/// for exactly this account on the gateway (`request_link`), so it cannot link
-/// anyone else's wallet. One LayerZero message; the fee is quoted here.
-export async function linkStarknet(
-  session: EvmSession, asset: Asset, starknetAddress: string
-): Promise<string> {
-  const signer = await session.provider.getSigner();
-  const lockbox = new Contract(asset.addresses.evm!.lockbox!, LOCKBOX_ABI, signer);
-  const word = snRecipientWord(starknetAddress);
-  const fee = await lockbox.quoteLinkStarknet(word, DEFAULT_GAS_LIMIT);
-  const tx = await lockbox.linkStarknet(word, DEFAULT_GAS_LIMIT, session.address, {
-    value: fee.nativeFee ?? fee[0],
-  });
-  await tx.wait();
-  return tx.hash;
 }

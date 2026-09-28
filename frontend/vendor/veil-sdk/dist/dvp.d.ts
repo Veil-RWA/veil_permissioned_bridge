@@ -120,6 +120,16 @@ export interface ExecuteBatchArgs {
 /** Calldata for `execute_batch_derive(order_ids: Array<felt252>, fills:
  *  Array<BatchFill>, batch_nonce, makers: Array<MakerOpening>)`. */
 export declare function buildExecuteBatchDeriveCalldata(args: ExecuteBatchArgs): string[];
+/** Args for the external-venue fill (HyperVeil): the exchange applies venue
+ *  receipts (amounts are read from the venue at settle, never supplied here)
+ *  to their makers' receive notes, opening each maker as for a batch. */
+export interface VenueFillArgs {
+    receiptIds: bigint[];
+    makers: MakerOpening[];
+}
+/** Calldata for `venue_fill_derive(receipt_ids: Array<felt252>,
+ *  makers: Array<MakerOpening>)`, before the authorization is appended. */
+export declare function buildVenueFillDeriveCalldata(args: VenueFillArgs): string[];
 /** Classify a raw note `encrypted_amount` cell.
  *  - `open`: salt=1 reserved → the low 128 bits are the PLAINTEXT amount (a DvP
  *    receive note / open note). `amount === 0n` means an UNFILLED open note,

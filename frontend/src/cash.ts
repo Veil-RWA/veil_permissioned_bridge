@@ -5,13 +5,13 @@
 // TokenMessengerV2 with Veil's cash vault as BOTH the mint recipient and the
 // destination caller, and the holder's empty USDC note as the 32-byte hook
 // data. Once Circle has attested the burn, Veil's relayer hands the message to
-// the vault, which fills the note in the same transaction. The holder's
-// Starknet account never sends anything, so nothing public names it.
+// the vault, which fills the note in the same transaction.
 //
 // OUT (Veil -> Ethereum). A proven pool `invoke`, submitted by the prover's
-// relayer, pays Veil's cash exit, which burns through CCTP to the holder's
-// Ethereum address. Once Circle has attested it, the holder's EVM wallet calls
-// Circle's MessageTransmitterV2 and the USDC is minted to it.
+// relayer and signed by the holder's EVM wallet, pays Veil's cash exit, which
+// burns through CCTP to the holder's Ethereum address. Once Circle has attested
+// it, the same wallet calls Circle's MessageTransmitterV2 and the USDC is
+// minted to it. The holder never sends a Starknet transaction either way.
 
 import { Contract } from 'ethers';
 import {
@@ -20,11 +20,11 @@ import {
 import { Contract as SnContract } from 'starknet';
 import { deployment, IRIS_API, PROVER_ENDPOINT, PROVER_MASTER_ADDRESS, STARKNET_RPC } from './config';
 import { readProvider, type EvmSession, type EvmStatus } from './evm';
-import { snProvider, type SnSession } from './starknet';
+import { snProvider } from './starknet';
 import type { NoteContext, NoteSlot } from './notes';
 import poolReaderAbi from './poolReaderAbi.json';
 import {
-  byteArrayCalldata, fastMaxFee, irisTxHash, parseIrisMessages, planCashExit, word,
+  fastMaxFee, irisTxHash, parseIrisMessages, planCashExit, word,
   ETHEREUM_DOMAIN, STARKNET_DOMAIN, STANDARD_FINALITY, FAST_FINALITY, type IrisMessage,
 } from './cashCore';
 
@@ -156,21 +156,6 @@ export async function noteValue(noteId: string): Promise<bigint> {
 }
 
 export const isFilled = (raw: bigint): boolean => raw > TWO_POW_128;
-
-/// Deliver a deposit from the holder's own wallet, when no relayer has.
-///
-/// Works, but it is the one step that names the holder: the vault is called by
-/// their account, next to the note it fills. The UI offers it only as a
-/// fallback, and says so.
-export async function relayFromWallet(session: SnSession, message: string, attestation: string): Promise<string> {
-  const { transaction_hash } = await session.account.execute({
-    contractAddress: cash().vault,
-    entrypoint: 'receive_deposit',
-    calldata: [...byteArrayCalldata(message), ...byteArrayCalldata(attestation)],
-  });
-  await snProvider.waitForTransaction(transaction_hash, { retryInterval: 3000 });
-  return transaction_hash;
-}
 
 // ── Notes with a deposit on its way ────────────────────────────────────────
 //

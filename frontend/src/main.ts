@@ -15,9 +15,15 @@
 //   CLAIMS. A transfer that arrives for an ineligible holder is held rather
 //   than rejected, on both sides. That balance is invisible unless the UI goes
 //   looking for it, so it does, and offers the claim.
+//
+// ONE WALLET. The holder is their EVM wallet on both chains: it holds the
+// asset on Ethereum and, under the same address, the private position in the
+// Veil pool. Every Veil action is signed with personal_sign and submitted by
+// the prover's relayer, so there is no Starknet wallet to connect, no
+// destination address to type, and no STRK to hold.
 
 import {
-  isDeployed, deployment, evmLabel, starknetLabel, EXPLORER_EVM, EXPLORER_SN, LZ_SCAN, STARKNET_FEE_TOKEN,
+  isDeployed, deployment, evmLabel, starknetLabel, EXPLORER_EVM, EXPLORER_SN, LZ_SCAN,
   PROVER_ENDPOINT, PROVER_MASTER_ADDRESS, IS_DEMO,
 } from './config';
 import { assets, defaultAsset, faucetTokens, faucetRouter, isCash, type Asset } from './assets';
@@ -29,7 +35,7 @@ import * as sn from './starknet';
 import { load as loadHistory, record, update, type Transfer } from './history';
 import { recipientGate, mirrorRefusal, mirrorUnreadable, type Gate } from './eligibility';
 import {
-  deriveNoteContext, findFillableNote, forgetViewingKey, createOpenNote,
+  deriveNoteContext, findFillableNote, forgetViewingKey, createOpenNote, bridgeBackPrivately,
   hasCachedViewingKey, registeredViewingKey, registerInPool, privateBalances,
   type AssetBalance, type NoteContext, type NoteSlot,
 } from './notes';
@@ -60,32 +66,37 @@ type State = {
   /// Whether the quote breakdown is expanded. Kept in state so a re-render
   /// does not snap it shut while the holder is reading it.
   detailsOpen: boolean;
+  /// The holder's wallet: on Ethereum, and under the same address in Veil.
   evmSession?: evm.EvmSession;
-  snSession?: sn.SnSession;
   token: { symbol: string; decimals: number };
   /// What a whole token is worth in the twin's units (1:1 but for Securitize
   /// assets, whose twin counts the token's shares).
   scale: UnitScale;
   amount: string;
+  /// Always the connected wallet, in both directions. Never typed.
   recipient: string;
   /// Wallets to choose between, when more than one is installed.
   evmPicker?: evm.EvmWallet[];
   evmStatus?: evm.EvmStatus;
   mirror?: sn.MirrorStatus;
-  /// Whether the Veil pool holds the viewing key this Starknet wallet signs for.
-  /// Set only once the signature has run; undefined until then.
+  /// Whether the Veil pool holds the viewing key this wallet signs for. Set
+  /// only once the signature has run; undefined until then.
   poolVerified?: boolean;
-  /// Which connected wallet's assets panel is open, if any.
-  walletPanel?: 'evm' | 'sn';
-  /// Public balances (EVM wallet) and private Veil pool balances (Starknet
-  /// wallet), per asset id. Undefined until read; an undefined public entry is
-  /// a read that failed, not a zero.
+  /// Whether the assets panel is open.
+  walletPanel?: boolean;
+  /// Public balances on Ethereum and private ones in the Veil pool, per asset
+  /// id -- the same wallet, two places. Undefined until read; an undefined
+  /// public entry is a read that failed, not a zero.
   publicBalances?: Record<string, AssetBalance | undefined>;
   privateBalances?: Record<string, AssetBalance>;
-  balancesBusy: { evm: boolean; sn: boolean };
-  balancesError: { evm?: string; sn?: string };
+  balancesBusy: { evm: boolean; veil: boolean };
+  balancesError: { evm?: string; veil?: string };
   claimableEvm: bigint;
-  feeBalance: bigint;
+  /// The selected asset's twin held privately in the pool, in tokens. Read
+  /// with the viewing key; undefined until then.
+  privateTwin?: bigint;
+  /// The message fee: ETH for a bridge-in, and for a bridge back the STRK the
+  /// gateway pays (the holder only caps it).
   fee?: bigint;
   busy?: string;
   error?: string;
@@ -132,8 +143,7 @@ const state: State = {
   amount: '',
   recipient: '',
   claimableEvm: 0n,
-  feeBalance: 0n,
-  balancesBusy: { evm: false, sn: false },
+  balancesBusy: { evm: false, veil: false },
   balancesError: {},
   cashFast: { toStarknet: false, toEvm: true },
 };
@@ -171,7 +181,7 @@ const destMark = () => (toStarknet() ? 'sn' : 'eth');
 function sourceBalance(): bigint | undefined {
   if (toStarknet()) return state.evmStatus?.balance;
   if (cashAsset()) return state.cashPrivate;
-  return state.mirror?.balance;
+  return state.privateTwin;
 }
 
 // --------------------------------------------------------------- eligibility
@@ -203,20 +213,14 @@ function gates(): Gate[] {
           : 'The issuer must register the lockbox in the identity registry, or the escrow reverts inside the token.')
         : undefined,
     });
-    if (state.asset.poolReady) {
-      // The destination is a Veil pool note, and the pool only creates one for a
-      // wallet registered with the viewing key it signs for. Nothing on the EVM
-      // side can answer that, and connecting alone cannot either: until the
-      // signature has run and the pool has been checked, this is unknown --
-      // never "eligible".
-      const verified = state.poolVerified;
+    // Registering the wallet in the pool is not a gate: Bridge does it, with one
+    // signature, the first time. Only a wallet the pool already holds under a
+    // DIFFERENT viewing key cannot receive, and that is said when it happens.
+    if (state.poolVerified === false) {
       out.push({
-        ok: state.snSession ? (verified ?? null) : null,
-        label: `Your ${starknetLabel} wallet is verified in the Veil pool`,
-        detail: !state.snSession ? `Connect your ${starknetLabel} wallet to check.`
-          : verified === undefined ? 'Sign the message in your wallet to verify it.'
-          : !verified ? 'This wallet could not be verified in the Veil pool.'
-          : undefined,
+        ok: false,
+        label: 'Your wallet is registered in the Veil pool',
+        detail: 'It is registered with a different viewing key, so notes cannot be created for it here.',
       });
     }
     if (state.recipient) {
@@ -256,8 +260,7 @@ function eligibilityCard(): string {
     return `<div class="eligibility"><div class="eligibility-head">Eligibility</div>
       <p>${esc(state.asset.name)} is not deployed on this route yet.</p></div>`;
   }
-  const connected = toStarknet() ? state.evmSession : state.snSession;
-  if (!connected) return '';
+  if (!state.evmSession) return '';
 
   const list = gates();
   const failing = list.filter((g) => g.ok === false);
@@ -278,8 +281,6 @@ function eligibilityCard(): string {
   const tone = failing.length > 0 ? (onlyRecipient ? 'is-warn' : 'is-bad') : 'is-warn';
   const head = failing.length > 0
     ? (onlyRecipient ? 'Will arrive held' : 'Not eligible')
-    : toStarknet() && !state.snSession ? `Connect your ${starknetLabel} wallet`
-    : toStarknet() && state.asset.poolReady && state.poolVerified === undefined ? `Verify your ${starknetLabel} wallet`
     : 'Could not check';
 
   const items = [...failing, ...unknown].map((g) => {
@@ -304,13 +305,13 @@ function claimsCard(): string {
 
   const rows: string[] = [];
   if (pending > 0n) {
+    // Released into a pool note, never to a public balance -- which takes a
+    // Starknet transaction. Anyone may send it; Veil does, once you are eligible.
     const ready = state.mirror?.verified === true;
     rows.push(`<div class="claim-row">
       <div><strong>${esc(units(pending, state.token.decimals))} ${esc(state.token.symbol)}</strong>
         <span class="claim-where">held on ${esc(starknetLabel)}</span></div>
-      <button id="claim-sn" class="max" ${ready && state.snSession ? '' : 'disabled'}>
-        ${ready ? (state.snSession ? 'Claim' : 'Connect wallet') : 'Not eligible yet'}
-      </button>
+      <span class="claim-where">${ready ? 'Veil releases it into your note' : 'Not eligible yet'}</span>
     </div>`);
   }
   if (held > 0n) {
@@ -326,7 +327,7 @@ function claimsCard(): string {
   return `<div class="claims">
     <div class="claims-head">Held for you</div>
     ${rows.join('')}
-    <p class="claims-note">Arrived while the recipient was not eligible. Nothing is lost — it stays claimable, and anyone can pay the gas to release it.</p>
+    <p class="claims-note">Arrived while you were not eligible. Nothing is lost — it stays claimable, and anyone can pay the gas to release it.</p>
   </div>`;
 }
 
@@ -343,8 +344,8 @@ function deliveryControls(): string {
   if (cashAsset()) return cashControls();
   if (!toStarknet() || !state.asset.poolReady) return '';
   const claimed = state.noteClaimedBy;
-  const mine = claimed && state.snSession &&
-    BigInt(claimed) === BigInt(state.snSession.address);
+  const mine = claimed && state.evmSession &&
+    BigInt(claimed) === BigInt(state.evmSession.address);
   const unclaimed = claimed !== undefined && BigInt(claimed) === 0n;
 
   return `<div class="delivery">
@@ -408,12 +409,12 @@ function noteSection(claimed: string | undefined, mine: boolean, unclaimed: bool
   // leaving the holder to guess which one is the real one.
   // Nothing to say before there is a note. Bridge sets it up; explaining the
   // mechanism to someone who has not asked is noise on the way to a transfer.
-  if (!state.snSession || !state.noteCtx || !state.noteId) return '';
+  if (!state.evmSession || !state.noteCtx || !state.noteId) return '';
 
   const state_line = mine
     ? `<p class="delivery-note is-ok">Claimed by you. Ready to fill.</p>`
     : unclaimed
-      ? `<p class="delivery-note">Not claimed yet — Bridge claims it before sending.</p>`
+      ? `<p class="delivery-note">Your bridge-in claims it: it names your wallet as the holder.</p>`
       : claimed !== undefined
         ? `<p class="delivery-note is-warn">Claimed by another address, so it cannot be filled for you.</p>`
         : '';
@@ -437,6 +438,11 @@ function validNoteId(): boolean {
 
 // ------------------------------------------------------------- asset picker
 
+/// Deployed, and its gateway takes EVM wallets as holders (or has not answered
+/// yet). An asset whose gateway predates EVM holders needs a Starknet account
+/// on the far side, which this app does not have.
+const usableAsset = (a: Asset): boolean => a.available && a.evmReady !== false;
+
 function assetPill(): string {
   const a = state.asset;
   return `<button id="asset-pill" class="token-pill" aria-haspopup="listbox" aria-expanded="${state.pickerOpen}">
@@ -448,12 +454,14 @@ function assetPicker(): string {
   if (!state.pickerOpen) return '';
   const rows = assets.map((a) => {
     const selected = a.id === state.asset.id;
-    return `<button class="asset-row${selected ? ' is-selected' : ''}${a.available ? '' : ' is-off'}"
-        data-asset="${esc(a.id)}" ${a.available ? '' : 'disabled'} role="option" aria-selected="${selected}">
+    const usable = usableAsset(a);
+    const tag = !a.available ? 'not deployed' : a.evmReady === false ? 'not available' : a.category;
+    return `<button class="asset-row${selected ? ' is-selected' : ''}${usable ? '' : ' is-off'}"
+        data-asset="${esc(a.id)}" ${usable ? '' : 'disabled'} role="option" aria-selected="${selected}">
       <span class="token-mark" style="background:${tint(a)}"></span>
       <span class="asset-text"><span class="asset-symbol">${esc(a.symbol)}</span>
         <span class="asset-name">${esc(a.name)}</span></span>
-      <span class="asset-tag">${a.available ? esc(a.category) : 'not deployed'}</span></button>`;
+      <span class="asset-tag">${esc(tag)}</span></button>`;
   }).join('');
   return `<div class="picker" role="listbox" aria-label="Select an asset">
     <div class="picker-head">Asset</div>${rows}
@@ -472,15 +480,22 @@ function ctaLabel(): { text: string; disabled: boolean; note: string } {
   if (!state.asset.available) {
     return { text: `${state.asset.symbol} not available`, disabled: true, note: 'Pick an asset this deployment carries.' };
   }
+  if (state.asset.evmReady === false) {
+    return {
+      text: `${state.asset.symbol} not available`, disabled: true,
+      note: 'Its bridge gateway predates wallet-only holders. Pick another asset.',
+    };
+  }
   if (state.busy) return { text: state.busy, disabled: true, note: '' };
 
-  if (toStarknet() && !state.evmSession) return { text: `Connect ${evmLabel} wallet`, disabled: false, note: '' };
-  if (!toStarknet() && !state.snSession) return { text: `Connect ${starknetLabel} wallet`, disabled: false, note: '' };
-  if (!state.recipient) {
+  // One wallet, both directions: it is the sender and, under the same address,
+  // the holder on the other side.
+  if (!state.evmSession) return { text: 'Connect wallet', disabled: false, note: '' };
+  // Bridging back spends private notes, which only the viewing key can find.
+  if (!toStarknet() && !state.noteCtx) {
     return {
-      text: `Connect your ${destLabel()} wallet`,
-      disabled: true,
-      note: 'The destination is your own wallet — it is never typed in.',
+      text: 'Show my Veil balance', disabled: false,
+      note: 'One signature in your wallet reads your private balance. It moves nothing.',
     };
   }
 
@@ -560,18 +575,36 @@ function ctaLabel(): { text: string; disabled: boolean; note: string } {
 
   const m = state.mirror;
   if (m && !m.verified) return { text: 'Not eligible to bridge', disabled: true, note: 'A frozen or revoked holder cannot move value, cross-chain included.' };
-  if (state.fee !== undefined && state.feeBalance < state.fee) {
-    return { text: 'Not enough STRK for the fee', disabled: true, note: `Need ${units(state.fee, 18, 5)} STRK.` };
+  if (!PROVER_ENDPOINT || !PROVER_MASTER_ADDRESS) {
+    return {
+      text: 'Bridge back unavailable', disabled: true,
+      note: 'Leaving the pool needs a Veil prover endpoint, which this deployment has not configured.',
+    };
+  }
+  // The pool pays the gateway `amount + 1` and gets the 1 back as change.
+  if (state.privateTwin !== undefined && amount + 1n > state.privateTwin) {
+    return { text: 'Insufficient balance', disabled: true, note: 'Bridging back keeps 1 base unit in the pool as change.' };
   }
   const fee = state.fee !== undefined ? `${units(state.fee, 18, 5)} STRK` : '…';
-  return { text: 'Bridge back', disabled: false, note: `Message fee ${fee}. You approve the gateway, which pays the endpoint.` };
+  return {
+    text: 'Bridge back',
+    disabled: false,
+    note: `One signature in your wallet. The LayerZero fee (${fee}) is paid by the bridge, not by you.`,
+  };
+}
+
+/// The LayerZero fee: paid in ETH by the wallet on a bridge-in, and in STRK by
+/// the bridge gateway on a bridge back.
+function msgFeeText(): string {
+  if (state.fee === undefined) return '—';
+  return toStarknet() ? `${units(state.fee, 18, 6)} ETH` : `${units(state.fee, 18, 6)} STRK, paid by the bridge`;
 }
 
 function transferView(): string {
   const cta = ctaLabel();
   const bal = sourceBalance();
   const balance = bal !== undefined ? `${units(bal, state.token.decimals)} ${state.token.symbol}` : '—';
-  const other = toStarknet() ? (cashAsset() ? state.cashPrivate : state.mirror?.balance) : state.evmStatus?.balance;
+  const other = toStarknet() ? (cashAsset() ? state.cashPrivate : state.privateTwin) : state.evmStatus?.balance;
   const destBalance = other !== undefined ? `${units(other, state.token.decimals)} ${state.token.symbol}` : '—';
 
   const banner = !isDeployed
@@ -579,20 +612,14 @@ function transferView(): string {
     : state.error ? `<div class="banner is-bad">${esc(state.error)}</div>`
     : state.notice ? `<div class="banner">${esc(state.notice)}</div>` : '';
 
-  // The destination is WHOEVER IS CONNECTED, never something typed.
-  //
-  // On the way in, the amount lands in an open note whose id is derived from
-  // the recipient's PRIVATE viewing key. Only they can produce that, by signing
-  // -- so a typed address could never receive into a pool, and offering the box
-  // would only invite someone to send to an address the app cannot deliver to.
-  // Connecting is also what derives the key, exactly as VeilX does it: connect,
-  // sign the typed message, and the note follows.
-  const destWallet = toStarknet() ? state.snSession?.address : state.evmSession?.address;
-  const connectDest = destWallet
-    ? `<div class="dest-wallet"><span class="dest-mark"></span><span class="mono">${esc(short(destWallet, 10, 8))}</span>
-         <button class="dest-disconnect" data-disconnect="${toStarknet() ? 'sn' : 'evm'}"
-           title="Disconnect">Disconnect</button></div>`
-    : `<button id="connect-dest" class="max" style="margin-top:8px">Connect ${esc(toStarknet() ? starknetLabel : evmLabel)} wallet</button>`;
+  // The destination is the connected wallet, never something typed. On the way
+  // in it holds the position inside Veil under its own address; on the way back
+  // the release arrives in it on Ethereum.
+  const me = state.evmSession?.address;
+  const connectDest = me
+    ? `<div class="dest-wallet"><span class="dest-mark"></span><span class="mono">${esc(short(me, 10, 8))}</span>
+         <span class="dest-note">${toStarknet() ? 'your wallet, inside Veil' : 'your wallet'}</span></div>`
+    : `<button id="connect-dest" class="max" style="margin-top:8px">Connect wallet</button>`;
 
   // A MODAL, not inline content. The previous version rendered the picker as a
   // block above the card, so with the page scrolled at all it sat off-screen --
@@ -648,7 +675,7 @@ function transferView(): string {
       <div class="detail"><dt>Route</dt><dd>${esc(sourceLabel())} → ${esc(destLabel())}</dd></div>
       ${toStarknet() && state.asset.poolReady
         ? `<div class="detail"><dt>Lands as</dt><dd>Pool note</dd></div>` : ''}
-      ${cashAsset() ? cashDetails() : `<div class="detail"><dt>Message fee</dt><dd>${state.fee !== undefined ? units(state.fee, 18, 6) + (toStarknet() ? ' ETH' : ' STRK') : '—'}</dd></div>
+      ${cashAsset() ? cashDetails() : `<div class="detail"><dt>Message fee</dt><dd id="msg-fee">${msgFeeText()}</dd></div>
       <div class="detail"><dt>Bridge fee</dt><dd>0</dd></div>
       <div class="detail"><dt>Estimated time</dt><dd>~3–10 min</dd></div>`}
     </dl>
@@ -772,15 +799,11 @@ function render(): void {
   }
 
   const connectDest = document.getElementById('connect-dest');
-  if (connectDest) connectDest.onclick = () => void (toStarknet() ? doConnectStarknet() : doConnectEvm());
+  if (connectDest) connectDest.onclick = () => void doConnectEvm();
 
-  const selfRelay = document.getElementById('cash-self-relay');
-  if (selfRelay) selfRelay.onclick = () => void doCashSelfRelay();
   const mint = document.getElementById('cash-mint');
   if (mint) mint.onclick = () => void doCashMint();
 
-  const claimSn = document.getElementById('claim-sn');
-  if (claimSn) claimSn.onclick = () => void doClaimStarknet();
   const claimEvm = document.getElementById('claim-evm');
   if (claimEvm) claimEvm.onclick = () => void doClaimEvm();
 
@@ -797,10 +820,6 @@ function render(): void {
       state.evmPicker = undefined;
       void doConnectEvm(row.dataset.wallet!);
     };
-  });
-
-  document.querySelectorAll<HTMLButtonElement>('[data-disconnect]').forEach((b) => {
-    b.onclick = () => void doDisconnect(b.dataset.disconnect as 'sn' | 'evm');
   });
 
   const details = document.querySelector('.details-wrap');
@@ -844,9 +863,8 @@ async function doCheckPool(): Promise<void> {
   render();
 }
 
-/// Both wallets, in the header, connect-or-address -- the shape VeilX uses in
-/// its topbar. A bridge touches two chains, so a single "Connect wallet" would
-/// never say which one it meant.
+/// The wallet, in the header, connect-or-address -- the shape VeilX uses in its
+/// topbar. One wallet serves both chains, so there is one chip.
 function paintNavWallets(): void {
   const host = document.getElementById('nav-wallets');
   if (!host) return;
@@ -855,50 +873,40 @@ function paintNavWallets(): void {
   // STATUS chip -- muted, because it is reporting, not asking. Not connected is
   // an ACTION, and the muted style read as greyed-out for it: the same grey the
   // CTA uses for `:disabled`, on the one control the page most needs pressed.
-  const chip = (
-    chain: 'evm' | 'sn', label: string, address: string | undefined
-  ): string => address
-    ? `<button class="nav-chip is-on" data-nav-wallet="${chain}" title="${esc(label)} — your assets">
+  const address = state.evmSession?.address;
+  const chip = address
+    ? `<button class="nav-chip is-on" id="nav-wallet" title="Your assets">
          <span class="nav-dot"></span><span class="mono">${esc(short(address, 6, 4))}</span>
        </button>`
-    : `<button class="nav-chip is-action" data-nav-wallet="${chain}">Connect ${esc(label)}</button>`;
+    : `<button class="nav-chip is-action" id="nav-wallet">Connect wallet</button>`;
 
-  // Only when an EVM wallet is connected and there is something to claim:
-  // a faucet button with nowhere to send the tokens is just a dead control.
+  // Only when a wallet is connected and there is something to claim: a faucet
+  // button with nowhere to send the tokens is just a dead control.
   const faucet = state.evmSession && faucetTokens().length
     ? `<button class="nav-chip is-action" id="get-faucets" ${state.busy ? 'disabled' : ''}>
          ${state.busy === FAUCET_BUSY ? 'Claiming…' : 'Get faucets'}
        </button>`
     : '';
 
-  host.innerHTML =
-    faucet +
-    chip('evm', evmLabel, state.evmSession?.address) +
-    chip('sn', starknetLabel, state.snSession?.address);
+  host.innerHTML = faucet + chip;
 
   const getFaucets = document.getElementById('get-faucets');
   if (getFaucets) getFaucets.onclick = () => void doGetFaucets();
-
-  host.querySelectorAll<HTMLButtonElement>('[data-nav-wallet]').forEach((b) => {
-    const chain = b.dataset.navWallet as 'evm' | 'sn';
-    const connected = chain === 'evm' ? state.evmSession : state.snSession;
-    b.onclick = () => void (connected
-      ? openWalletPanel(chain)
-      : chain === 'evm' ? doConnectEvm() : doConnectStarknet());
-  });
+  document.getElementById('nav-wallet')!.onclick = () =>
+    void (state.evmSession ? openWalletPanel() : doConnectEvm());
 
   paintWalletPanel();
 }
 
-/// The assets behind a connected wallet, in veilx's balances panel: PUBLIC
-/// balances for the EVM wallet, PRIVATE ones -- the notes this wallet owns in
-/// the Veil pool -- for the Starknet wallet. Two separate things, never mixed
-/// into one list.
+/// The assets behind the wallet, in veilx's balances panel: PUBLIC balances on
+/// Ethereum and PRIVATE ones -- the notes this wallet owns in the Veil pool --
+/// side by side. The private column needs the viewing key, which costs one
+/// signature the first time; it is never asked for just because the panel
+/// opened.
 function paintWalletPanel(): void {
-  const chain = state.walletPanel;
-  const session = chain === 'evm' ? state.evmSession : chain === 'sn' ? state.snSession : undefined;
+  const session = state.evmSession;
   let host = document.getElementById('wallet-panel');
-  if (!chain || !session) {
+  if (!state.walletPanel || !session) {
     if (host) host.innerHTML = '';
     return;
   }
@@ -908,108 +916,108 @@ function paintWalletPanel(): void {
     document.body.appendChild(host);
   }
 
-  const isEvm = chain === 'evm';
-  const busy = state.balancesBusy[chain];
-  const values = isEvm ? state.publicBalances : state.privateBalances;
-  const list = assets.filter((a) => (isEvm ? a.addresses.evm?.token : a.addresses.starknet?.token));
-  const rows = list.map((a) => {
-    const v = values?.[a.id];
-    const amount = v ? units(v.balance, v.decimals, 4) : busy ? '…' : '—';
-    return `<div class="bal-row">
+  const busy = state.balancesBusy.evm || state.balancesBusy.veil;
+  const list = assets.filter((a) => a.addresses.evm?.token || a.addresses.starknet?.token);
+  const cell = (v: AssetBalance | undefined, reading: boolean, locked = false): string =>
+    v ? units(v.balance, v.decimals, 4) : locked ? '·' : reading ? '…' : '—';
+  const locked = !state.noteCtx;
+  const rows = list.map((a) => `<div class="bal-row">
       <span class="bal-sym">${esc(a.symbol)}</span>
       <span class="bal-name">${esc(a.name)}</span>
-      <span class="bal-amt">${esc(amount)}</span>
-    </div>`;
-  }).join('');
-  const error = state.balancesError[chain];
+      <span class="bal-amt">${esc(cell(state.publicBalances?.[a.id], state.balancesBusy.evm))}</span>
+      <span class="bal-amt">${esc(a.addresses.starknet?.token ? cell(state.privateBalances?.[a.id], state.balancesBusy.veil, locked) : '—')}</span>
+    </div>`).join('');
+  const error = state.balancesError.evm ?? state.balancesError.veil;
 
   host.innerHTML = `
     <div class="bal-backdrop" data-bal="close"></div>
     <div class="bal-panel" role="dialog" aria-label="Your assets">
       <div class="bal-head">
         <strong>Your assets</strong>
-        <span class="mono">${esc(isEvm ? evmLabel : starknetLabel)} · ${esc(short(session.address, 6, 4))}</span>
+        <span class="mono">${esc(short(session.address, 6, 4))}</span>
       </div>
       <div class="bal-row bal-hdr">
         <span class="bal-sym">Asset</span><span class="bal-name"></span>
-        <span class="bal-amt">${isEvm ? 'Public' : 'Private'}</span>
+        <span class="bal-amt">${esc(evmLabel)}</span><span class="bal-amt">In Veil</span>
       </div>
       ${rows || '<div class="bal-row"><span class="bal-name">No assets on this route.</span></div>'}
       ${error ? `<div class="bal-err">${esc(error)}</div>` : ''}
       <div class="bal-foot">
+        ${locked ? `<button data-bal="unlock" ${busy ? 'disabled' : ''}>Show Veil balances</button>` : ''}
         <button data-bal="refresh" ${busy ? 'disabled' : ''}>${busy ? 'Loading…' : 'Refresh'}</button>
         <button data-bal="disconnect">Disconnect</button>
       </div>
     </div>`;
 
   host.querySelector<HTMLElement>('[data-bal="close"]')!.onclick = () => {
-    state.walletPanel = undefined;
+    state.walletPanel = false;
     render();
   };
-  host.querySelector<HTMLButtonElement>('[data-bal="refresh"]')!.onclick = () => void loadWalletBalances(chain);
+  const unlock = host.querySelector<HTMLButtonElement>('[data-bal="unlock"]');
+  if (unlock) unlock.onclick = () => void loadWalletBalances(true);
+  host.querySelector<HTMLButtonElement>('[data-bal="refresh"]')!.onclick = () => void loadWalletBalances(false);
   host.querySelector<HTMLButtonElement>('[data-bal="disconnect"]')!.onclick = () => {
-    state.walletPanel = undefined;
-    void doDisconnect(chain);
+    state.walletPanel = false;
+    void doDisconnect();
   };
 }
 
-function openWalletPanel(chain: 'evm' | 'sn'): void {
-  state.walletPanel = state.walletPanel === chain ? undefined : chain;
+function openWalletPanel(): void {
+  state.walletPanel = !state.walletPanel;
   render();
-  if (state.walletPanel) void loadWalletBalances(chain);
+  if (state.walletPanel) void loadWalletBalances(false);
 }
 
-/// Read the balances for one wallet's panel. Opening the Starknet panel is the
-/// holder asking for their private balances, so it may prompt for the viewing
-/// key signature once; the key is cached after, the same as on connect.
-async function loadWalletBalances(chain: 'evm' | 'sn'): Promise<void> {
-  if (state.balancesBusy[chain]) return;
-  state.balancesBusy[chain] = true;
-  state.balancesError[chain] = undefined;
+/// Read the balances for the panel. Public ones always; private ones when the
+/// viewing key is at hand, or when `unlock` -- the holder pressing "Show Veil
+/// balances" -- asks for the one signature that derives it.
+async function loadWalletBalances(unlock: boolean): Promise<void> {
+  const session = state.evmSession;
+  if (!session || state.balancesBusy.evm || state.balancesBusy.veil) return;
+  state.balancesBusy = { evm: true, veil: Boolean(state.noteCtx) || unlock };
+  state.balancesError = {};
   render();
-  try {
-    if (chain === 'evm') {
-      const session = state.evmSession;
-      if (!session) return;
-      const list = assets.filter((a) => a.addresses.evm?.token);
-      const read = await Promise.all(list.map((a) => evm.publicBalance(a, session.address)));
-      // The wallet may have switched account while this was reading.
-      if (state.evmSession?.address !== session.address) return;
-      state.publicBalances = Object.fromEntries(list.map((a, i) => [a.id, read[i]]));
-      if (read.some((r) => r === undefined)) {
-        state.balancesError.evm = 'Some balances could not be read. Try Refresh.';
-      }
-    } else {
-      const session = state.snSession;
-      if (!session) return;
-      const pool = mainPool(state.asset);
-      if (!pool) {
-        state.balancesError.sn = 'No Veil pool is configured for this deployment.';
-        return;
-      }
-      if (!state.noteCtx) state.noteCtx = await deriveNoteContext(session);
-      const list = assets.filter((a) => a.addresses.starknet?.token);
-      const read = await privateBalances(pool, state.noteCtx, list);
-      // Notes of a Securitize twin hold shares; show what they are worth.
-      await Promise.all(list.map(async (a) => {
-        const row = read[a.id];
-        if (!row || a.addresses.evm?.kind !== 'securitize') return;
-        const info = await evm.tokenInfo(a);
-        const scale = await evm.unitScale(a, info.decimals);
-        read[a.id] = { balance: unitsToTokens(row.balance, scale), decimals: info.decimals };
-      }));
-      if (state.snSession?.address !== session.address) return;
-      state.privateBalances = read;
+  const publicRead = (async () => {
+    const list = assets.filter((a) => a.addresses.evm?.token);
+    const read = await Promise.all(list.map((a) => evm.publicBalance(a, session.address)));
+    // The wallet may have switched account while this was reading.
+    if (state.evmSession?.address !== session.address) return;
+    state.publicBalances = Object.fromEntries(list.map((a, i) => [a.id, read[i]]));
+    if (read.some((r) => r === undefined)) {
+      state.balancesError.evm = 'Some balances could not be read. Try Refresh.';
     }
-  } catch (e: any) {
+  })().catch((e: any) => { state.balancesError.evm = `Could not read balances: ${String(e?.message ?? e)}`; })
+    .finally(() => { state.balancesBusy.evm = false; });
+
+  const privateRead = (async () => {
+    if (!state.noteCtx && !unlock) return;
+    const pool = mainPool(state.asset);
+    if (!pool) {
+      state.balancesError.veil = 'No Veil pool is configured for this deployment.';
+      return;
+    }
+    if (!state.noteCtx) state.noteCtx = await deriveNoteContext(session);
+    const list = assets.filter((a) => a.addresses.starknet?.token);
+    const read = await privateBalances(pool, state.noteCtx, list);
+    // Notes of a Securitize twin hold shares; show what they are worth.
+    await Promise.all(list.map(async (a) => {
+      const row = read[a.id];
+      if (!row || a.addresses.evm?.kind !== 'securitize') return;
+      const info = await evm.tokenInfo(a);
+      const scale = await evm.unitScale(a, info.decimals);
+      read[a.id] = { balance: unitsToTokens(row.balance, scale), decimals: info.decimals };
+    }));
+    if (state.evmSession?.address !== session.address) return;
+    state.privateBalances = read;
+  })().catch((e: any) => {
     const m = String(e?.message ?? e);
-    state.balancesError[chain] = /reject|denied|abort|cancel/i.test(m)
+    state.balancesError.veil = /reject|denied|abort|cancel/i.test(m)
       ? 'Sign the message in your wallet to read your private balances.'
-      : `Could not read balances: ${m}`;
-  } finally {
-    state.balancesBusy[chain] = false;
-    render();
-  }
+      : `Could not read your Veil balances: ${m}`;
+  }).finally(() => { state.balancesBusy.veil = false; });
+
+  await Promise.all([publicRead, privateRead]);
+  render();
 }
 
 const FAUCET_BUSY = 'Claiming test tokens…';
@@ -1073,11 +1081,8 @@ document.addEventListener('keydown', (e) => {
 
 async function reverse(): Promise<void> {
   state.direction = toStarknet() ? 'toEvm' : 'toStarknet';
-  // The recipient belongs to whichever chain is now the destination, and the
-  // old value is an address on the wrong one. Prefill from a connected wallet
-  // rather than leaving something that would fail validation.
-  const wallet = toStarknet() ? state.snSession?.address : state.evmSession?.address;
-  state.recipient = wallet ?? '';
+  // Same wallet either way: it is the recipient in both directions.
+  state.recipient = state.evmSession?.address ?? '';
   state.amount = '';
   state.fee = undefined;
   state.error = undefined;
@@ -1088,7 +1093,7 @@ async function reverse(): Promise<void> {
 
 async function selectAsset(id: string): Promise<void> {
   const next = assets.find((a) => a.id === id);
-  if (!next || !next.available || next.id === state.asset.id) {
+  if (!next || !usableAsset(next) || next.id === state.asset.id) {
     state.pickerOpen = false; render(); return;
   }
   // Switching asset switches the whole contract set, so every cached read is
@@ -1115,17 +1120,13 @@ async function selectAsset(id: string): Promise<void> {
   state.poolChecking = false;
   state.cashFee = undefined;
   state.cashPrivate = undefined;
+  state.privateTwin = undefined;
   state.evmStatus = undefined;
   render();
   try { state.token = await evm.tokenInfo(next); } catch { /* catalogue stands */ }
   // The viewing key is per wallet, not per asset: keep it, so switching to USDC
   // (or away) does not ask for the signature again.
-  if (state.snSession && !state.noteCtx) {
-    const chainId = (await sn.snProvider.getChainId().catch(() => '')) as unknown as string;
-    if (chainId && hasCachedViewingKey(state.snSession.address, chainId)) {
-      state.noteCtx = await deriveNoteContext(state.snSession).catch(() => undefined);
-    }
-  }
+  await restoreNoteContext();
   await refreshAll();
 }
 
@@ -1152,6 +1153,8 @@ function refreshQuote(): void {
       return;
     }
     try {
+      // Bridging back, the fee is STRK the gateway pays; it is shown so the
+      // holder knows what they are capping, not because they pay it.
       state.fee = toStarknet()
         ? await evm.quote(state.asset, amount, state.recipient)
         : await sn.quoteBridgeBack(state.asset, await evm.unitsFor(state.asset, amount), state.recipient);
@@ -1160,11 +1163,8 @@ function refreshQuote(): void {
       state.fee = undefined;
     }
     paintCta();
-    const cells = document.querySelectorAll('.detail dd');
-    if (cells[2]) {
-      cells[2].textContent = state.fee !== undefined
-        ? `${units(state.fee, 18, 6)} ${toStarknet() ? 'ETH' : 'STRK'}` : '—';
-    }
+    const cell = document.getElementById('msg-fee');
+    if (cell) cell.textContent = msgFeeText();
   }, 350);
 }
 
@@ -1180,7 +1180,7 @@ async function refreshAll(): Promise<void> {
     if (state.evmSession) {
       jobs.push(cash.evmStatus(state.evmSession.address).then((s) => { state.evmStatus = s; }).catch(() => {}));
     }
-    if (state.snSession && state.noteCtx) jobs.push(loadCashPrivate());
+    if (state.noteCtx) jobs.push(loadCashPrivate());
     await Promise.all(jobs);
     render();
     refreshQuote();
@@ -1188,17 +1188,13 @@ async function refreshAll(): Promise<void> {
   }
 
   if (state.evmSession) {
-    jobs.push(evm.evmStatus(asset, state.evmSession.address).then((s) => { state.evmStatus = s; }).catch(() => {}));
-    jobs.push(evm.claimableOf(asset, state.evmSession.address).then((c) => { state.claimableEvm = c; }).catch(() => {}));
-  }
-  if (state.snSession) {
-    jobs.push(sn.mirrorStatus(asset, state.snSession.address).then((m) => { state.mirror = inTokens(m); }).catch(() => {}));
-    jobs.push(sn.feeTokenBalance(STARKNET_FEE_TOKEN, state.snSession.address).then((b) => { state.feeBalance = b; }).catch(() => {}));
-  }
-  // When bridging in, the mirror status we care about is the RECIPIENT's, not
-  // our own wallet's.
-  if (toStarknet() && state.recipient) {
-    jobs.push(sn.mirrorStatus(asset, state.recipient).then((m) => { state.mirror = inTokens(m); }).catch(() => {}));
+    const me = state.evmSession.address;
+    jobs.push(evm.evmStatus(asset, me).then((s) => { state.evmStatus = s; }).catch(() => {}));
+    jobs.push(evm.claimableOf(asset, me).then((c) => { state.claimableEvm = c; }).catch(() => {}));
+    // The wallet holds as itself on the mirror too, so its own record is the
+    // one that decides both directions.
+    jobs.push(sn.mirrorStatus(asset, me).then((m) => { state.mirror = inTokens(m); }).catch(() => {}));
+    if (state.noteCtx) jobs.push(loadPrivateTwin());
   }
   await Promise.all(jobs);
   render();
@@ -1208,12 +1204,14 @@ async function refreshAll(): Promise<void> {
 
 async function doConnectEvm(rdns?: string): Promise<void> {
   state.busy = 'Connecting…'; paintCta();
+  const previous = state.evmSession?.address;
   try {
     state.evmSession = await evm.connectEvm(rdns);
     watchEvm();
+    if (previous && previous.toLowerCase() !== state.evmSession.address.toLowerCase()) forgetHolder();
     state.token = await evm.tokenInfo(state.asset);
-    // Bridging back, the destination is this wallet. Not a choice.
-    if (!toStarknet()) state.recipient = state.evmSession.address;
+    // The destination is this wallet, in both directions. Not a choice.
+    state.recipient = state.evmSession.address;
     state.error = undefined;
   } catch (e: any) {
     // More than one wallet installed: show the picker instead of guessing.
@@ -1225,61 +1223,39 @@ async function doConnectEvm(rdns?: string): Promise<void> {
     }
   } finally {
     state.busy = undefined;
-    await refreshAll();
+  }
+  // Connecting signs nothing. The viewing key is derived when something needs
+  // it -- a bridge, or the holder asking for their Veil balance -- unless this
+  // browser already holds it for this wallet.
+  await restoreNoteContext();
+  await refreshAll();
+  await findNoteIfFree();
+}
+
+/// The viewing key, when it costs no signature: this browser already derived
+/// it for the connected wallet.
+async function restoreNoteContext(): Promise<void> {
+  const session = state.evmSession;
+  if (!session || state.noteCtx) return;
+  const chainId = (await sn.snProvider.getChainId().catch(() => '')) as unknown as string;
+  if (chainId && hasCachedViewingKey(session.address, chainId)) {
+    state.noteCtx = await deriveNoteContext(session).catch(() => undefined);
   }
 }
 
-/// Connect, sign, derive, find the note -- one flow, as in VeilX.
-///
-/// The signature IS the point of connecting here: it produces the private
-/// viewing key, and the key is what says where this holder's notes live. Asking
-/// for it as a separate step later would be asking twice for one decision.
-async function doConnectStarknet(): Promise<void> {
-  state.busy = 'Connecting…'; paintCta();
-  const previous = state.snSession?.address;
-  try {
-    state.snSession = await sn.connectStarknet();
-    // A different account means the cached viewing key belongs to someone else.
-    // Drop it rather than decrypting one account's notes with another's key.
-    if (previous && previous !== state.snSession.address) {
-      const chainId = (await sn.snProvider.getChainId()) as unknown as string;
-      forgetViewingKey(previous, chainId);
-      state.noteCtx = undefined;
-      state.noteId = '';
-      state.noteSlot = undefined;
-      state.noteClaimedBy = undefined;
-      state.noteSearched = false;
-      state.poolVerified = undefined;
-      state.privateBalances = undefined;
-    }
-    // Bridging in, the destination is this wallet. Not a choice: the note is
-    // derived from this account's viewing key and nobody else can produce it.
-    if (toStarknet()) state.recipient = state.snSession.address;
-    state.error = undefined;
-  } catch (e: any) {
-    state.error = e?.message ?? String(e);
-    state.busy = undefined;
-    await refreshAll();
-    return;
-  }
-  state.busy = undefined;
-  await refreshAll();
-
-  // Derive the viewing key now, which is what prompts the signature.
-  //
-  // The two wallets are NOT symmetric and must not be treated as such. The EVM
-  // wallet signs nothing on connect -- it only names the sender. The Starknet
-  // wallet differs in kind: it is the thing that PRODUCES the viewing key, and
-  // that key is the whole point of connecting it, since the destination note is
-  // derived from it and nobody else can produce that id. Gating it behind a
-  // second button meant a holder connected their wallet and still saw no note,
-  // with nothing saying the app was waiting on them. veilx made this same
-  // change, for the same reason.
-  //
-  // Declining is fine and leaves the sign button in place; the key is cached
-  // after the first time, so later connects and reloads are silent.
-  await doFindNote();
-  await ensureRegistered();
+/// Drop everything derived from the previous wallet: its viewing key reads
+/// only its own notes, and a note found for it is not this wallet's.
+function forgetHolder(): void {
+  state.noteCtx = undefined;
+  state.noteId = '';
+  state.noteSlot = undefined;
+  state.noteClaimedBy = undefined;
+  state.noteSearched = false;
+  state.poolVerified = undefined;
+  state.privateBalances = undefined;
+  state.privateTwin = undefined;
+  state.cashPrivate = undefined;
+  state.mirror = undefined;
 }
 
 /// Verify the wallet in the Veil pool, registering it first if it is not yet,
@@ -1291,8 +1267,8 @@ async function doConnectStarknet(): Promise<void> {
 /// key, so any other key puts the note where this app cannot find it. Returns
 /// false, with the reason in `state.error` when there is one, unless verified.
 async function ensureRegistered(): Promise<boolean> {
-  if (!state.snSession || !state.noteCtx || !state.asset.poolReady) return false;
-  const pk = await registeredViewingKey(state.asset, state.snSession.address);
+  if (!state.evmSession || !state.noteCtx || !state.asset.poolReady) return false;
+  const pk = await registeredViewingKey(state.asset, state.evmSession.address);
   if (pk === undefined) {
     state.error = 'Could not check your registration in the Veil pool. Try again in a moment.';
     render();
@@ -1322,31 +1298,24 @@ async function ensureRegistered(): Promise<boolean> {
 
 /// Find the note only if that costs NO signature.
 ///
-/// RESTORING a session is not the same act as connecting. Pressing Connect is
-/// the holder asking to use their Starknet wallet, and deriving the key there
-/// is the point of the press. Re-attaching silently on page load is not a
-/// request for anything, so it must never pop a prompt the holder did not ask
-/// for -- it uses the cached key if there is one and otherwise leaves the sign
-/// button in place.
+/// Connecting, or re-attaching on page load, is not a request for anything, so
+/// it must never pop a prompt the holder did not ask for. With the viewing key
+/// already cached it finds the note and reads the registration; registering, a
+/// signed action, waits for Bridge.
 async function findNoteIfFree(): Promise<void> {
-  if (!state.snSession || !toStarknet() || !state.asset.poolReady) return;
-  let chainId: string;
-  try { chainId = (await sn.snProvider.getChainId()) as unknown as string; }
-  catch { return; }
-  if (!hasCachedViewingKey(state.snSession.address, chainId)) {
-    render();   // leaves the "Find my open note" button for the holder to press
-    return;
-  }
+  if (!state.evmSession || !state.noteCtx || !toStarknet() || !state.asset.poolReady) return;
   await doFindNote();
-  await ensureRegistered();
+  const pk = await registeredViewingKey(state.asset, state.evmSession.address);
+  if (pk !== undefined && pk !== 0n) state.poolVerified = pk === state.noteCtx?.publicViewingKey;
+  render();
 }
 
 
 async function doFindNote(): Promise<void> {
-  if (!state.snSession) return doConnectStarknet();
+  if (!state.evmSession) return doConnectEvm();
   state.busy = 'Check your wallet…'; paintCta();
   try {
-    if (!state.noteCtx) state.noteCtx = await deriveNoteContext(state.snSession);
+    if (!state.noteCtx) state.noteCtx = await deriveNoteContext(state.evmSession);
     const slot = await findFillableNote(state.asset, state.noteCtx);
     state.noteSlot = slot;
     state.noteId = slot?.noteId ?? '';
@@ -1378,27 +1347,6 @@ async function refreshNoteOwner(): Promise<void> {
 }
 
 
-async function doClaimStarknet(): Promise<void> {
-  if (!state.snSession) return doConnectStarknet();
-  const owner = state.recipient || state.snSession.address;
-  state.busy = 'Claiming…'; paintCta();
-  try {
-    await sn.claimPending(state.snSession, state.asset, owner);
-    state.notice = 'Released on ' + starknetLabel + '.';
-  } catch (e: any) {
-    // More than one wallet installed: show the picker instead of guessing.
-    if (e?.name === 'PickEvmWalletError') {
-      state.evmPicker = e.wallets;
-      state.error = undefined;
-    } else {
-      state.error = e?.message ?? String(e);
-    }
-  } finally {
-    state.busy = undefined;
-    await refreshAll();
-  }
-}
-
 async function doClaimEvm(): Promise<void> {
   if (!state.evmSession) return doConnectEvm();
   state.busy = 'Claiming…'; paintCta();
@@ -1413,75 +1361,8 @@ async function doClaimEvm(): Promise<void> {
   }
 }
 
-/// LINKs sent this session, keyed asset:wallet:account -- every asset has its
-/// own gateway and mirror, so a link to one says nothing about another. Pressing
-/// Bridge again on the SAME asset waits for the message in flight instead of
-/// paying for a second one.
-const linksSent = new Map<string, number>();
-const LINK_WAIT_MS = 10 * 60 * 1000;
-
-/// Bind the Veil wallet to the connected source account on the mirror, unless it
-/// already is.
-///
-/// The pool makes an open note only for a wallet eligible under the asset's
-/// rules, and the mirror knows nothing about a wallet it has never bound. A
-/// bridge-in would bind it, but a bridge-in needs the note first. So a first
-/// bridge links: the Veil wallet asks (`request_link`), the source account
-/// agrees (`linkStarknet`, one LayerZero message), and the binding lands a few
-/// minutes later. Both keys sign, so nobody can link someone else's wallet.
-async function ensureLinked(): Promise<boolean> {
-  const asset = state.asset;
-  const wallet = state.snSession;
-  const source = state.evmSession;
-  if (!wallet || !source) return false;
-  const account = BigInt(source.address);
-
-  // A gateway deployed before linking existed has no `request_link`. Skip the
-  // step there, so those deployments behave exactly as they did before it.
-  const linking = await sn.gatewaySupportsLinking(asset);
-  if (linking === undefined) {
-    state.error = 'The bridge gateway did not answer, so your wallet link could not be checked. Try again in a moment.';
-    return false;
-  }
-  if (!linking) return true;
-
-  const identity = await sn.identityOf(asset, wallet.address);
-  if (identity === undefined) {
-    state.error = 'The mirrored registry did not answer, so your wallet link could not be checked. Try again in a moment.';
-    return false;
-  }
-  if (identity === account) return true;
-  if (identity !== 0n) {
-    state.error = `This ${starknetLabel} wallet is linked to a different ${evmLabel} account. Connect that account, or ask the operator to re-link the wallet.`;
-    return false;
-  }
-
-  const key = `${asset.id}:${BigInt(wallet.address)}:${account}`;
-  const sentAt = linksSent.get(key);
-  if (sentAt === undefined || Date.now() - sentAt > LINK_WAIT_MS) {
-    if ((await sn.linkRequestOf(asset, wallet.address)) !== account) {
-      state.busy = `Approve the link in your ${starknetLabel} wallet…`; paintCta(); render();
-      await sn.requestLink(wallet, asset, source.address);
-    }
-    state.busy = `Confirm the link in your ${evmLabel} wallet…`; paintCta(); render();
-    await evm.linkStarknet(source, asset, wallet.address);
-    linksSent.set(key, Date.now());
-  }
-
-  const deadline = (linksSent.get(key) ?? Date.now()) + LINK_WAIT_MS;
-  while (Date.now() < deadline) {
-    state.busy = 'Linking your wallet — delivery takes a few minutes…'; paintCta();
-    await new Promise((r) => setTimeout(r, 15000));
-    const now = await sn.identityOf(asset, wallet.address);
-    if (now === account) return true;
-    if (now !== undefined && now !== 0n) {
-      state.error = `This ${starknetLabel} wallet was linked to a different ${evmLabel} account before your link arrived. Ask the operator to re-link it.`;
-      return false;
-    }
-  }
-  state.error = 'Your link was sent but has not arrived yet. Press Bridge again in a few minutes; it will not be sent twice.';
-  return false;
-}
+/// How long to wait for a LayerZero message before asking the holder to come back.
+const MESSAGE_WAIT_MS = 10 * 60 * 1000;
 
 /// Eligibility pushes sent this session, keyed asset:account.
 const identitySent = new Map<string, number>();
@@ -1506,13 +1387,13 @@ async function ensureIdentitySynced(): Promise<boolean> {
 
   const key = `${asset.id}:${source.address.toLowerCase()}`;
   const sentAt = identitySent.get(key);
-  if (sentAt === undefined || Date.now() - sentAt > LINK_WAIT_MS) {
+  if (sentAt === undefined || Date.now() - sentAt > MESSAGE_WAIT_MS) {
     state.busy = `Confirm the eligibility update in your ${evmLabel} wallet…`; paintCta(); render();
     await evm.syncCompliance(source, asset);
     identitySent.set(key, Date.now());
   }
 
-  const deadline = (identitySent.get(key) ?? Date.now()) + LINK_WAIT_MS;
+  const deadline = (identitySent.get(key) ?? Date.now()) + MESSAGE_WAIT_MS;
   while (Date.now() < deadline) {
     state.busy = 'Updating your eligibility — delivery takes a few minutes…'; paintCta();
     await new Promise((r) => setTimeout(r, 15000));
@@ -1553,13 +1434,13 @@ async function ensureRulesSynced(): Promise<boolean> {
 
   const key = `${asset.id}:${source.address.toLowerCase()}`;
   const sentAt = rulesSent.get(key);
-  if (sentAt === undefined || Date.now() - sentAt > LINK_WAIT_MS) {
+  if (sentAt === undefined || Date.now() - sentAt > MESSAGE_WAIT_MS) {
     state.busy = `Confirm the rules update in your ${evmLabel} wallet…`; paintCta(); render();
     await evm.syncRules(source, asset, !status.token);
     rulesSent.set(key, Date.now());
   }
 
-  const deadline = (rulesSent.get(key) ?? Date.now()) + LINK_WAIT_MS;
+  const deadline = (rulesSent.get(key) ?? Date.now()) + MESSAGE_WAIT_MS;
   while (Date.now() < deadline) {
     state.busy = 'Updating the issuer rules — delivery takes a few minutes…'; paintCta();
     await new Promise((r) => setTimeout(r, 15000));
@@ -1572,51 +1453,41 @@ async function ensureRulesSynced(): Promise<boolean> {
 
 /// Get the destination ready to receive, doing only what is still missing.
 ///
-/// Seven things have to be true before a bridge-in can land in a pool note: the
-/// destination wallet is connected, its viewing key is derived, that key is
-/// registered in the pool, the mirror holds fresh issuer rules where the asset
-/// has them, the wallet is linked to the source account on the mirror, an empty
-/// note exists for this asset, and that note is claimed on the gateway. None of
-/// them
-/// is something the holder asked for, so none of them gets its own button --
-/// they run inside the one press, and each is skipped when already done.
+/// Five things have to be true before a bridge-in can land in a pool note: the
+/// wallet's viewing key is derived, that key is registered in the pool, the
+/// mirror holds a fresh eligibility record for the wallet (and fresh issuer
+/// rules where the asset has them), and an empty note exists for this asset.
+/// None of them is something the holder asked for, so none of them gets its
+/// own button -- they run inside the one press, and each is skipped when
+/// already done. The note needs no separate claim: the bridge-in names the
+/// wallet as the holder, and that is its claim on the note.
 ///
 /// Returns false when a step could not complete, having put the reason in
 /// `state.error`. The caller must not go on to escrow anything in that case:
 /// the tokens would arrive with nowhere to land and quarantine.
 async function prepareDestination(): Promise<boolean> {
   const asset = state.asset;
+  const session = state.evmSession;
+  if (!session) return false;
 
-  // 1. The destination wallet. Connecting also derives the viewing key.
-  if (!state.snSession) {
-    await doConnectStarknet();
-    if (!state.snSession) {
-      state.error = state.error ?? `Connect your ${starknetLabel} wallet to receive.`;
-      return false;
-    }
-  }
-
-  // 2. The viewing key, if connecting did not already produce it.
+  // 1. The viewing key: one signature, cached after.
   if (!state.noteCtx) {
-    state.busy = 'Check your wallet to sign…'; paintCta(); render();
-    state.noteCtx = await deriveNoteContext(state.snSession);
+    state.busy = 'Sign in your wallet…'; paintCta(); render();
+    state.noteCtx = await deriveNoteContext(session);
   }
 
-  // 3. Registration. Connecting already does this; a holder whose registration
-  //    failed there, or who reloaded before it finished, is registered here.
+  // 2. Registration in the pool, through the prover.
   if (!(await ensureRegistered())) {
     state.error = state.error ?? 'Your wallet is not registered in the Veil pool yet.';
     return false;
   }
 
-  // 4. A fresh eligibility record, and the issuer rules where the asset has
-  //    them. Both are keyed by the source account, so the wallet is linked
-  //    first: a note is made only for a wallet the mirror can vouch for.
-  if (!(await ensureLinked())) return false;
+  // 3. A fresh eligibility record, and the issuer rules where the asset has
+  //    them: the pool makes a note only for a holder the mirror vouches for.
   if (!(await ensureIdentitySynced())) return false;
   if (!(await ensureRulesSynced())) return false;
 
-  // 5. A fillable note. Look before making one: a note holds a single deposit,
+  // 4. A fillable note. Look before making one: a note holds a single deposit,
   //    so an unused one from a previous attempt is the one to use.
   if (!validNoteId()) {
     const found = await findFillableNote(asset, state.noteCtx);
@@ -1634,28 +1505,21 @@ async function prepareDestination(): Promise<boolean> {
     state.noteSearched = true;
   }
 
-  // 6. The claim. `fill_open_note` is one-shot and note ids are public, so an
-  //    unclaimed note could be burned with dust by anyone.
+  // 5. Nobody else holds a claim on it. `fill_open_note` is one-shot and note
+  //    ids are public; an unclaimed note is claimed by the bridge-in itself.
   const owner = await sn.noteOwner(asset, state.noteId).catch(() => undefined);
   state.noteClaimedBy = owner;
-  const claimedByMe = owner !== undefined && state.snSession !== undefined
-    && BigInt(owner || 0) === BigInt(state.snSession.address);
-  if (!claimedByMe) {
-    if (owner !== undefined && BigInt(owner || 0) !== 0n) {
-      state.error = 'Your note is claimed by another address, so it cannot be filled for you.';
-      return false;
-    }
-    state.busy = 'Claiming your note…'; paintCta(); render();
-    await sn.registerNote(state.snSession, asset, state.noteId);
-    state.noteClaimedBy = state.snSession.address;
+  if (owner !== undefined && BigInt(owner || 0) !== 0n && BigInt(owner) !== BigInt(session.address)) {
+    state.error = 'Your note is claimed by another address, so it cannot be filled for you.';
+    return false;
   }
-
   return true;
 }
 
 async function onCta(): Promise<void> {
-  if (toStarknet() && !state.evmSession) return doConnectEvm();
-  if (!toStarknet() && !state.snSession) return doConnectStarknet();
+  if (!state.evmSession) return doConnectEvm();
+  // Bridging back starts from the private balance, so read it first.
+  if (!toStarknet() && !state.noteCtx) return doShowVeilBalance();
 
   let amount: bigint;
   try {
@@ -1707,17 +1571,24 @@ async function onCta(): Promise<void> {
     } else {
       // The twin burns units; the amount typed is tokens.
       const burn = await evm.unitsFor(asset, amount);
-      const fee = state.fee ?? (await sn.quoteBridgeBack(asset, burn, state.recipient));
-      state.busy = 'Confirm in wallet…'; paintCta();
-      const hash = await sn.bridgeBack(
-        state.snSession!, asset, burn, state.recipient, fee, STARKNET_FEE_TOKEN
+      // A fresh quote, with headroom: the gateway pays it and the wallet signs
+      // the cap, so a fee that moved a little does not fail the exit.
+      const fee = await sn.quoteBridgeBack(asset, burn, state.recipient);
+      if (!(await ensureRegistered())) {
+        state.error = state.error ?? 'Your wallet is not registered in the Veil pool yet.';
+        return;
+      }
+      state.busy = 'Sign in your wallet…'; paintCta(); render();
+      const hash = await bridgeBackPrivately(
+        asset, state.noteCtx!, burn, state.recipient, (fee * 13n) / 10n,
+        (line) => { state.busy = `Bridging back — ${line}…`; paintCta(); },
       );
       record({
         direction: 'toEvm', asset: asset.id, symbol: state.token.symbol,
         amount: units(amount, state.token.decimals), recipient: state.recipient,
         hash, status: 'sent',
       });
-      state.notice = 'Burned and sent. The lockbox releases on arrival — a few minutes.';
+      state.notice = 'Burned in the Veil pool and sent. The lockbox releases it to your wallet on arrival — a few minutes.';
       state.amount = '';
       void watchRelease(asset, hash, state.recipient);
     }
@@ -1727,6 +1598,30 @@ async function onCta(): Promise<void> {
     state.busy = undefined;
     await refreshAll();
   }
+}
+
+/// Read the viewing key (one signature) and the private balance behind it.
+async function doShowVeilBalance(): Promise<void> {
+  if (!state.evmSession) return doConnectEvm();
+  state.busy = 'Sign in your wallet…'; paintCta(); render();
+  try {
+    if (!state.noteCtx) state.noteCtx = await deriveNoteContext(state.evmSession);
+    state.error = undefined;
+  } catch (e: any) {
+    const m = String(e?.message ?? e);
+    state.error = /reject|denied|abort|cancel/i.test(m) ? undefined : m;
+  } finally {
+    state.busy = undefined;
+    await refreshAll();
+  }
+}
+
+/// The selected asset's twin in the holder's private notes, in tokens.
+async function loadPrivateTwin(): Promise<void> {
+  const pool = state.asset.addresses.starknet?.pool;
+  if (!pool || !state.noteCtx || cashAsset()) return;
+  const read = await privateBalances(pool, state.noteCtx, [state.asset]).catch(() => undefined);
+  if (read) state.privateTwin = unitsToTokens(read[state.asset.id]?.balance ?? 0n, state.scale);
 }
 
 /// Poll the far side until the twin supply moves or the amount shows up held.
@@ -1791,10 +1686,9 @@ async function watchRelease(asset: Asset, hash: string, recipient: string): Prom
 //   out -- a proven pool invoke (the prover's relayer submits it) pays Veil's
 //          cash exit, which burns to the Ethereum wallet; once Circle attests,
 //          the wallet confirms the mint.
-// The holder's Starknet account sends nothing public in either direction.
+// The holder's wallet signs both; it never sends a Starknet transaction.
 
-/// How long after Circle's attestation to wait for Veil's relayer before
-/// offering to deliver from the holder's own wallet.
+/// How long after Circle's attestation before saying Veil's relayer is late.
 const RELAY_GRACE_MS = 3 * 60 * 1000;
 /// The pool's side of the route, as the rest of this card names it.
 const veilLabel = starknetLabel;
@@ -1802,21 +1696,18 @@ const friendlyError = (e: any): string => String(e?.shortMessage ?? e?.message ?
 
 function cashGates(): Gate[] {
   const s = state.evmStatus;
-  const verified = state.poolVerified;
-  const pool: Gate = {
-    ok: state.snSession ? (verified ?? null) : null,
-    label: `Your ${veilLabel} wallet is verified in the pool`,
-    detail: !state.snSession ? `Connect your ${veilLabel} wallet to check.`
-      : verified === undefined ? 'Sign the message in your wallet to verify it.'
-      : !verified ? 'This wallet could not be verified in the Veil pool.'
-      : undefined,
-  };
   const out: Gate[] = [];
   if (state.evmSession) {
     out.push({ ok: s ? !s.frozen : null, label: `Circle has not blocklisted your ${evmLabel} address` });
     out.push({ ok: s ? !s.paused : null, label: 'USDC is not paused' });
   }
-  out.push(pool);
+  if (state.poolVerified === false) {
+    out.push({
+      ok: false,
+      label: 'Your wallet is registered in the Veil pool',
+      detail: 'It is registered with a different viewing key, so notes cannot be created for it here.',
+    });
+  }
   return out;
 }
 
@@ -1843,9 +1734,9 @@ function cashControls(): string {
     </div></div>`;
   const head = toStarknet() ? 'Lands in the Veil pool' : `Arrives on ${evmLabel}`;
   const note = toStarknet()
-    ? `<p class="delivery-note">Burned through Circle's CCTP into your private USDC note in the Veil pool. Veil's cash vault fills it, so your ${veilLabel} account never appears on-chain.</p>`
+    ? `<p class="delivery-note">Burned through Circle's CCTP into your private USDC note in the Veil pool. Veil's cash vault fills it; nothing to sign on ${veilLabel}.</p>`
     : `<p class="delivery-note">Leaves the pool privately through Veil's cash exit. After Circle attests, one confirmation in your ${evmLabel} wallet mints it to you.</p>`;
-  const noteLine = toStarknet() && state.snSession && state.noteId
+  const noteLine = toStarknet() && state.evmSession && state.noteId
     ? `<div class="note-found"><span class="note-label">Your USDC note</span>
          <span class="note-id mono">${esc(short(state.noteId, 10, 8))}</span>
          <span class="note-index">slot ${state.noteSlot?.index ?? 0}</span></div>`
@@ -1876,12 +1767,9 @@ function flightCard(): string {
     line = `Burned (${link}). Waiting for Circle to attest…`;
   } else if (f.direction === 'toStarknet') {
     const late = f.attestedAt !== undefined && Date.now() - f.attestedAt > RELAY_GRACE_MS;
-    line = `Circle attested. Veil's relayer is delivering it into your note…`;
-    if (late) {
-      line = `Circle attested, but Veil's relayer has not delivered it yet.`;
-      action = `<button id="cash-self-relay" class="max" ${state.busy ? 'disabled' : ''}>Deliver from my ${esc(veilLabel)} wallet</button>
-        <p class="delivery-note is-warn">This sends one transaction from your ${esc(veilLabel)} wallet, which shows your account next to the note it fills. Waiting keeps it private.</p>`;
-    }
+    line = late
+      ? `Circle attested, but Veil's relayer has not delivered it yet. Nothing is lost: it retries until your note is filled.`
+      : `Circle attested. Veil's relayer is delivering it into your note…`;
   } else {
     line = `Circle attested. Confirm the mint in your ${evmLabel} wallet.`;
     action = `<button id="cash-mint" class="max" ${state.busy ? 'disabled' : ''}>Mint on ${esc(evmLabel)}</button>`;
@@ -1921,7 +1809,7 @@ function cashCta(amount: bigint): { text: string; disabled: boolean; note: strin
     };
   }
   if (state.cashPrivate === undefined) {
-    return { text: `Reading your ${veilLabel} USDC…`, disabled: true, note: 'Sign in your wallet if it asks: your notes are read with your viewing key.' };
+    return { text: `Reading your ${veilLabel} USDC…`, disabled: true, note: 'Your notes are read with your viewing key.' };
   }
   if (amount + 1n > state.cashPrivate) {
     return { text: 'Insufficient balance', disabled: true, note: 'The exit keeps 1 unit (0.000001 USDC) back in the pool as change.' };
@@ -1946,16 +1834,10 @@ async function loadCashPrivate(): Promise<void> {
 /// The destination note for a deposit: registered, empty, and not already the
 /// target of a burn on its way.
 async function prepareCashNote(): Promise<boolean> {
-  if (!state.snSession) {
-    await doConnectStarknet();
-    if (!state.snSession) {
-      state.error = state.error ?? `Connect your ${veilLabel} wallet to receive.`;
-      return false;
-    }
-  }
+  if (!state.evmSession) return false;
   if (!state.noteCtx) {
-    state.busy = 'Check your wallet to sign…'; paintCta(); render();
-    state.noteCtx = await deriveNoteContext(state.snSession);
+    state.busy = 'Sign in your wallet…'; paintCta(); render();
+    state.noteCtx = await deriveNoteContext(state.evmSession);
   }
   if (!(await ensureRegistered())) {
     state.error = state.error ?? 'Your wallet is not registered in the Veil pool yet.';
@@ -2014,11 +1896,10 @@ async function cashToVeil(amount: bigint): Promise<void> {
 }
 
 async function cashToEvm(amount: bigint): Promise<void> {
-  if (!state.snSession) return doConnectStarknet();
   if (!state.evmSession) return doConnectEvm();
   if (!state.noteCtx) {
-    state.busy = 'Check your wallet to sign…'; paintCta(); render();
-    state.noteCtx = await deriveNoteContext(state.snSession);
+    state.busy = 'Sign in your wallet…'; paintCta(); render();
+    state.noteCtx = await deriveNoteContext(state.evmSession);
   }
   if (!(await ensureRegistered())) {
     state.error = state.error ?? 'Your wallet is not registered in the Veil pool yet.';
@@ -2085,22 +1966,6 @@ async function watchCashOut(f: CashFlight): Promise<void> {
   }
 }
 
-async function doCashSelfRelay(): Promise<void> {
-  const f = state.cashFlight;
-  if (!f?.message || !f.attestation) return;
-  if (!state.snSession) return doConnectStarknet();
-  state.busy = 'Delivering from your wallet…'; paintCta(); render();
-  try {
-    await cash.relayFromWallet(state.snSession, f.message, f.attestation);
-    state.notice = 'Delivered from your wallet.';
-  } catch (e: any) {
-    state.error = friendlyError(e);
-  } finally {
-    state.busy = undefined;
-    render();
-  }
-}
-
 async function doCashMint(): Promise<void> {
   const f = state.cashFlight;
   if (!f?.message || !f.attestation) return;
@@ -2138,65 +2003,60 @@ async function boot(): Promise<void> {
     render();
   }
 
-  // Re-attach wallets the user already authorised HERE, without prompting, so a
-  // reload keeps the session instead of looking like a disconnect. Neither call
-  // throws: nothing to restore is the normal case.
+  // Only the gateways on the current class take EVM wallets as holders. Ask
+  // each once; an asset whose gateway says no is shown, but cannot be picked.
+  await Promise.all(assets.map(async (a) => {
+    if (!a.available || isCash(a)) return;
+    const ok = await sn.supportsEvmHolders(a);
+    if (ok !== undefined) a.evmReady = ok;
+  }));
+  if (!usableAsset(state.asset)) {
+    const next = assets.find(usableAsset);
+    if (next) {
+      state.asset = next;
+      state.token = { symbol: next.symbol, decimals: next.decimals };
+      state.scale = tokenScale(next.decimals);
+      try { state.token = await evm.tokenInfo(next); } catch { /* catalogue stands */ }
+    }
+  }
+  render();
+
+  // Re-attach the wallet the user already authorised HERE, without prompting,
+  // so a reload keeps the session instead of looking like a disconnect.
   //
   // Runs even when no asset is deployed: whether a wallet is connected has
   // nothing to do with whether this route carries an asset, and returning early
   // was leaving the header showing "Connect" for an already-connected wallet.
-  const [snSession, evmSession] = await Promise.all([
-    sn.restoreStarknet(),
-    evm.restoreEvm(),
-  ]);
-  if (snSession) {
-    state.snSession = snSession;
-    if (toStarknet()) state.recipient = snSession.address;
-  }
-  if (evmSession) {
-    state.evmSession = evmSession;
-    if (!toStarknet()) state.recipient = evmSession.address;
-    watchEvm();
-  }
+  const session = await evm.restoreEvm();
   resumeCashFlight();
-  if (!snSession && !evmSession) return;
+  if (!session) return;
+  state.evmSession = session;
+  state.recipient = session.address;
+  watchEvm();
 
+  await restoreNoteContext();
   await refreshAll();
   await findNoteIfFree();
 }
 
-async function doDisconnect(which: 'sn' | 'evm'): Promise<void> {
-  if (which === 'sn') {
-    const previous = state.snSession?.address;
-    await sn.disconnectStarknet();
-    // The viewing key decrypts every note this account owns, so it must not
-    // outlive the session -- especially on a shared machine.
-    if (previous) {
-      const chainId = (await sn.snProvider.getChainId()) as unknown as string;
-      forgetViewingKey(previous, chainId);
-    }
-    state.snSession = undefined;
-    state.noteCtx = undefined;
-    state.noteId = '';
-    state.noteSlot = undefined;
-    state.noteClaimedBy = undefined;
-    state.noteSearched = false;
-    state.mirror = undefined;
-    state.poolVerified = undefined;
-    state.privateBalances = undefined;
-    if (state.walletPanel === 'sn') state.walletPanel = undefined;
-    if (toStarknet()) state.recipient = '';
-  } else {
-    unwatchEvm?.();
-    unwatchEvm = undefined;
-    evm.disconnectEvm();
-    state.evmSession = undefined;
-    state.evmStatus = undefined;
-    state.claimableEvm = 0n;
-    state.publicBalances = undefined;
-    if (state.walletPanel === 'evm') state.walletPanel = undefined;
-    if (!toStarknet()) state.recipient = '';
+async function doDisconnect(): Promise<void> {
+  const previous = state.evmSession?.address;
+  unwatchEvm?.();
+  unwatchEvm = undefined;
+  evm.disconnectEvm();
+  // The viewing key decrypts every note this wallet owns, so it must not
+  // outlive the session -- especially on a shared machine.
+  if (previous) {
+    const chainId = (await sn.snProvider.getChainId().catch(() => '')) as unknown as string;
+    if (chainId) forgetViewingKey(previous, chainId);
   }
+  forgetHolder();
+  state.evmSession = undefined;
+  state.evmStatus = undefined;
+  state.claimableEvm = 0n;
+  state.publicBalances = undefined;
+  state.walletPanel = false;
+  state.recipient = '';
   state.error = undefined;
   await refreshAll();
 }
@@ -2211,10 +2071,15 @@ function watchEvm(): void {
   if (!state.evmSession) return;
   unwatchEvm = evm.watchEvmWallet(state.evmSession, () => {
     void (async () => {
+      const before = state.evmSession?.address;
       const next = await evm.restoreEvm();
+      // Another account holds other notes: nothing derived for the old one may
+      // be used for it.
+      if (!next || next.address.toLowerCase() !== before?.toLowerCase()) forgetHolder();
       state.evmSession = next;
-      if (!toStarknet()) state.recipient = next?.address ?? '';
+      state.recipient = next?.address ?? '';
       if (!next) state.notice = 'Wallet disconnected.';
+      await restoreNoteContext();
       await refreshAll();
     })();
   });

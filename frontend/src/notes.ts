@@ -11,15 +11,16 @@
 // be produced by hand, and a pasted id that is not yours sends your tokens into
 // someone else's note.
 //
-// Everything here happens on the device. The viewing key is recovered from a
-// wallet signature over fixed typed data (STRK20 §5.4) and never leaves.
+// Everything here happens on the device. The owner is the holder's EVM wallet
+// -- its own address is its address inside the pool -- and the viewing key is
+// recovered from one `personal_sign` of a fixed text, never leaving the device.
 
 import {
-  deriveViewingKey, deriveChannelKey, computeNoteId, TWO_POW_128,
+  deriveViewingKeyEvm, deriveChannelKey, computeNoteId, TWO_POW_128,
+  type EvmAuthorizationSigner,
 } from 'veil-sdk';
 import { snProvider } from './starknet';
-import type { SnSession } from './starknet';
-import type { WalletAccount } from 'starknet';
+import { authorizationSigner, type EvmSession } from './evm';
 import type { Asset } from './assets';
 
 export type NoteContext = {
@@ -27,16 +28,17 @@ export type NoteContext = {
   viewingKey: bigint;
   publicViewingKey: bigint;
   channelKey: bigint;
-  /// Signs each derive's authorization: the pool checks the owner's signature
-  /// inside the proof, while the prover's relayer sends the transactions.
-  signer: WalletAccount;
+  /// Signs each derive's authorization with the EVM wallet: the pool checks the
+  /// owner's signature inside the proof, while the prover's relayer sends the
+  /// transactions. The holder never sends a Starknet transaction.
+  signer: EvmAuthorizationSigner;
   chainId: string;
 };
 
 /// Recover the owner's viewing key and self-channel key.
 ///
-/// Signing is idempotent: the typed data is fixed, so the same wallet always
-/// produces the same key. Nothing is stored -- rederive it per session rather
+/// Signing is deterministic for most wallets (RFC 6979: MetaMask, hardware
+/// wallets): the text is fixed, so the same wallet produces the same key. Nothing is stored -- rederive it per session rather
 /// than keeping a secret in browser storage.
 /// Cached per (account, chain), the way VeilX does it.
 ///
@@ -49,9 +51,9 @@ const keyCache = new Map<string, { privateKey: bigint; publicKey: bigint }>();
 
 /// Cache keys must be CANONICAL, not whatever the wallet happened to return.
 ///
-/// A Starknet address is a felt, and the same account comes back as
-/// `0x07f69f…` from one wallet call and `0x7f69f…` from another -- same value,
-/// different string. Keying storage on the raw string means a reload misses its
+/// An address comes back checksummed from one call and lowercase from another,
+/// and a felt with or without its leading zeros -- same value, different
+/// string. Keying storage on the raw string means a reload misses its
 /// own entry and re-prompts for a signature the holder already gave, which
 /// looks exactly like the cache not working at all. Chain ids vary the same way.
 const canon = (v: string): string => {
@@ -99,13 +101,12 @@ export function forgetViewingKey(address: string, chainId: string): void {
   try { localStorage.removeItem(storageKey(address, chainId)); } catch { /* ignore */ }
 }
 
-export async function deriveNoteContext(session: SnSession): Promise<NoteContext> {
+export async function deriveNoteContext(session: EvmSession): Promise<NoteContext> {
   const chainId = (await snProvider.getChainId()) as unknown as string;
+  const signer = authorizationSigner(session);
   const id = cacheKey(session.address, chainId);
   const cached = keyCache.get(id) ?? loadCachedKey(session.address, chainId);
-  const { privateKey, publicKey } = cached ?? await deriveViewingKey(
-    session.account as never, chainId
-  );
+  const { privateKey, publicKey } = cached ?? await deriveViewingKeyEvm(signer, chainId);
   if (!cached) {
     keyCache.set(id, { privateKey, publicKey });
     storeKey(session.address, chainId, { privateKey, publicKey });
@@ -115,7 +116,7 @@ export async function deriveNoteContext(session: SnSession): Promise<NoteContext
   const channelKey = deriveChannelKey(owner, privateKey, owner, publicKey);
   return {
     owner, viewingKey: privateKey, publicViewingKey: publicKey, channelKey,
-    signer: session.account, chainId,
+    signer, chainId,
   };
 }
 
@@ -429,4 +430,90 @@ export async function privateBalances(
     out[a.id] = { balance: byToken.get(BigInt(token)) ?? 0n, decimals };
   }));
   return out;
+}
+
+// ── The way back ─────────────────────────────────────────────────────────────
+//
+// A bridge back spends the holder's private notes directly: one proven pool
+// `invoke`, signed by the EVM wallet, pays the asset's gateway `amount + 1` of
+// the twin and calls its `privacy_invoke(open_note_id, amount, evm_recipient,
+// max_fee, gas_limit)`. The gateway burns `amount`, asks the lockbox to release
+// it on the EVM chain, and hands the 1 unit back into the invoke's open note (a
+// pool invoke always returns something). It pays LayerZero from its own
+// balance, never more than `max_fee`, which the holder signs. The prover's
+// relayer submits the settle, so nothing here needs a Starknet account or STRK.
+
+import { planSameTokenInvoke } from 'veil-sdk';
+import { RELEASE_GAS_LIMIT } from './config';
+
+/// A note salt: 2 <= salt < 2^120 (0 and 1 are reserved).
+function randomNoteSalt(): bigint {
+  return (randomFelt() % ((1n << 120n) - 2n)) + 2n;
+}
+
+/// The first slot of `token` in the owner's self-channel that holds nothing.
+async function firstFreeSlot(pool: string, ctx: NoteContext, token: bigint): Promise<number> {
+  for (let start = 0; start < 512; start += 32) {
+    const ids = Array.from({ length: 32 }, (_, j) => hexOf(computeNoteId(ctx.channelKey, token, start + j)));
+    const res = (await snProvider.callContract({
+      contractAddress: pool, entrypoint: 'get_notes_batch', calldata: [String(ids.length), ...ids],
+    })) as string[];
+    const free = res.slice(1).findIndex((v) => BigInt(v) === 0n);
+    if (free >= 0) return start + free;
+  }
+  throw new Error('Could not find a free note slot.');
+}
+
+/// Bridge `amount` twin units back to `evmRecipient`, from the holder's private
+/// notes. Returns the Starknet transaction hash of the settle.
+export async function bridgeBackPrivately(
+  asset: Asset, ctx: NoteContext, amount: bigint, evmRecipient: string, maxFee: bigint,
+  onProgress?: (line: string) => void,
+): Promise<string> {
+  const pool = asset.addresses.starknet?.pool;
+  const token = asset.addresses.starknet?.token;
+  const gateway = asset.addresses.starknet?.gateway;
+  if (!pool || !token || !gateway) throw new Error('This asset has no Veil pool configured.');
+  if (!PROVER_ENDPOINT || !PROVER_MASTER_ADDRESS) {
+    throw new Error('No Veil prover is configured for this deployment.');
+  }
+  const twin = BigInt(token);
+  onProgress?.('reading your notes');
+  const contract = new Contract({ abi: poolReaderAbi as never, address: pool, providerOrAccount: snProvider });
+  const discovery = new VeilERC3643Discovery(makeVeilERC3643ContractReader(contract as never));
+  const [notes, slot] = await Promise.all([
+    discovery.listOwnedNotes(ctx.owner, ctx.viewingKey),
+    firstFreeSlot(pool, ctx, twin),
+  ]);
+  const plan = planSameTokenInvoke({
+    owner: ctx.owner,
+    ownerPrivateViewingKey: ctx.viewingKey,
+    selfChannelKey: ctx.channelKey,
+    notes,
+    firstFreeSlot: slot,
+    auditEphemeralSecret: randomFelt(),
+    changeNoteSalt: randomNoteSalt(),
+    subchannelSalt: randomFelt(),
+    token: twin,
+    target: BigInt(gateway),
+    amount,
+    // privacy_invoke(open_note_id, amount: u128, evm_recipient, max_fee: u256, gas_limit: u128)
+    tail: [hexOf(amount), hexOf(BigInt(evmRecipient)), ...u256Pair(maxFee), hexOf(RELEASE_GAS_LIMIT)],
+    what: 'Bridge back',
+  });
+  const prover = new VeilProver({
+    veilAddress: pool,
+    pool: 'erc3643',
+    endpoint: PROVER_ENDPOINT,
+    transport: 'job',
+    rpcUrl: STARKNET_RPC,
+    masterAddress: PROVER_MASTER_ADDRESS,
+    signer: ctx.signer,
+    chainId: ctx.chainId,
+  });
+  onProgress?.('proving');
+  const { txHash } = await prover.invoke(plan.deriveCalldata, { settleExtra: plan.settleExtra });
+  onProgress?.('waiting for inclusion');
+  await snProvider.waitForTransaction(txHash, { retryInterval: 3000 });
+  return txHash;
 }

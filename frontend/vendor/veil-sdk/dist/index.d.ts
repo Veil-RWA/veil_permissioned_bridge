@@ -11,5 +11,6 @@ export * from "./liquidity.js";
 export * from "./invoke.js";
 export * from "./veilx.js";
 export * from "./vesu.js";
+export * from "./hyperveil.js";
 export * from "./viewingKey.js";
 export * from "./prover/index.js";

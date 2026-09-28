@@ -46,9 +46,19 @@ export interface DerivedViewingKey {
 export declare function deriveViewingKey(account: {
     signMessage: (data: never) => Promise<unknown>;
 }, chainId: string): Promise<DerivedViewingKey>;
+/** The one text an EVM wallet signs to obtain its Veil viewing key. */
+export declare function evmViewingKeyMessage(chainId: string): string;
+/** k = poseidon(r.low, r.high, s.low, s.high) of a 65-byte `personal_sign`
+ *  signature (s taken in its low-s form, so either encoding of the same
+ *  signature gives the same key), rehashed into range as for Starknet. */
+export declare function viewingKeyFromEvmSignature(signature: string): bigint;
+/** Sign the fixed text with an EVM wallet and derive its viewing key pair. */
+export declare function deriveViewingKeyEvm(signer: {
+    signMessage: (message: Uint8Array) => Promise<string>;
+}, chainId: string): Promise<DerivedViewingKey>;
 /** Verify a signature against a RAW Stark public key — must be the FULL curve
  *  point (`ec.starkCurve.getPublicKey`); the x-only stark key an account stores
- *  always fails. For Argent/Braavos/multisig, ask the account instead: their
+ *  always fails. For Ready/Braavos/multisig, ask the account instead: their
  *  contract defines what a valid signature is (see the on-chain variant). */
 export declare function verifyViewingKeySignature(sig: unknown, chainId: string, account: string, publicKey: string | Uint8Array): boolean;
 /** The authoritative check on Starknet: SNIP-6 `is_valid_signature` on the

@@ -82,6 +82,10 @@ export type Deployment = {
     router?: string;
   };
   /// Veil itself, which is not per-asset.
+  /// Class hashes the deployment scripts declared. `VeilBridgeGateway` is the
+  /// current gateway class: a gateway still on an older one predates EVM
+  /// wallets as holders.
+  classes?: Record<string, string>;
   veil?: {
     /// The main Veil pool. Where bridged assets land unless the user names
     /// another.
@@ -187,8 +191,8 @@ export const LZ_SCAN = testnet ? 'https://testnet.layerzeroscan.com' : 'https://
 /// fee; under-provisioning costs the whole transfer.
 export const DEFAULT_GAS_LIMIT = 80_000_000n;
 
-/// STRK, the token the Starknet endpoint charges message fees in. Same address
-/// on mainnet and Sepolia. `bridge_back` approves the GATEWAY for this, not the
-/// endpoint: the gateway pays the endpoint on the caller's behalf.
-export const STARKNET_FEE_TOKEN =
-  '0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d';
+/// EVM gas for the lockbox's release on a bridge back: `lzReceive` checks the
+/// recipient in the issuer's registry and runs the token's own `transfer`. The
+/// gateway pays the LayerZero fee for it from its own balance, so a larger
+/// limit costs the holder nothing but raises the fee they cap.
+export const RELEASE_GAS_LIMIT = 300_000n;

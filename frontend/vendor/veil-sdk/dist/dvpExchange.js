@@ -17,7 +17,7 @@
 //     batchNonce,
 //     makers:  [openingA, openingB],
 //   });
-import { buildExecuteBatchDeriveCalldata, computeBatchId, } from "./dvp.js";
+import { buildExecuteBatchDeriveCalldata, buildVenueFillDeriveCalldata, computeBatchId, } from "./dvp.js";
 import { VeilProver } from "./prover/veilProver.js";
 export class VeilDvpExchange {
     prover;
@@ -33,6 +33,11 @@ export class VeilDvpExchange {
     /** Prove `execute_batch_derive` and submit `execute_batch_settle`. */
     executeBatch(args, opts) {
         return this.prover.proveAndSettle("execute_batch", buildExecuteBatchDeriveCalldata(args), opts);
+    }
+    /** Prove `venue_fill_derive` and submit `venue_fill_settle`: apply an
+     *  external venue's receipts (HyperVeil) to their makers' receive notes. */
+    venueFill(args, opts) {
+        return this.prover.proveAndSettle("venue_fill", buildVenueFillDeriveCalldata(args), opts);
     }
     /** Streaming variant of {@link executeBatch}. */
     executeBatchStream(args, opts) {

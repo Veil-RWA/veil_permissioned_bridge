@@ -86,9 +86,50 @@ export async function deriveViewingKey(account, chainId) {
     const privateKey = viewingKeyFromSignature(sig);
     return { privateKey, publicKey: derivePublicViewingKey(privateKey) };
 }
+// ── EVM wallets ─────────────────────────────────────────────────────────────
+// An EVM wallet holder derives its key the same way: `personal_sign` of one
+// fixed text, hashed. EOAs sign RFC-6979 deterministically (MetaMask, ethers,
+// hardware wallets), so the same wallet reproduces the same key anywhere. The
+// text is fixed forever: changing it changes every EVM holder's key.
+function chainName(chainId) {
+    return chainId.startsWith("0x") ? shortString.decodeShortString(chainId) : chainId;
+}
+/** The one text an EVM wallet signs to obtain its Veil viewing key. */
+export function evmViewingKeyMessage(chainId) {
+    return `Veil Viewing Key\nChain: ${chainName(chainId)}`;
+}
+/** k = poseidon(r.low, r.high, s.low, s.high) of a 65-byte `personal_sign`
+ *  signature (s taken in its low-s form, so either encoding of the same
+ *  signature gives the same key), rehashed into range as for Starknet. */
+export function viewingKeyFromEvmSignature(signature) {
+    const h = signature.replace(/^0x/, "");
+    if (!/^[0-9a-fA-F]{130}$/.test(h))
+        throw new Error("EVM signature must be 65 bytes (r ‖ s ‖ v)");
+    const n = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+    const r = BigInt("0x" + h.slice(0, 64));
+    let s = BigInt("0x" + h.slice(64, 128));
+    if (r === 0n || s === 0n)
+        throw new Error("refusing to derive from a zero signature component");
+    if (s > n / 2n)
+        s = n - s;
+    const mask = (1n << 128n) - 1n;
+    let k = poseidon([r & mask, r >> 128n, s & mask, s >> 128n]);
+    for (let i = 0; i < MAX_REHASH_ROUNDS; i++) {
+        if (k > 0n && k < HALF_CURVE_ORDER)
+            return viewingKeyAsScalar(k);
+        k = poseidon([k]);
+    }
+    throw new Error("viewing key derivation failed to land in range");
+}
+/** Sign the fixed text with an EVM wallet and derive its viewing key pair. */
+export async function deriveViewingKeyEvm(signer, chainId) {
+    const sig = await signer.signMessage(new TextEncoder().encode(evmViewingKeyMessage(chainId)));
+    const privateKey = viewingKeyFromEvmSignature(sig);
+    return { privateKey, publicKey: derivePublicViewingKey(privateKey) };
+}
 /** Verify a signature against a RAW Stark public key — must be the FULL curve
  *  point (`ec.starkCurve.getPublicKey`); the x-only stark key an account stores
- *  always fails. For Argent/Braavos/multisig, ask the account instead: their
+ *  always fails. For Ready/Braavos/multisig, ask the account instead: their
  *  contract defines what a valid signature is (see the on-chain variant). */
 export function verifyViewingKeySignature(sig, chainId, account, publicKey) {
     const { r, s } = signatureToRS(sig);

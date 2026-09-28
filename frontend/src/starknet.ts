@@ -1,144 +1,19 @@
-// The Starknet leg: wallet connection, mirror/twin reads, bridging back, and
-// claiming a quarantined balance.
+// The Starknet side, read-only: mirror and twin reads, note claims, and the
+// gateway facts the app needs.
+//
+// There is no Starknet wallet here. The holder is their EVM wallet, on both
+// chains: inside Veil it signs each action with personal_sign, and the prover's
+// relayer submits it on Starknet (notes.ts). Nothing on this page sends a
+// Starknet transaction.
 //
 // starknet.js v10 is required, not preferred. Live Sepolia serves RPC spec
 // 0.10.x and v6 speaks 0.7 -- a v6 client cannot talk to the network at all.
-//
-// Wallet DISCOVERY is get-starknet's job, not ours. Enumerating
-// `window.starknet_*` by hand picks whichever wallet happens to enumerate
-// first, which is the wrong wallet as soon as someone has both Argent and
-// Braavos; get-starknet shows the picker, remembers the choice, and knows about
-// wallets that are installed but not yet injected. It is independent of the
-// starknet.js version -- it hands back a `StarknetWindowObject`, which v10's
-// own `WalletAccount` takes -- so the two compose exactly as they should.
-// (`@starknet-io/get-starknet` is the maintained package; plain `get-starknet`
-// is deprecated.)
-//
-// This mirrors veilx/app/src/main.ts, which is the reference for the flow.
 
-// Must run before get-starknet evaluates: stops MetaMask's Starknet Snap from
-// being discovered, which otherwise prompts MetaMask on every load.
-import './noMetaMaskSnap';
-import { connect as pickWallet, disconnect as dropWallet } from '@starknet-io/get-starknet';
-import type { StarknetWindowObject } from '@starknet-io/get-starknet';
-import { RpcProvider, WalletAccount, CallData, uint256 } from 'starknet';
-import { STARKNET_RPC, DEFAULT_GAS_LIMIT, deployment, IS_DEMO } from './config';
+import { RpcProvider, CallData, uint256 } from 'starknet';
+import { STARKNET_RPC, RELEASE_GAS_LIMIT, deployment, IS_DEMO } from './config';
 import type { Asset } from './assets';
 
 export const snProvider = new RpcProvider({ nodeUrl: STARKNET_RPC });
-
-export type SnSession = { address: string; account: WalletAccount };
-
-/// Chain ids as felts, so a wallet's answer can be compared whatever form it
-/// comes back in.
-const CHAIN_IDS: Record<string, string> = {
-  'starknet-sepolia': '0x534e5f5345504f4c4941', // SN_SEPOLIA
-  'starknet-mainnet': '0x534e5f4d41494e',       // SN_MAIN
-};
-
-const expectedChainId = (): string | undefined =>
-  CHAIN_IDS[deployment.starknetNetwork ?? 'starknet-sepolia'];
-
-/// Ask the wallet which chain it is on. Wallets differ: newer ones answer
-/// `wallet_requestChainId`, older expose `chainId`, and the account can answer
-/// from its own provider. Try in that order.
-async function walletChainId(
-  wallet: StarknetWindowObject, account: WalletAccount | null
-): Promise<string | null> {
-  const w = wallet as unknown as {
-    request?: (a: { type: string }) => Promise<string>;
-    chainId?: string;
-  };
-  try { if (w?.request) return await w.request({ type: 'wallet_requestChainId' }); }
-  catch { /* fall through */ }
-  if (w?.chainId) return w.chainId;
-  // v10's WalletAccount has no getChainId of its own; the shared provider
-  // answers for the node this app is pointed at, which is the same question.
-  try { if (account) return (await snProvider.getChainId()) as unknown as string; }
-  catch { /* fall through */ }
-  return null;
-}
-
-const sameChain = (a: string, b: string): boolean => {
-  try { return BigInt(a) === BigInt(b); } catch { return a === b; }
-};
-
-/// Did the user explicitly connect in this browser before?
-///
-/// get-starknet keeps its own "last wallet" memory that is shared across sites
-/// and predates this app, so `neverAsk` alone will happily attach a wallet the
-/// user never approved HERE. Gate it on our own flag instead.
-const AUTOCONNECT = 'veil-bridge:autoconnect';
-const mayAutoConnect = (): boolean => {
-  try { return localStorage.getItem(AUTOCONNECT) === '1'; } catch { return false; }
-};
-const rememberConnect = (on: boolean): void => {
-  try {
-    if (on) localStorage.setItem(AUTOCONNECT, '1');
-    else localStorage.removeItem(AUTOCONNECT);
-  } catch { /* storage unavailable */ }
-};
-
-export class WrongChainError extends Error {
-  constructor(public readonly got: string, public readonly want: string) {
-    super(`Your wallet is on ${got}, but this deployment is on ${want}. Switch network and reconnect.`);
-    this.name = 'WrongChainError';
-  }
-}
-
-async function sessionFrom(wallet: StarknetWindowObject): Promise<SnSession> {
-  const account = await WalletAccount.connect({ nodeUrl: STARKNET_RPC }, wallet as never);
-  if (!account.address) throw new Error('Wallet did not return an address.');
-
-  // A wallet on the wrong network is NOT connected. Showing it as connected
-  // invites signing for a chain where none of these contracts exist -- and on
-  // this bridge it would derive a viewing key against the wrong chain id, so
-  // the note ids would be silently wrong too.
-  const want = expectedChainId();
-  const got = await walletChainId(wallet, account);
-  if (want && got && !sameChain(got, want)) {
-    throw new WrongChainError(got, deployment.starknetNetwork ?? 'starknet-sepolia');
-  }
-
-  return { address: account.address, account };
-}
-
-/// Open the picker and connect. `alwaysAsk` so the user chooses their wallet
-/// rather than getting whichever one enumerated first.
-export async function connectStarknet(): Promise<SnSession> {
-  const wallet = await pickWallet({ modalMode: 'alwaysAsk', modalTheme: 'dark' });
-  if (!wallet) throw new Error('No wallet selected.');
-  const session = await sessionFrom(wallet);
-  rememberConnect(true);
-  return session;
-}
-
-/// Re-attach to an already-authorised wallet on load, without a prompt, so a
-/// reload keeps the session instead of appearing to disconnect. Returns
-/// undefined when there is nothing to restore -- never throws.
-export async function restoreStarknet(): Promise<SnSession | undefined> {
-  if (!mayAutoConnect()) return undefined;
-
-  // The extension may not have injected yet when this runs, and `neverAsk`
-  // simply answers "nothing" in that case. Asking once and giving up is why a
-  // reload looked like a disconnect, so try again briefly before concluding
-  // there is no wallet.
-  for (let attempt = 0; attempt < 6; attempt++) {
-    try {
-      const wallet = await pickWallet({ modalMode: 'neverAsk' });
-      if (wallet) return await sessionFrom(wallet);
-    } catch {
-      return undefined;   // authorised but locked, or on the wrong chain
-    }
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  return undefined;
-}
-
-export async function disconnectStarknet(): Promise<void> {
-  rememberConnect(false);
-  try { await dropWallet({ clearLastWallet: true }); } catch { /* already gone */ }
-}
 
 async function callFelts(
   contractAddress: string, entrypoint: string, calldata: string[] = []
@@ -170,7 +45,7 @@ export type MirrorStatus = {
   /// false every eligibility field below is a default, not a finding, and the
   /// caller must render unknown rather than a refusal.
   readable: boolean;
-  identity: bigint;      // the EVM account backing this wallet, 0 if unbound
+  identity: bigint;      // the EVM identity this holder is bound to, 0 if unbound
   /// Whether `identity` is a fact. Eligibility is keyed on the EVM account, so
   /// a registry with no `identity_of` is not a mirrored registry at all and
   /// "unbound" would be the wrong thing to conclude from its silence.
@@ -187,7 +62,7 @@ export type MirrorStatus = {
   globalPaused: boolean | undefined;
 };
 
-/// What the mirror currently says about a Starknet wallet. `verified` is the
+/// What the mirror currently says about a holder. `verified` is the
 /// number that matters: it already folds in the binding, the record, the freeze
 /// flag, the global pause and the staleness window.
 ///
@@ -248,60 +123,12 @@ export async function noteOwner(asset: Asset, noteId: string): Promise<string> {
   return felts[0] ?? '0';
 }
 
-/// Claim a note before bridging into it. Must be sent by the address the
-/// transfer will name as recipient.
-export async function registerNote(
-  session: SnSession, asset: Asset, noteId: string
-): Promise<string> {
-  const res = await session.account.execute({
-    contractAddress: asset.addresses.starknet!.gateway!,
-    entrypoint: 'register_note',
-    calldata: CallData.compile([BigInt(noteId).toString()]),
-  });
-  await snProvider.waitForTransaction(res.transaction_hash);
-  return res.transaction_hash;
-}
-
-/// Whether this asset's gateway has the link entrypoints. Gateways deployed
-/// before linking existed do not. Undefined when the class could not be read.
-const linkingSupport = new Map<string, boolean>();
-
-export async function gatewaySupportsLinking(asset: Asset): Promise<boolean | undefined> {
-  const gateway = asset.addresses.starknet?.gateway;
-  if (!gateway || IS_DEMO) return undefined;
-  const cached = linkingSupport.get(gateway);
-  if (cached !== undefined) return cached;
-  try {
-    const cls: any = await snProvider.getClassAt(gateway);
-    const abi = typeof cls.abi === 'string' ? JSON.parse(cls.abi) : cls.abi;
-    const names = new Set<string>();
-    const walk = (items: any[]) => {
-      for (const e of items ?? []) {
-        if (e.type === 'function') names.add(e.name);
-        if (e.type === 'interface') walk(e.items);
-      }
-    };
-    walk(abi);
-    const supported = names.has('request_link');
-    linkingSupport.set(gateway, supported);
-    return supported;
-  } catch {
-    return undefined;
-  }
-}
-
-/// The EVM account backing a Starknet wallet on the mirror: 0n when unbound,
+/// The EVM identity a holder is bound to on the mirror (an EVM wallet is bound
+/// to itself): 0n when unbound,
 /// undefined when the registry did not answer -- silence is never "unbound".
 export async function identityOf(asset: Asset, address: string): Promise<bigint | undefined> {
   if (IS_DEMO) return undefined;
   const felts = await maybeFelts(asset.addresses.starknet!.registry, 'identity_of', [address]);
-  return felts ? BigInt(felts[0] ?? 0) : undefined;
-}
-
-/// The EVM account this wallet has asked to be linked to; 0n for none.
-export async function linkRequestOf(asset: Asset, address: string): Promise<bigint | undefined> {
-  if (IS_DEMO) return undefined;
-  const felts = await maybeFelts(asset.addresses.starknet!.gateway, 'link_request_of', [address]);
   return felts ? BigInt(felts[0] ?? 0) : undefined;
 }
 
@@ -348,93 +175,46 @@ export async function rulesFreshness(
   return { required: yes(required), account: yes(account), token: yes(token) };
 }
 
-/// The Starknet half of a link: "bind me to `evmAddress`". Must be sent by the
-/// wallet being linked. The LINK message from that EVM account completes it,
-/// and a LINK without this request binds nothing.
-export async function requestLink(
-  session: SnSession, asset: Asset, evmAddress: string
-): Promise<string> {
-  const res = await session.account.execute({
-    contractAddress: asset.addresses.starknet!.gateway!,
-    entrypoint: 'request_link',
-    calldata: CallData.compile([BigInt(evmAddress).toString()]),
-  });
-  await snProvider.waitForTransaction(res.transaction_hash);
-  return res.transaction_hash;
-}
-
 export async function twinSupply(asset: Asset): Promise<bigint> {
   return u256(await callFelts(asset.addresses.starknet!.token!, 'total_supply', []).catch(() => ['0', '0']));
 }
 
-/// The STRK the gateway must be approved for. Quoted from the real endpoint, so
-/// this is the amount the wallet will actually be asked to approve.
+/// The LayerZero fee for a bridge back, in STRK. The gateway pays it from its
+/// own balance; the holder signs a cap on it (`max_fee`) as part of the action.
 export async function quoteBridgeBack(
   asset: Asset, amount: bigint, evmRecipient: string
 ): Promise<bigint> {
   const felts = await callFelts(asset.addresses.starknet!.gateway!, 'quote_bridge_back', [
     ...CallData.compile([uint256.bnToUint256(amount)]),
     BigInt(evmRecipient).toString(),
-    DEFAULT_GAS_LIMIT.toString(),
+    RELEASE_GAS_LIMIT.toString(),
   ]);
   return u256(felts);
 }
 
-/// Burn on Starknet and instruct the lockbox to release. Two calls in one
-/// multicall: approve the gateway for the message fee, then bridge back. The
-/// gateway pays the endpoint, which is why the approval goes to the gateway and
-/// not to the endpoint itself.
-export async function bridgeBack(
-  session: SnSession,
-  asset: Asset,
-  amount: bigint,
-  evmRecipient: string,
-  fee: bigint,
-  feeToken: string
-): Promise<string> {
-  const sn = asset.addresses.starknet!;
-  const calls = [
-    {
-      contractAddress: feeToken,
-      entrypoint: 'approve',
-      calldata: CallData.compile([sn.gateway!, uint256.bnToUint256(fee)]),
-    },
-    {
-      contractAddress: sn.gateway!,
-      entrypoint: 'bridge_back',
-      calldata: CallData.compile([
-        uint256.bnToUint256(amount),
-        BigInt(evmRecipient).toString(),
-        {
-          native_fee: uint256.bnToUint256(fee),
-          lz_token_fee: uint256.bnToUint256(0n),
-        },
-        DEFAULT_GAS_LIMIT.toString(),
-        session.address,
-      ]),
-    },
-  ];
-  const res = await session.account.execute(calls);
-  await snProvider.waitForTransaction(res.transaction_hash);
-  return res.transaction_hash;
-}
+/// Does this asset's gateway take EVM wallets as holders? Only a gateway on the
+/// current class does: it binds an EVM wallet to its own identity, lets a
+/// wallet's own bridge-in claim its note, and carries the private way back
+/// (`privacy_invoke`). One on an older class needs a Starknet account for all
+/// three, so the app cannot use it. Undefined when the gateway did not answer.
+const gatewayClass = new Map<string, Promise<string | undefined>>();
 
-/// Release a quarantined balance. Permissionless -- the funds can only go to
-/// the recipient the original message named -- so anyone may pay the gas.
-export async function claimPending(
-  session: SnSession, asset: Asset, recipient: string
-): Promise<string> {
-  const res = await session.account.execute({
-    contractAddress: asset.addresses.starknet!.gateway!,
-    entrypoint: 'claim_pending',
-    calldata: CallData.compile([recipient]),
-  });
-  await snProvider.waitForTransaction(res.transaction_hash);
-  return res.transaction_hash;
-}
-
-/// The STRK balance the fee is paid from, so the UI can say "not enough STRK"
-/// before the wallet does.
-export async function feeTokenBalance(feeToken: string, address: string): Promise<bigint> {
-  return u256(await callFelts(feeToken, 'balanceOf', [address]).catch(() => ['0', '0']));
+export async function supportsEvmHolders(asset: Asset): Promise<boolean | undefined> {
+  const gateway = asset.addresses.starknet?.gateway;
+  if (!gateway || IS_DEMO) return undefined;
+  if (!gatewayClass.has(gateway)) {
+    gatewayClass.set(gateway, snProvider.getClassHashAt(gateway).then((h) => String(h)).catch(() => undefined));
+  }
+  const hash = await gatewayClass.get(gateway)!;
+  if (hash === undefined) return undefined;
+  const current = deployment.classes?.VeilBridgeGateway;
+  if (current) return BigInt(hash) === BigInt(current);
+  // No class recorded: ask the class itself.
+  try {
+    const cls: any = await snProvider.getClass(hash);
+    const abi = typeof cls.abi === 'string' ? JSON.parse(cls.abi) : cls.abi;
+    return JSON.stringify(abi).includes('"privacy_invoke"');
+  } catch {
+    return undefined;
+  }
 }
