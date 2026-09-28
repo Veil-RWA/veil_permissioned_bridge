@@ -175,6 +175,8 @@ export const IRIS_API = testnet ? 'https://iris-api-sandbox.circle.com' : 'https
 export const EXPLORER_EVM = testnet ? 'https://sepolia.etherscan.io' : 'https://etherscan.io';
 export const EXPLORER_SN = testnet ? 'https://sepolia.voyager.online' : 'https://voyager.online';
 export const LZ_SCAN = testnet ? 'https://testnet.layerzeroscan.com' : 'https://layerzeroscan.com';
+/// LayerZero Scan's API, which answers browsers: where each message is.
+export const LZ_API = testnet ? 'https://scan-testnet.layerzero-api.com' : 'https://scan.layerzero-api.com';
 
 /// Executor gas for lz_receive on Starknet.
 ///

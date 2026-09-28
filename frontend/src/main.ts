@@ -32,7 +32,8 @@ import { ETHEREUM_DOMAIN, STARKNET_DOMAIN } from './cashCore';
 import { short, units, parseUnits, ago, tokenScale, unitsToTokens, type UnitScale } from './format';
 import * as evm from './evm';
 import * as sn from './starknet';
-import { load as loadHistory, record, update, type Transfer } from './history';
+import { load as loadHistory, record, update, type Kind, type Transfer } from './history';
+import { lzStatus, inFlightByWallet, elapsed, type LzStatus } from './lzStatus';
 import { recipientGate, mirrorRefusal, mirrorUnreadable, type Gate } from './eligibility';
 import {
   deriveNoteContext, findFillableNote, forgetViewingKey, createOpenNote, bridgeBackPrivately,
@@ -688,6 +689,23 @@ function transferView(): string {
 
 // ------------------------------------------------------------------- history
 
+/// Where each message still on its way is, per source tx hash -- read from
+/// LayerZero Scan while History is open.
+const lzSeen = new Map<string, LzStatus>();
+let historyTimer: number | undefined;
+
+const KIND_TITLE: Record<Kind, string> = {
+  transfer: '',
+  eligibility: 'Eligibility update',
+  rules: 'Issuer rules update',
+};
+
+/// Status words for the pill. A message has no "minted": it is delivered.
+function pill(t: Transfer): string {
+  if (t.status === 'sent') return t.kind && t.kind !== 'transfer' ? 'in flight' : 'sent';
+  return t.status;
+}
+
 function historyView(): string {
   const items = loadHistory();
   if (!items.length) {
@@ -696,18 +714,57 @@ function historyView(): string {
       <p style="margin:0">Bridged transfers from this browser will appear here.</p></div></div>`;
   }
   const rows = items.map((t: Transfer) => {
-    const dir = t.direction === 'toStarknet'
-      ? `${esc(evmLabel)} → ${esc(starknetLabel)}` : `${esc(starknetLabel)} → ${esc(evmLabel)}`;
+    const kind = t.kind ?? 'transfer';
     const explorer = t.direction === 'toStarknet' ? EXPLORER_EVM : EXPLORER_SN;
+    const viaLz = t.asset !== 'usdc';
+    const lzLink = viaLz ? ` · <a href="${LZ_SCAN}/tx/${esc(t.hash)}" target="_blank" rel="noreferrer">LayerZero</a>` : '';
+    const title = kind === 'transfer'
+      ? `${esc(t.amount)} ${esc(t.symbol ?? '')}<span style="color:var(--faint);font-weight:500">${t.direction === 'toStarknet'
+          ? `${esc(evmLabel)} → ${esc(starknetLabel)}` : `${esc(starknetLabel)} → ${esc(evmLabel)}`}</span>`
+      : `${KIND_TITLE[kind]} · ${esc(t.symbol ?? '')}<span style="color:var(--faint);font-weight:500">${esc(evmLabel)} → ${esc(starknetLabel)}</span>`;
+    const lz = t.status === 'sent' && viaLz ? lzSeen.get(t.hash) : undefined;
+    const where = t.status === 'sent' && viaLz
+      ? `<div class="row-lz ${lz?.stage ?? 'unknown'}">${lz
+          ? `${esc(lz.text)} ${esc(elapsed(lz.since ?? t.at))}${lz.raw && lz.stage !== 'delivered' ? `<span class="row-lz-raw">LayerZero: ${esc(lz.raw)}</span>` : ''}`
+          : 'Checking LayerZero…'}</div>`
+      : '';
     return `<div class="row">
-      <div class="row-main">${esc(t.amount)} ${esc(t.symbol ?? '')}<span style="color:var(--faint);font-weight:500">${dir}</span></div>
-      <span class="status ${t.status}">${t.status}</span>
-      <div class="row-sub">${esc(ago(t.at))} · to ${esc(short(t.recipient, 8, 6))} ·
-        <a href="${explorer}/tx/${esc(t.hash)}" target="_blank" rel="noreferrer">tx</a>
-        ${t.guid ? ` · <a href="${LZ_SCAN}/tx/${esc(t.hash)}" target="_blank" rel="noreferrer">LayerZero</a>` : ''}
-      </div></div>`;
+      <div class="row-main">${title}</div>
+      <span class="status ${t.status}">${pill(t)}</span>
+      <div class="row-sub">${esc(ago(t.at))} · ${kind === 'transfer' ? 'to' : 'for'} ${esc(short(t.recipient, 8, 6))} ·
+        <a href="${explorer}/tx/${esc(t.hash)}" target="_blank" rel="noreferrer">tx</a>${lzLink}
+      </div>${where}</div>`;
   }).join('');
   return `<div class="history">${rows}</div>`;
+}
+
+/// Ask LayerZero where every message still on its way is. A message logged
+/// before the transfer (eligibility, rules) closes here once delivered; a
+/// transfer keeps its own watcher, which knows whether it minted or was held.
+async function refreshHistoryStatus(): Promise<void> {
+  if (state.evmSession) await adoptInFlight(state.evmSession.address);
+  const open = loadHistory().filter((t) => t.status === 'sent' && t.asset !== 'usdc').slice(0, 10);
+  await Promise.all(open.map(async (t) => {
+    const lz = await lzStatus(t.hash);
+    if (!lz) return;
+    lzSeen.set(t.hash, lz);
+    if (t.kind && t.kind !== 'transfer') {
+      if (lz.stage === 'delivered') update(t.id, 'delivered');
+      if (lz.stage === 'failed') update(t.id, 'failed');
+    }
+  }));
+  if (state.view === 'history') render();
+}
+
+/// While History is open, keep its statuses current.
+function watchHistory(): void {
+  if (state.view !== 'history') {
+    if (historyTimer !== undefined) { window.clearInterval(historyTimer); historyTimer = undefined; }
+    return;
+  }
+  if (historyTimer !== undefined) return;
+  void refreshHistoryStatus();
+  historyTimer = window.setInterval(() => void refreshHistoryStatus(), 20000);
 }
 
 // -------------------------------------------------------------------- render
@@ -739,6 +796,8 @@ function render(): void {
   });
 
   paintNavWallets();
+
+  watchHistory();
 
   const foot = document.getElementById('foot-route');
   if (foot) foot.textContent = isDeployed ? `${sourceLabel()} → ${destLabel()}` : 'not deployed';
@@ -1361,11 +1420,83 @@ async function doClaimEvm(): Promise<void> {
   }
 }
 
-/// How long to wait for a LayerZero message before asking the holder to come back.
+/// How long one Bridge press waits for a LayerZero message before handing the
+/// holder over to History to follow it.
 const MESSAGE_WAIT_MS = 10 * 60 * 1000;
 
-/// Eligibility pushes sent this session, keyed asset:account.
-const identitySent = new Map<string, number>();
+/// The bridge's LayerZero message kinds for each logged message.
+const MESSAGE_KINDS: Record<Exclude<Kind, 'transfer'>, number[]> = { eligibility: [2], rules: [5, 6] };
+
+/// Log in History every eligibility or rules update this wallet has on its way
+/// through any of this route's lockboxes, as LayerZero Scan reports them -- so
+/// the holder sees them wherever they were sent from.
+async function adoptInFlight(address: string): Promise<void> {
+  const messages = await inFlightByWallet(address);
+  if (!messages.length) return;
+  const known = new Set(loadHistory().map((t) => t.hash.toLowerCase()));
+  for (const m of messages.reverse()) {
+    if (known.has(m.hash.toLowerCase())) continue;
+    const asset = assets.find((a) => a.addresses.evm?.lockbox?.toLowerCase() === m.sender);
+    const kind = (Object.keys(MESSAGE_KINDS) as Exclude<Kind, 'transfer'>[])
+      .find((k) => MESSAGE_KINDS[k].includes(m.kind));
+    if (!asset || !kind) continue;
+    record({
+      kind, direction: 'toStarknet', asset: asset.id, symbol: asset.symbol,
+      amount: '', recipient: address, hash: m.hash, status: 'sent',
+    });
+    lzSeen.set(m.hash, m.status);
+  }
+}
+
+/// The latest message of `kind` for this asset and wallet that is still on its
+/// way -- so a second press, a reload or another device waits for it instead
+/// of paying for another. LayerZero Scan is asked first, since this browser's
+/// History does not see what another device sent; whatever it reports in flight
+/// is logged here so the holder can follow it. A message LayerZero reports
+/// delivered or failed is closed, and does not count.
+async function pendingMessage(
+  kind: Exclude<Kind, 'transfer'>, asset: Asset, address: string,
+): Promise<Transfer | undefined> {
+  await adoptInFlight(address);
+  const open = loadHistory().filter((x) => x.kind === kind && x.asset === asset.id && x.status === 'sent'
+    && x.recipient.toLowerCase() === address.toLowerCase());
+  let latest: Transfer | undefined;
+  for (const t of open) {
+    const lz = await lzStatus(t.hash);
+    if (lz?.stage === 'delivered') { update(t.id, 'delivered'); continue; }
+    if (lz?.stage === 'failed') { update(t.id, 'failed'); continue; }
+    latest ??= t;
+  }
+  return latest;
+}
+
+/// Wait for a message to land, saying where it is. `arrived` reads the far
+/// side: true once it took effect, false while not yet, and a string when it
+/// arrived with an answer that stops the bridge.
+async function waitForMessage(
+  msg: Transfer, what: string, arrived: () => Promise<boolean | string>,
+): Promise<boolean> {
+  const deadline = Date.now() + MESSAGE_WAIT_MS;
+  let lz: LzStatus | undefined;
+  for (;;) {
+    const result = await arrived().catch(() => false);
+    if (result === true) { update(msg.id, 'delivered'); return true; }
+    if (typeof result === 'string') { update(msg.id, 'delivered'); state.error = result; return false; }
+    lz = await lzStatus(msg.hash);
+    if (lz?.stage === 'failed') {
+      update(msg.id, 'failed');
+      state.error = `LayerZero could not deliver your ${what}${lz.raw ? ` (${lz.raw})` : ''}. Press Bridge to send it again.`;
+      return false;
+    }
+    if (Date.now() >= deadline) break;
+    state.busy = `${what[0].toUpperCase()}${what.slice(1)}: ${(lz?.text ?? 'on its way').toLowerCase()} ${elapsed(lz?.since ?? msg.at)}…`;
+    paintCta();
+    await new Promise((r) => setTimeout(r, 15000));
+  }
+  state.error = `Your ${what} is still on its way (${(lz?.text ?? 'not delivered yet').toLowerCase()}). `
+    + 'Nothing is lost and it will not be sent twice. Follow it under History, and press Bridge again once it shows delivered.';
+  return false;
+}
 
 /// Make sure the mirror holds a fresh eligibility record for the connected
 /// account on this asset.
@@ -1373,7 +1504,8 @@ const identitySent = new Map<string, number>();
 /// The record is a snapshot and the mirror fails closed once it expires, so the
 /// pool will not make a note for a holder whose record is missing or stale. The
 /// bridge-in itself carries a fresh snapshot, but the note has to exist first.
-/// Anyone may push it, so the holder does, and only when it is needed.
+/// Anyone may push it, so the holder does, and only when it is needed. The push
+/// is a LayerZero message, so it is logged in History with where it is.
 async function ensureIdentitySynced(): Promise<boolean> {
   const asset = state.asset;
   const source = state.evmSession;
@@ -1385,33 +1517,21 @@ async function ensureIdentitySynced(): Promise<boolean> {
   }
   if (status.verified && status.fresh) return true;
 
-  const key = `${asset.id}:${source.address.toLowerCase()}`;
-  const sentAt = identitySent.get(key);
-  if (sentAt === undefined || Date.now() - sentAt > MESSAGE_WAIT_MS) {
+  let msg = await pendingMessage('eligibility', asset, source.address);
+  if (!msg) {
     state.busy = `Confirm the eligibility update in your ${evmLabel} wallet…`; paintCta(); render();
-    await evm.syncCompliance(source, asset);
-    identitySent.set(key, Date.now());
+    const hash = await evm.syncCompliance(source, asset);
+    msg = record({
+      kind: 'eligibility', direction: 'toStarknet', asset: asset.id, symbol: state.token.symbol,
+      amount: '', recipient: source.address, hash, status: 'sent',
+    });
   }
-
-  const deadline = (identitySent.get(key) ?? Date.now()) + MESSAGE_WAIT_MS;
-  while (Date.now() < deadline) {
-    state.busy = 'Updating your eligibility — delivery takes a few minutes…'; paintCta();
-    await new Promise((r) => setTimeout(r, 15000));
+  return waitForMessage(msg, 'eligibility update', async () => {
     const now = await sn.identityFreshness(asset, source.address);
-    if (now && now.verified && now.fresh) return true;
-    if (now && !now.verified && now.fresh) {
-      state.error = `${evmLabel} says this account is not eligible to hold ${state.token.symbol}.`;
-      return false;
-    }
-  }
-  state.error = 'Your eligibility update was sent but has not arrived yet. Press Bridge again in a few minutes; it will not be sent twice.';
-  return false;
+    if (!now || !now.fresh) return false;
+    return now.verified ? true : `${evmLabel} says this account is not eligible to hold ${state.token.symbol}.`;
+  });
 }
-
-/// Rule pushes sent this session, keyed asset:account: each asset mirrors its
-/// own issuer's rules. Pressing Bridge again on the same asset waits for the
-/// message in flight instead of paying for a second one.
-const rulesSent = new Map<string, number>();
 
 /// Make sure the mirror holds fresh issuer rules for the connected account, for
 /// an asset whose mirror enforces them (a Securitize token).
@@ -1420,7 +1540,7 @@ const rulesSent = new Map<string, number>();
 /// proof, from records the lockbox pushes. The mirror fails closed: with no
 /// fresh record the holder's notes read as fully locked and a delivery is
 /// refused. Anyone may push the records, so the holder does it here, once, and
-/// again only after they expire.
+/// again only after they expire. Logged in History like the eligibility update.
 async function ensureRulesSynced(): Promise<boolean> {
   const asset = state.asset;
   const source = state.evmSession;
@@ -1432,23 +1552,21 @@ async function ensureRulesSynced(): Promise<boolean> {
   }
   if (!status.required || (status.account && status.token)) return true;
 
-  const key = `${asset.id}:${source.address.toLowerCase()}`;
-  const sentAt = rulesSent.get(key);
-  if (sentAt === undefined || Date.now() - sentAt > MESSAGE_WAIT_MS) {
+  let msg = await pendingMessage('rules', asset, source.address);
+  if (!msg) {
     state.busy = `Confirm the rules update in your ${evmLabel} wallet…`; paintCta(); render();
-    await evm.syncRules(source, asset, !status.token);
-    rulesSent.set(key, Date.now());
+    const hashes = await evm.syncRules(source, asset, !status.token);
+    for (const hash of hashes) {
+      msg = record({
+        kind: 'rules', direction: 'toStarknet', asset: asset.id, symbol: state.token.symbol,
+        amount: '', recipient: source.address, hash, status: 'sent',
+      });
+    }
   }
-
-  const deadline = (rulesSent.get(key) ?? Date.now()) + MESSAGE_WAIT_MS;
-  while (Date.now() < deadline) {
-    state.busy = 'Updating the issuer rules — delivery takes a few minutes…'; paintCta();
-    await new Promise((r) => setTimeout(r, 15000));
+  return waitForMessage(msg!, 'issuer rules update', async () => {
     const now = await sn.rulesFreshness(asset, source.address);
-    if (now && now.account && now.token) return true;
-  }
-  state.error = 'The issuer rules update was sent but has not arrived yet. Press Bridge again in a few minutes; it will not be sent twice.';
-  return false;
+    return Boolean(now && now.account && now.token);
+  });
 }
 
 /// Get the destination ready to receive, doing only what is still missing.

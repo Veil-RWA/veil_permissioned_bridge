@@ -323,6 +323,13 @@ a { color: inherit; }
 .status.minted { background: var(--good-bg); color: var(--good); border-color: var(--good-line); }
 .status.quarantined { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-line); }
 .status.failed { background: var(--bad-bg); color: var(--bad); border-color: var(--bad-line); }
+.status.delivered { background: var(--good-bg); color: var(--good); border-color: var(--good-line); }
+
+/* Where a message still on its way is, from LayerZero Scan. */
+.row-lz { grid-column: 1 / -1; font-size: 12.5px; color: var(--dim); line-height: 1.45; }
+.row-lz.delivering, .row-lz.verifying, .row-lz.confirming { color: var(--warn); }
+.row-lz.failed { color: var(--bad); }
+.row-lz-raw { display: block; font-size: 11.5px; color: var(--faint); font-family: var(--mono); }
 
 /* -------------------------------------------------------- assurances */
 

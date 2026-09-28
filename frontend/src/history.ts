@@ -1,14 +1,24 @@
 // Local transfer log. Deliberately per-browser: a bridge transfer is already
 // recorded on two chains and on LayerZero Scan, so this exists to give the user
 // their own links back, not to be a source of truth.
+//
+// It also logs the messages a bridge sends on the holder's behalf before the
+// transfer itself -- an eligibility update, issuer rules -- because each is a
+// LayerZero message the holder paid for and waits on, and a wait nobody can see
+// looks like a broken app.
 
 import { deployment } from './config';
 
 export type Direction = 'toStarknet' | 'toEvm';
-export type Status = 'sent' | 'minted' | 'quarantined' | 'failed';
+export type Status = 'sent' | 'minted' | 'quarantined' | 'delivered' | 'failed';
+
+/// A transfer, or a message sent to prepare one.
+export type Kind = 'transfer' | 'eligibility' | 'rules';
 
 export type Transfer = {
   id: string;
+  /// Absent on entries written before messages were logged: a transfer.
+  kind?: Kind;
   direction: Direction;
   /** Catalogue id, so a row still resolves after the selected asset changes. */
   asset?: string;
