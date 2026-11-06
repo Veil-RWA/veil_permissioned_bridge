@@ -3,7 +3,12 @@
 set -e
 cd "$(dirname "$0")"
 echo "=== cairo: build + tests ==="
-(cd cairo && scarb build && snforge test)
+# A Stellar holder's test runs several Ed25519 checks (~380M L2 gas each,
+# each its own derive in production) in one snforge test: raise the per-test
+# step cap, which is not a per-transaction limit.
+(cd cairo && scarb build && snforge test --max-n-steps 400000000)
+echo "=== stellar: Soroban lockbox (vendor LayerZero crates first: stellar/vendor.sh) ==="
+(cd stellar && { [ -d dependencies ] || ./vendor.sh; } && cargo test)
 echo "=== evm: build + tests ==="
 (cd evm/script && bash test.sh)
 echo "=== tools: spec encoding ==="

@@ -155,11 +155,26 @@ pub fn evm_personal_sign(secret: u256, hash: felt252) -> Array<felt252> {
     array![r.low.into(), r.high.into(), s.low.into(), s.high.into(), parity]
 }
 
-/// `who`'s signature over `hash`: the EVM holder's `personal_sign`, or a
-/// Starknet account's STARK signature.
+// ── The Stellar wallet holder ────────────────────────────────────────────────
+// A holder with no Starknet account: `stellar_holder` of its Ed25519 key. Its
+// SEP-53 signatures are made off-chain (js-stellar-sdk Keypair.signMessage,
+// seed 32 x 0x07) and looked up in stellar_vectors.cairo by hash.
+
+/// The Ed25519 key of seed 32 x 0x07 (G…DVEU3DD4KOFECV66VIHWEZOYX4ZKR3WV27L464SIIPOU2IUI3JCZA57).
+pub const STELLAR_PK: u256 = 0xea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c;
+
+pub fn stellar_holder() -> ContractAddress {
+    veil_bridge::stellar::stellar_holder(STELLAR_PK)
+}
+
+/// `who`'s signature over `hash`: the EVM holder's `personal_sign`, the
+/// Stellar holder's SEP-53 signature, or a Starknet account's STARK signature.
 pub fn sign(who: ContractAddress, hash: felt252) -> Array<felt252> {
     if who == evm_holder() {
         return evm_personal_sign(EVM_HOLDER_SECRET, hash);
+    }
+    if who == stellar_holder() {
+        return super::stellar_vectors::stellar_sig(hash);
     }
     ensure_account(who);
     let (r, s) = KeyPairTrait::<felt252, felt252>::from_secret_key(secret_of(who))

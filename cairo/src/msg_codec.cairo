@@ -75,10 +75,19 @@
 //   `IVeilRulesSource` on EVM) into `VeilMirroredRules`, which answers the
 //   Veil pool's `ITransferRules` from them.
 //
+// STELLAR LOCKBOX. A gateway whose lockbox is on Stellar (account format
+// STELLAR, see stellar.cairo) reads the SAME byte layouts. The account words
+// (evm_sender, evm_account, evm_recipient) then carry a Stellar account's raw
+// 32-byte Ed25519 key instead of a left-padded EVM address, and the `*_as`
+// decoders turn an inbound key into the account's Veil holder,
+// `stellar_holder(key)`, which is its identity in the mirror. UNLOCK carries
+// the recipient's key (`encode_unlock_word`).
+//
 // A MINT carries the sender's compliance snapshot alongside the transfer so a
 // bridge-in is always accompanied by fresh eligibility data — the mirror never
 // has to mint against a record it has never seen.
 
+use super::stellar::{ACCOUNT_FORMAT_EVM, ACCOUNT_FORMAT_STELLAR, stellar_holder};
 use super::bytes::{
     append_bool, append_u16, append_u256, append_u64, append_u8, read_bool, read_u16, read_u256,
     read_u64, read_u8,
@@ -160,11 +169,27 @@ fn word_to_starknet_address(word: u256) -> starknet::ContractAddress {
     as_felt.try_into().expect('BRIDGE_BAD_SN_ADDR')
 }
 
+/// An inbound account word as the mirror's identity: the EVM address, or the
+/// Stellar key's holder.
+pub fn account_of_word(word: u256, format: u8) -> felt252 {
+    if format == ACCOUNT_FORMAT_EVM {
+        word_to_evm_address(word)
+    } else {
+        assert(format == ACCOUNT_FORMAT_STELLAR, 'BRIDGE_BAD_FORMAT');
+        assert(word != 0, 'BRIDGE_BAD_STELLAR_KEY');
+        stellar_holder(word).into()
+    }
+}
+
 pub fn decode_mint(message: @ByteArray) -> MintMessage {
+    decode_mint_as(message, ACCOUNT_FORMAT_EVM)
+}
+
+pub fn decode_mint_as(message: @ByteArray, format: u8) -> MintMessage {
     assert(read_u8(message, 0) == KIND_MINT, 'BRIDGE_KIND_MISMATCH');
     MintMessage {
         identity: IdentitySnapshot {
-            evm_account: word_to_evm_address(read_u256(message, 1)),
+            evm_account: account_of_word(read_u256(message, 1), format),
             seq: read_u64(message, 97),
             verified: read_bool(message, 105),
             frozen: read_bool(message, 106),
@@ -178,9 +203,13 @@ pub fn decode_mint(message: @ByteArray) -> MintMessage {
 }
 
 pub fn decode_identity(message: @ByteArray) -> IdentitySnapshot {
+    decode_identity_as(message, ACCOUNT_FORMAT_EVM)
+}
+
+pub fn decode_identity_as(message: @ByteArray, format: u8) -> IdentitySnapshot {
     assert(read_u8(message, 0) == KIND_IDENTITY, 'BRIDGE_KIND_MISMATCH');
     IdentitySnapshot {
-        evm_account: word_to_evm_address(read_u256(message, 1)),
+        evm_account: account_of_word(read_u256(message, 1), format),
         seq: read_u64(message, 33),
         verified: read_bool(message, 41),
         frozen: read_bool(message, 42),
@@ -194,10 +223,14 @@ pub fn decode_global(message: @ByteArray) -> GlobalMessage {
 }
 
 pub fn decode_holder_rules(message: @ByteArray) -> HolderRulesMessage {
+    decode_holder_rules_as(message, ACCOUNT_FORMAT_EVM)
+}
+
+pub fn decode_holder_rules_as(message: @ByteArray, format: u8) -> HolderRulesMessage {
     assert(read_u8(message, 0) == KIND_HOLDER_RULES, 'BRIDGE_KIND_MISMATCH');
     assert(message.len() == 76, 'BRIDGE_BAD_LENGTH');
     HolderRulesMessage {
-        evm_account: word_to_evm_address(read_u256(message, 1)),
+        evm_account: account_of_word(read_u256(message, 1), format),
         seq: read_u64(message, 33),
         can_hold: read_bool(message, 41),
         frozen: read_bool(message, 42),
@@ -224,9 +257,14 @@ pub fn encode_unlock(evm_recipient: felt252, amount: u256) -> ByteArray {
     let recipient_word: u256 = evm_recipient.into();
     assert(recipient_word < EVM_ADDRESS_BOUND, 'BRIDGE_BAD_EVM_ADDR');
 
+    encode_unlock_word(recipient_word, amount)
+}
+
+/// UNLOCK with any 32-byte recipient word: a Stellar account's raw key.
+pub fn encode_unlock_word(recipient: u256, amount: u256) -> ByteArray {
     let mut out: ByteArray = Default::default();
     append_u8(ref out, KIND_UNLOCK);
-    append_u256(ref out, recipient_word);
+    append_u256(ref out, recipient);
     append_u256(ref out, amount);
     out
 }

@@ -12,6 +12,8 @@ pub mod mirrored_registry;
 pub mod mirrored_rules;
 pub mod bridged_token;
 pub mod gateway;
+// Stellar holders and recipients, for a gateway whose lockbox is on Stellar.
+pub mod stellar;
 pub mod pool;
 pub mod factory;
 

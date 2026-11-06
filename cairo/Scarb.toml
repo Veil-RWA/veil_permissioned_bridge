@@ -32,5 +32,6 @@ casm-add-pythonic-hints = true
 build-external-contracts = [
     "veil::VeilERC3643::VeilERC3643",
     "veil::VeilEvmVerifier::VeilEvmVerifier",
+    "veil::VeilStellarVerifier::VeilStellarVerifier",
     "openzeppelin_presets::account::AccountUpgradeable",
 ]

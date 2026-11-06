@@ -32,6 +32,17 @@
 //     LayerZero from this gateway's own balance, since the holder has no
 //     Starknet account to pay from.
 //
+// Stellar holders. A gateway whose lockbox is on Stellar (`set_account_format`
+// STELLAR, once) reads every account word in a message as a Stellar account's
+// raw Ed25519 key, and its holder in the pool is `stellar_holder(key)`
+// (stellar.cairo), which the pool authorizes by the wallet's Ed25519 SEP-53
+// signature inside the proof. Everything above holds for it the same way:
+// bound to its own identity, its own bridge-out claims the note it names, or a
+// claim it signed (`register_note_stellar`). The way back pays a Stellar key,
+// which does not fit the felt `privacy_invoke` takes, so the exit names it by
+// `recipient_handle(key)` after anyone has registered the key
+// (`register_stellar_recipient`).
+//
 // Replay is the endpoint's job: it executes each (src_eid, sender, nonce) at
 // most once, so this contract keeps no nonce bookkeeping of its own. Ordering
 // is not the endpoint's job in unordered mode, which is why every compliance
@@ -143,6 +154,30 @@ pub trait IVeilBridgeGateway<TContractState> {
     );
     /// What an EVM wallet signs to claim `note_id` on this gateway.
     fn note_claim_hash(self: @TContractState, note_id: felt252) -> felt252;
+
+    // ── Stellar holders ─────────────────────────────────────────────────────
+    /// How the lockbox names accounts: 0 = EVM (default), 1 = Stellar. Owner
+    /// only, and once: every record and binding depends on it.
+    fn set_account_format(ref self: TContractState, format: u8);
+    fn account_format(self: @TContractState) -> u8;
+    /// The VeilStellarVerifier class `register_note_stellar` library-calls.
+    fn set_stellar_verifier(ref self: TContractState, class_hash: starknet::ClassHash);
+    fn stellar_verifier(self: @TContractState) -> starknet::ClassHash;
+    /// `register_note` for a Stellar wallet holder: anyone submits the
+    /// wallet's SEP-53 signature of "Veil authorization\n0x<note_claim_hash>",
+    /// as [pk.low, pk.high, R.low, R.high, S.low, S.high].
+    fn register_note_stellar(
+        ref self: TContractState,
+        note_id: felt252,
+        owner: ContractAddress,
+        signature: Array<felt252>,
+    );
+    /// Records a Stellar key as an exit recipient and returns its handle, the
+    /// felt a pool `invoke` (or `bridge_back`) names it by. Permissionless and
+    /// idempotent: it is a lookup, not an authority.
+    fn register_stellar_recipient(ref self: TContractState, key: u256) -> felt252;
+    /// The key behind a handle; zero if none is registered.
+    fn stellar_recipient(self: @TContractState, handle: felt252) -> u256;
     /// Sends native token (the exit fee float) out. Owner only.
     fn sweep_native(ref self: TContractState, to: ContractAddress, amount: u256);
 
@@ -186,7 +221,8 @@ pub mod VeilBridgeGateway {
     use super::super::mirrored_rules::{IVeilMirroredRulesDispatcher, IVeilMirroredRulesDispatcherTrait};
     use super::super::msg_codec::{
         KIND_GLOBAL, KIND_HOLDER_RULES, KIND_IDENTITY, KIND_MINT, KIND_TOKEN_RULES, decode_global,
-        decode_holder_rules, decode_identity, decode_mint, decode_token_rules, encode_unlock, kind,
+        decode_holder_rules_as, decode_identity_as, decode_mint_as, decode_token_rules,
+        encode_unlock, encode_unlock_word, kind,
     };
     // On the INBOUND path the pool and the factory are called through caught
     // syscalls, never dispatchers: a third-party contract that reverts must not
@@ -196,7 +232,12 @@ pub mod VeilBridgeGateway {
     // nothing has been spent to reach it, so a revert there is safe and tells
     // the caller what went wrong.
     use super::super::pool::{IVeilPoolDispatcher, IVeilPoolDispatcherTrait};
+    use super::super::stellar::{
+        ACCOUNT_FORMAT_EVM, ACCOUNT_FORMAT_STELLAR, is_stellar_wallet, recipient_handle,
+    };
     use super::{EVM_ADDRESS_BOUND, EXIT_CHANGE, IVeilBridgeGateway, OpenNoteDeposit};
+    use starknet::ClassHash;
+    use starknet::syscalls::library_call_syscall;
 
     /// Deliberately carries no source identity. A Map cannot be enumerated, so
     /// storage only answers questions about an address you already have --
@@ -291,9 +332,21 @@ pub mod VeilBridgeGateway {
         pub new_owner: ContractAddress,
     }
 
+    #[derive(Drop, starknet::Event)]
+    pub struct AccountFormatSet {
+        pub format: u8,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct StellarVerifierSet {
+        pub class_hash: ClassHash,
+    }
+
     #[event]
     #[derive(Drop, starknet::Event)]
     enum Event {
+        AccountFormatSet: AccountFormatSet,
+        StellarVerifierSet: StellarVerifierSet,
         BridgeInMinted: BridgeInMinted,
         BridgeInQuarantined: BridgeInQuarantined,
         DeliveredToPool: DeliveredToPool,
@@ -328,6 +381,12 @@ pub mod VeilBridgeGateway {
         dst_eid: u32,
         pending: Map<ContractAddress, u256>,
         total_pending: u256,
+        /// ACCOUNT_FORMAT_EVM (0, the default) or ACCOUNT_FORMAT_STELLAR.
+        account_format: u8,
+        account_format_set: bool,
+        stellar_verifier: ClassHash,
+        /// recipient_handle(key) -> key, for Stellar exits.
+        stellar_recipients: Map<felt252, u256>,
     }
 
     #[constructor]
@@ -370,7 +429,7 @@ pub mod VeilBridgeGateway {
             if message_kind == KIND_MINT {
                 self.handle_mint(@message);
             } else if message_kind == KIND_IDENTITY {
-                let snapshot = decode_identity(@message);
+                let snapshot = decode_identity_as(@message, self.account_format.read());
                 self
                     .registry_dispatcher()
                     .apply_identity(
@@ -380,19 +439,19 @@ pub mod VeilBridgeGateway {
                         snapshot.frozen,
                         snapshot.country,
                     );
-                self.bind_evm_holder(snapshot.evm_account);
+                self.bind_own_holder(snapshot.evm_account);
             } else if message_kind == KIND_GLOBAL {
                 let params = decode_global(@message);
                 self.registry_dispatcher().apply_global(params.seq, params.paused);
             } else if message_kind == KIND_HOLDER_RULES {
-                let r = decode_holder_rules(@message);
+                let r = decode_holder_rules_as(@message, self.account_format.read());
                 self
                     .rules_dispatcher()
                     .apply_holder_rules(
                         r.evm_account, r.seq, r.can_hold, r.frozen, r.is_investor, r.locked,
                     );
-                // An EVM wallet the rules are about holds as itself.
-                self.bind_evm_holder(r.evm_account);
+                // An EVM (or Stellar) wallet the rules are about holds as itself.
+                self.bind_own_holder(r.evm_account);
             } else if message_kind == KIND_TOKEN_RULES {
                 let t = decode_token_rules(@message);
                 self
@@ -445,7 +504,7 @@ pub mod VeilBridgeGateway {
             // so an ineligible caller reverts here before any fee is taken.
             self.token_dispatcher().bridge_burn(caller, amount);
 
-            let message = encode_unlock(evm_recipient, amount);
+            let message = self.unlock_message(evm_recipient, amount);
             let options = build_lz_receive_options(gas_limit);
             let receipt = self.lz_send(caller, dst_eid, message, options, fee, refund_address);
 
@@ -459,7 +518,7 @@ pub mod VeilBridgeGateway {
             let params = MessagingParams {
                 dst_eid,
                 receiver: self.peer_or_revert(dst_eid),
-                message: encode_unlock(evm_recipient, amount),
+                message: self.unlock_message(evm_recipient, amount),
                 options: build_lz_receive_options(gas_limit),
                 pay_in_lz_token: false,
             };
@@ -611,8 +670,12 @@ pub mod VeilBridgeGateway {
             let (trusted, reason) = self.resolve_pool(pool);
             assert(reason == 0 && trusted == pool, 'ONLY_POOL');
             assert(amount != 0, 'ZERO_AMOUNT');
-            let recipient: u256 = evm_recipient.into();
-            assert(recipient != 0 && recipient < EVM_ADDRESS_BOUND, 'BAD_RECIPIENT');
+            if self.account_format.read() == ACCOUNT_FORMAT_EVM {
+                let recipient: u256 = evm_recipient.into();
+                assert(recipient != 0 && recipient < EVM_ADDRESS_BOUND, 'BAD_RECIPIENT');
+            } else {
+                assert(self.stellar_recipients.read(evm_recipient) != 0, 'BAD_RECIPIENT');
+            }
 
             let token = self.token_dispatcher();
             let this = get_contract_address();
@@ -626,7 +689,7 @@ pub mod VeilBridgeGateway {
             token.bridge_burn(this, amount.into());
 
             let dst_eid = self.dst_eid.read();
-            let message = encode_unlock(evm_recipient, amount.into());
+            let message = self.unlock_message(evm_recipient, amount.into());
             let options = build_lz_receive_options(gas_limit);
             let fee = IEndpointV2Dispatcher { contract_address: self.endpoint.read() }
                 .quote(
@@ -678,6 +741,67 @@ pub mod VeilBridgeGateway {
                 ]
                     .span(),
             )
+        }
+
+        fn set_account_format(ref self: ContractState, format: u8) {
+            self.assert_owner();
+            assert(!self.account_format_set.read(), 'FORMAT_ALREADY_SET');
+            assert(
+                format == ACCOUNT_FORMAT_EVM || format == ACCOUNT_FORMAT_STELLAR, 'BAD_FORMAT',
+            );
+            self.account_format.write(format);
+            self.account_format_set.write(true);
+            self.emit(AccountFormatSet { format });
+        }
+
+        fn account_format(self: @ContractState) -> u8 {
+            self.account_format.read()
+        }
+
+        fn set_stellar_verifier(ref self: ContractState, class_hash: ClassHash) {
+            self.assert_owner();
+            self.stellar_verifier.write(class_hash);
+            self.emit(StellarVerifierSet { class_hash });
+        }
+
+        fn stellar_verifier(self: @ContractState) -> ClassHash {
+            self.stellar_verifier.read()
+        }
+
+        fn register_note_stellar(
+            ref self: ContractState,
+            note_id: felt252,
+            owner: ContractAddress,
+            signature: Array<felt252>,
+        ) {
+            assert(note_id != 0, 'ZERO_NOTE_ID');
+            assert(is_stellar_wallet(owner), 'NOT_A_STELLAR_WALLET');
+            let verifier = self.stellar_verifier.read();
+            assert(!verifier.is_zero(), 'STELLAR_VERIFIER_UNSET');
+            let mut call_data: Array<felt252> = array![];
+            Serde::serialize(@owner, ref call_data);
+            Serde::serialize(@self.note_claim_hash(note_id), ref call_data);
+            Serde::serialize(@signature.span(), ref call_data);
+            let returned = library_call_syscall(
+                verifier, selector!("is_valid_stellar_signature"), call_data.span(),
+            )
+                .unwrap_syscall();
+            assert(returned.len() == 1 && *returned.at(0) == 1, 'INVALID_SIGNATURE');
+            let existing = self.note_owners.read(note_id);
+            assert(existing.is_zero() || existing == owner, 'NOTE_ALREADY_CLAIMED');
+            self.note_owners.write(note_id, owner);
+            self.emit(NoteRegistered { note_id, owner });
+        }
+
+        fn register_stellar_recipient(ref self: ContractState, key: u256) -> felt252 {
+            assert(key != 0, 'ZERO_RECIPIENT');
+            let handle = recipient_handle(key);
+            self.stellar_recipients.write(handle, key);
+            handle
+        }
+
+        fn stellar_recipient(self: @ContractState, handle: felt252) -> u256 {
+            self.stellar_recipients.read(handle)
         }
 
         fn sweep_native(ref self: ContractState, to: ContractAddress, amount: u256) {
@@ -748,8 +872,30 @@ pub mod VeilBridgeGateway {
         /// Apply a bridge-in. Every branch ends with the amount either minted
         /// or quarantined -- it must never revert, or the escrow on the source
         /// chain is stranded behind a failed message.
+        /// UNLOCK for the lockbox's chain: an EVM address as itself, a Stellar
+        /// key by its registered handle.
+        fn unlock_message(self: @ContractState, recipient: felt252, amount: u256) -> ByteArray {
+            if self.account_format.read() == ACCOUNT_FORMAT_EVM {
+                encode_unlock(recipient, amount)
+            } else {
+                let key = self.stellar_recipients.read(recipient);
+                assert(key != 0, 'BAD_RECIPIENT');
+                encode_unlock_word(key, amount)
+            }
+        }
+
+        /// Whether `account` is a wallet of the lockbox chain's kind holding as
+        /// itself (an EVM address, or a Stellar key's holder), with no class.
+        fn is_own_wallet(self: @ContractState, account: ContractAddress) -> bool {
+            if self.account_format.read() == ACCOUNT_FORMAT_EVM {
+                is_evm_wallet(account)
+            } else {
+                is_stellar_wallet(account)
+            }
+        }
+
         fn handle_mint(ref self: ContractState, message: @ByteArray) {
-            let decoded = decode_mint(message);
+            let decoded = decode_mint_as(message, self.account_format.read());
             let registry = self.registry_dispatcher();
 
             // The snapshot rides along with the transfer, so a first-time
@@ -765,14 +911,15 @@ pub mod VeilBridgeGateway {
                     decoded.identity.country,
                 );
 
-            // The sender's own EVM address may hold as itself from now on.
-            self.bind_evm_holder(decoded.identity.evm_account);
+            // The sender's own EVM address (or Stellar holder) may hold as
+            // itself from now on.
+            self.bind_own_holder(decoded.identity.evm_account);
 
             // An EVM wallet named as the recipient holds as ITSELF: bound to its
             // own identity, never to the sender's, or any sender could tie
             // someone else's wallet to their own eligibility.
             let recipient = decoded.sn_recipient;
-            let evm_holder = is_evm_wallet(recipient);
+            let evm_holder = self.is_own_wallet(recipient);
             let identity = if evm_holder {
                 recipient.into()
             } else {
@@ -945,14 +1092,15 @@ pub mod VeilBridgeGateway {
             self.emit(DeliveredToPool { recipient, note_id, amount });
         }
 
-        /// Binds an EVM address, as a pool holder, to its own identity. Never
-        /// reverts: an address already bound elsewhere keeps its binding.
-        fn bind_evm_holder(ref self: ContractState, evm_account: felt252) {
+        /// Binds an EVM address (or a Stellar holder), as a pool holder, to its
+        /// own identity. Never reverts: an address already bound elsewhere
+        /// keeps its binding.
+        fn bind_own_holder(ref self: ContractState, evm_account: felt252) {
             let account: ContractAddress = match evm_account.try_into() {
                 Option::Some(a) => a,
                 Option::None => { return; },
             };
-            if is_evm_wallet(account) {
+            if self.is_own_wallet(account) {
                 self.registry_dispatcher().bind(account, evm_account);
             }
         }
