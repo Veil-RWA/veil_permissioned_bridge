@@ -8,9 +8,8 @@
 //         its holder to itself; the wallet opens a note; its own bridge-out
 //         names the note, which claims and fills it;
 //   out:  a proven pool `invoke` pays the gateway, which burns the twin and asks
-//         the lockbox to release it to a Stellar key, named by its handle.
+//         the lockbox to release it directly to a u256 Stellar key.
 
-use core::poseidon::poseidon_hash_span;
 use snforge_std::{
     ContractClassTrait, DeclareResultTrait, declare, start_cheat_block_timestamp_global,
     start_cheat_caller_address, stop_cheat_caller_address,
@@ -33,7 +32,7 @@ use veil_bridge::msg_codec::{
     decode_mint_as, encode_unlock_word,
 };
 use veil_bridge::stellar::{
-    ACCOUNT_FORMAT_EVM, ACCOUNT_FORMAT_STELLAR, TWO_POW_249, is_stellar_wallet, recipient_handle,
+    ACCOUNT_FORMAT_EVM, ACCOUNT_FORMAT_STELLAR, TWO_POW_249, is_stellar_wallet,
     stellar_holder as bridge_holder,
 };
 use openzeppelin_token::erc20::interface::{IERC20Dispatcher, IERC20DispatcherTrait};
@@ -51,7 +50,7 @@ const FEE: u256 = 5_000;
 /// Another Stellar account (seed 32 x 0x09), the sender of gifts.
 const OTHER_PK: u256 = 0xfd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618;
 /// Where the holder takes its tokens back to on Stellar: any account key.
-const EXIT_KEY: u256 = 0x3cb2a5f4c3e1d2b0a9988776655443322110ffeeddccbbaa9988776655443322;
+const EXIT_KEY: u256 = 0xfcb2a5f4c3e1d2b0a9988776655443322110ffeeddccbbaa9988776655443322;
 
 fn owner() -> ContractAddress {
     0x0A11.try_into().unwrap()
@@ -220,11 +219,11 @@ fn free_slot(env: Env) -> u32 {
     i
 }
 
-fn exit(env: Env, amount: u128, recipient: felt252, max_fee: u256) -> InvokeSwap {
+fn exit(env: Env, amount: u128, recipient: u256, max_fee: u256) -> InvokeSwap {
     let token = env.token.contract_address;
     let open_note = note_id(self_channel_key(stellar_holder(), KEY), token, free_slot(env) + 1);
     let calldata = array![
-        open_note, amount.into(), recipient, max_fee.low.into(), max_fee.high.into(), 200_000,
+        open_note, amount.into(), recipient.low.into(), recipient.high.into(), max_fee.low.into(), max_fee.high.into(), 200_000,
     ];
     invoke(
         env.pool, stellar_holder(), KEY, token, amount + 1, token, env.gateway.contract_address,
@@ -271,7 +270,7 @@ fn a_stellar_lockbox_message_names_accounts_by_key() {
     let unlock = encode_unlock_word(EXIT_KEY, 600);
     assert(unlock.len() == 65, 'unlock length');
     assert(unlock.at(0).unwrap() == 4, 'unlock kind');
-    assert(unlock.at(1).unwrap() == 0x3c && unlock.at(32).unwrap() == 0x22, 'key bytes');
+    assert(unlock.at(1).unwrap() == 0xfc && unlock.at(32).unwrap() == 0x22, 'key bytes');
 }
 
 // The same 32-byte word an EVM gateway refuses as a dirty address.
@@ -399,31 +398,13 @@ fn without_a_verifier_no_stellar_claim() {
 // ── Out ─────────────────────────────────────────────────────────────────────
 
 #[test]
-fn a_stellar_recipient_is_named_by_its_handle() {
-    let env = setup();
-    let handle = env.gateway.register_stellar_recipient(EXIT_KEY);
-    assert(handle == recipient_handle(EXIT_KEY), 'handle');
-    assert(
-        handle == poseidon_hash_span(
-            array!['VEIL_STELLAR_RECIPIENT', EXIT_KEY.high.into(), EXIT_KEY.low.into()].span(),
-        ),
-        'handle formula',
-    );
-    assert(env.gateway.stellar_recipient(handle) == EXIT_KEY, 'lookup');
-    // Idempotent, and anyone may register.
-    start_cheat_caller_address(env.gateway.contract_address, stranger());
-    assert(env.gateway.register_stellar_recipient(EXIT_KEY) == handle, 'again');
-}
-
-#[test]
 fn a_stellar_wallet_bridges_back_through_a_proven_invoke() {
     let (env, _) = funded();
     let token = env.token.contract_address;
     let supply_before = IERC20Dispatcher { contract_address: token }.total_supply();
-    let handle = env.gateway.register_stellar_recipient(EXIT_KEY);
 
     let out: u128 = 600;
-    let msg = exit(env, out, handle, FEE);
+    let msg = exit(env, out, EXIT_KEY, FEE);
 
     assert(env.endpoint.last_message() == encode_unlock_word(EXIT_KEY, out.into()), 'unlock');
     assert(env.endpoint.last_dst_eid() == STELLAR_EID, 'to stellar');
@@ -439,15 +420,23 @@ fn a_stellar_wallet_bridges_back_through_a_proven_invoke() {
 
 #[test]
 #[should_panic(expected: 'BAD_RECIPIENT')]
-fn the_exit_pays_only_a_registered_stellar_key() {
+fn the_stellar_exit_refuses_a_zero_key() {
     let env = setup();
     start_cheat_caller_address(env.gateway.contract_address, env.pool.contract_address);
-    env.gateway.privacy_invoke(0xBEEF, 1, recipient_handle(EXIT_KEY), FEE, 200_000);
+    env.gateway.privacy_invoke(0xBEEF, 1, 0, FEE, 200_000);
 }
 
 #[test]
 #[should_panic(expected: 'BAD_RECIPIENT')]
-fn a_starknet_bridge_back_needs_a_registered_stellar_key() {
+fn the_stellar_quote_refuses_a_zero_key() {
     let env = setup();
-    env.gateway.quote_bridge_back(10, 0x1234, 200_000);
+    env.gateway.quote_bridge_back(10, 0, 200_000);
+}
+
+#[test]
+fn the_stellar_quote_accepts_a_raw_key_above_the_felt_field() {
+    let env = setup();
+    // No registration, lookup or class attached to this arbitrary key.
+    let fee = env.gateway.quote_bridge_back(10, EXIT_KEY, 200_000);
+    assert(fee.native_fee == FEE, 'quote');
 }

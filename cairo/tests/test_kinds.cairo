@@ -39,7 +39,7 @@ const KEY: felt252 = 0x7E5;
 const AMOUNT: u128 = 1_000;
 const TWO_POW_128: felt252 = 0x100000000000000000000000000000000;
 const FEE: u256 = 5_000;
-const EVM_RECIPIENT: felt252 = 0x1111111111111111111111111111111111111111;
+const EVM_RECIPIENT: u256 = 0x1111111111111111111111111111111111111111;
 const WINDOW: u64 = 1_000;
 const ROLE: felt252 = 'WHITELISTED_ROLE';
 
@@ -225,7 +225,7 @@ fn free_slot(env: Env) -> u32 {
 fn exit(env: Env, amount: u128) {
     let token = env.token.contract_address;
     let open_note = note_id(self_channel_key(evm_holder(), KEY), token, free_slot(env) + 1);
-    let calldata = array![open_note, amount.into(), EVM_RECIPIENT, FEE.low.into(), FEE.high.into(), 200_000];
+    let calldata = array![open_note, amount.into(), EVM_RECIPIENT.low.into(), EVM_RECIPIENT.high.into(), FEE.low.into(), FEE.high.into(), 200_000];
     invoke(env.pool, evm_holder(), KEY, token, amount + 1, token, env.gateway.contract_address, calldata);
 }
 

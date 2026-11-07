@@ -253,8 +253,7 @@ pub fn decode_token_rules(message: @ByteArray) -> TokenRulesMessage {
 }
 
 /// Built on Starknet, consumed by the lockbox's `_lzReceive`.
-pub fn encode_unlock(evm_recipient: felt252, amount: u256) -> ByteArray {
-    let recipient_word: u256 = evm_recipient.into();
+pub fn encode_unlock(recipient_word: u256, amount: u256) -> ByteArray {
     assert(recipient_word < EVM_ADDRESS_BOUND, 'BRIDGE_BAD_EVM_ADDR');
 
     encode_unlock_word(recipient_word, amount)

@@ -18,9 +18,68 @@ export interface EvmAuthorizationSigner {
     address: string;
     signMessage(message: Uint8Array): Promise<string>;
 }
+/** A Stellar wallet acting as a holder. `signMessage` is SEP-53 over a UTF-8
+ *  string and returns the 64-byte Ed25519 signature (base64, hex or bytes, as
+ *  wallets differ). Build one with `freighterAuthorizationSigner`,
+ *  `stellarWalletsKitSigner` or `stellarKeypairSigner`. Pass `chainId`
+ *  explicitly. */
+export interface StellarAuthorizationSigner {
+    kind: "stellar";
+    /** The account's `G…` StrKey. */
+    publicKey: string;
+    /** The holder address in the pool (`stellarHolderAddress(publicKey)`). */
+    address: string;
+    signMessage(message: string): Promise<string | Uint8Array>;
+}
 /** What signs an authorization. */
-export type AuthorizationSigner = StarknetAuthorizationSigner | EvmAuthorizationSigner;
+export type AuthorizationSigner = StarknetAuthorizationSigner | EvmAuthorizationSigner | StellarAuthorizationSigner;
 export declare function isEvmSigner(signer: AuthorizationSigner): signer is EvmAuthorizationSigner;
+export declare function isStellarSigner(signer: AuthorizationSigner): signer is StellarAuthorizationSigner;
+/** The 32-byte Ed25519 key of a `G…` account StrKey (version byte and CRC16
+ *  checked). */
+export declare function stellarPublicKeyBytes(publicKey: string): Uint8Array;
+/** The `G…` StrKey of a 32-byte Ed25519 key. */
+export declare function stellarStrKey(key: Uint8Array): string;
+/** The pool address of a Stellar holder:
+ *  2^249 + (poseidon('VEIL_STELLAR_HOLDER', pk.high, pk.low) mod 2^249). */
+export declare function stellarHolderAddress(publicKey: string | Uint8Array): string;
+/** The text a Stellar wallet signs for an authorization hash. */
+export declare function stellarAuthorizationMessage(hash: bigint): string;
+/** SEP-53: SHA256("Stellar Signed Message:\n" ‖ message), the bytes Ed25519 signs. */
+export declare function sep53Digest(message: string): Uint8Array;
+/** Normalizes a wallet's signature to its 64 bytes: raw bytes, hex, base64,
+ *  or base64 of base64 (some wallet versions double-encode). */
+export declare function stellarSignatureBytes(signature: string | Uint8Array): Uint8Array;
+/** The pool's signature felts for a Stellar wallet:
+ *  [pk.low, pk.high, R.low, R.high, S.low, S.high], each 32 bytes big-endian. */
+export declare function stellarSignatureFelts(publicKey: string | Uint8Array, signature: string | Uint8Array): string[];
+/** Checks a SEP-53 signature off-chain, as the pool does (strict Ed25519). */
+export declare function verifyStellarAuthorization(publicKey: string, hash: bigint, signature: string | Uint8Array): boolean;
+/** Wraps any SEP-53 `signMessage`. */
+export declare function stellarAuthorizationSigner(publicKey: string, signMessage: (message: string) => Promise<string | Uint8Array>): StellarAuthorizationSigner;
+/** Freighter (`@stellar/freighter-api`): pass its `signMessage`. Freighter
+ *  returns `{ signedMessage, signerAddress, error }`. */
+export declare function freighterAuthorizationSigner(freighterSignMessage: (message: string, opts: {
+    address: string;
+}) => Promise<{
+    signedMessage?: string | Uint8Array | null;
+    signerAddress?: string;
+    error?: unknown;
+}>, publicKey: string): StellarAuthorizationSigner;
+/** Stellar Wallets Kit: pass the kit (its `signMessage(message, { address })`
+ *  returns `{ signedMessage, signerAddress }`). */
+export declare function stellarWalletsKitSigner(kit: {
+    signMessage(message: string, opts?: {
+        address?: string;
+        networkPassphrase?: string;
+    }): Promise<{
+        signedMessage: string;
+        signerAddress?: string;
+    }>;
+}, publicKey: string): StellarAuthorizationSigner;
+/** A local Ed25519 seed (servers, scripts, tests): SEP-53 exactly as
+ *  js-stellar-sdk's `Keypair.signMessage`. */
+export declare function stellarKeypairSigner(seed: Uint8Array): StellarAuthorizationSigner;
 /** Wraps anything that `personal_sign`s bytes — an ethers `Signer`:
  *  `evmAuthorizationSigner(await signer.getAddress(), (m) => signer.signMessage(m))`. */
 export declare function evmAuthorizationSigner(address: string, signMessage: (message: Uint8Array) => Promise<string>): EvmAuthorizationSigner;

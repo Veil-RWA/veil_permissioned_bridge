@@ -243,16 +243,16 @@ fn the_codec_matches_the_bridge_wire_format() {
 }
 
 // The cairo side pins the same bytes (test_stellar_holder.cairo,
-// a_stellar_lockbox_message_names_accounts_by_key): the key 0x3cb2…3322 in an
-// UNLOCK of 600 starts with 0x04 0x3c and its byte 32 is 0x22.
+// a_stellar_lockbox_message_names_accounts_by_key): the key 0xfcb2…3322 in an
+// UNLOCK of 600 starts with 0x04 0xfc and its byte 32 is 0x22.
 #[test]
 fn an_unlock_vector_shared_with_cairo() {
     let env = Env::default();
     let mut k = [0u8; 32];
-    hex_into("3cb2a5f4c3e1d2b0a9988776655443322110ffeeddccbbaa9988776655443322", &mut k);
+    hex_into("fcb2a5f4c3e1d2b0a9988776655443322110ffeeddccbbaa9988776655443322", &mut k);
     let u = codec::encode_unlock(&env, &BytesN::from_array(&env, &k), 600);
     assert_eq!(u.get(0), Some(4));
-    assert_eq!(u.get(1), Some(0x3c));
+    assert_eq!(u.get(1), Some(0xfc));
     assert_eq!(u.get(32), Some(0x22));
     assert_eq!(u.get(63), Some(0x02));
     assert_eq!(u.get(64), Some(0x58));

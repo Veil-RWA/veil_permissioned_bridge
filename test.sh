@@ -31,6 +31,10 @@ echo "=== LayerZero status: what History says about a message on its way ==="
 (cd frontend && npx esbuild src/lzStatus.ts --bundle --format=esm --platform=node \
    --outfile=src/lzStatus.bundle.mjs --define:import.meta.env='{}' --log-level=error \
  && node src/lzStatus.test.mjs && rm -f src/lzStatus.bundle.mjs)
+echo "=== bridge exits: app low/high encoding and gateway ABI compatibility ==="
+(cd frontend && npx esbuild src/bridgeCore.ts --bundle --format=esm --platform=node \
+   --outfile=src/bridgeCore.bundle.mjs --log-level=error \
+ && node --test src/bridgeCore.test.mjs && rm -f src/bridgeCore.bundle.mjs)
 echo "=== compliance export: live token -> spec -> calldata ==="
 (cd tools && node compliance-export.test.js)
 echo

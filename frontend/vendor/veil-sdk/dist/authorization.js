@@ -17,11 +17,204 @@
 // hash with `personal_sign` (EIP-191 over the 32 bytes). The pool recovers the
 // secp256k1 key inside the proof (src/helpers/evm_signature.cairo). EOAs only:
 // a smart-contract wallet's signature does not recover to its address.
+//
+// A Stellar wallet (Freighter, Stellar Wallets Kit, a local Keypair) can be the
+// holder as well: its Ed25519 key derives the holder address
+// (`stellarHolderAddress`, = src/helpers/stellar_signature.cairo
+// `stellar_holder`), and it signs the text "Veil authorization\n0x<64 hex>"
+// with SEP-53 `signMessage`. The pool verifies Ed25519 inside the proof.
 import { keccak_256 } from "@noble/hashes/sha3";
 import { secp256k1 } from "@noble/curves/secp256k1";
-import { typedData } from "starknet";
+import { sha256 } from "@noble/hashes/sha256";
+import { ed25519 } from "@noble/curves/ed25519";
+import { hash as starkHash, typedData } from "starknet";
 export function isEvmSigner(signer) {
     return signer.kind === "evm";
+}
+export function isStellarSigner(signer) {
+    return signer.kind === "stellar";
+}
+// ── Stellar ──────────────────────────────────────────────────────────────────
+const TWO_POW_249 = 1n << 249n;
+const STELLAR_HOLDER_TAG = "0x" + bytesToHex(new TextEncoder().encode("VEIL_STELLAR_HOLDER"));
+const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const STRKEY_ACCOUNT_VERSION = 6 << 3; // 'G'
+function crc16xmodem(data) {
+    let crc = 0;
+    for (const b of data) {
+        crc ^= b << 8;
+        for (let i = 0; i < 8; i++)
+            crc = crc & 0x8000 ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
+    }
+    return crc;
+}
+/** The 32-byte Ed25519 key of a `G…` account StrKey (version byte and CRC16
+ *  checked). */
+export function stellarPublicKeyBytes(publicKey) {
+    if (!/^G[A-Z2-7]{55}$/.test(publicKey))
+        throw new Error(`not a Stellar account key: ${publicKey}`);
+    let bits = 0;
+    let value = 0;
+    const out = [];
+    for (const c of publicKey) {
+        value = (value << 5) | BASE32.indexOf(c);
+        bits += 5;
+        if (bits >= 8) {
+            out.push((value >> (bits - 8)) & 0xff);
+            bits -= 8;
+        }
+    }
+    const raw = Uint8Array.from(out); // 35 bytes: version ‖ key ‖ crc16 (LE)
+    if (raw.length !== 35 || raw[0] !== STRKEY_ACCOUNT_VERSION)
+        throw new Error(`not a Stellar account key: ${publicKey}`);
+    const crc = crc16xmodem(raw.slice(0, 33));
+    if (raw[33] !== (crc & 0xff) || raw[34] !== crc >> 8)
+        throw new Error(`bad StrKey checksum: ${publicKey}`);
+    return raw.slice(1, 33);
+}
+/** The `G…` StrKey of a 32-byte Ed25519 key. */
+export function stellarStrKey(key) {
+    if (key.length !== 32)
+        throw new Error("Ed25519 key must be 32 bytes");
+    const raw = new Uint8Array(35);
+    raw[0] = STRKEY_ACCOUNT_VERSION;
+    raw.set(key, 1);
+    const crc = crc16xmodem(raw.slice(0, 33));
+    raw[33] = crc & 0xff;
+    raw[34] = crc >> 8;
+    let bits = 0;
+    let value = 0;
+    let out = "";
+    for (const b of raw) {
+        value = (value << 8) | b;
+        bits += 8;
+        while (bits >= 5) {
+            out += BASE32[(value >> (bits - 5)) & 31];
+            bits -= 5;
+        }
+    }
+    if (bits > 0)
+        out += BASE32[(value << (5 - bits)) & 31];
+    return out;
+}
+/** The pool address of a Stellar holder:
+ *  2^249 + (poseidon('VEIL_STELLAR_HOLDER', pk.high, pk.low) mod 2^249). */
+export function stellarHolderAddress(publicKey) {
+    const key = typeof publicKey === "string" ? stellarPublicKeyBytes(publicKey) : publicKey;
+    if (key.length !== 32)
+        throw new Error("Ed25519 key must be 32 bytes");
+    const pk = BigInt("0x" + bytesToHex(key));
+    const h = BigInt(starkHash.computePoseidonHashOnElements([STELLAR_HOLDER_TAG, hex(pk >> 128n), hex(pk & U128_MASK)]));
+    return hex(TWO_POW_249 + (h % TWO_POW_249));
+}
+/** The text a Stellar wallet signs for an authorization hash. */
+export function stellarAuthorizationMessage(hash) {
+    return "Veil authorization\n0x" + hash.toString(16).padStart(64, "0");
+}
+/** SEP-53: SHA256("Stellar Signed Message:\n" ‖ message), the bytes Ed25519 signs. */
+export function sep53Digest(message) {
+    const prefix = new TextEncoder().encode("Stellar Signed Message:\n");
+    const body = new TextEncoder().encode(message);
+    const data = new Uint8Array(prefix.length + body.length);
+    data.set(prefix);
+    data.set(body, prefix.length);
+    return sha256(data);
+}
+const BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function base64ToBytes(s) {
+    const out = [];
+    let bits = 0;
+    let value = 0;
+    for (const c of s.replace(/=+$/, "")) {
+        value = ((value << 6) | BASE64.indexOf(c)) & 0xffffff;
+        bits += 6;
+        if (bits >= 8) {
+            out.push((value >> (bits - 8)) & 0xff);
+            bits -= 8;
+        }
+    }
+    return Uint8Array.from(out);
+}
+/** Normalizes a wallet's signature to its 64 bytes: raw bytes, hex, base64,
+ *  or base64 of base64 (some wallet versions double-encode). */
+export function stellarSignatureBytes(signature) {
+    if (typeof signature !== "string") {
+        if (signature.length !== 64)
+            throw new Error("Stellar signature must be 64 bytes");
+        return signature;
+    }
+    const t = signature.trim();
+    const h = t.replace(/^0x/, "");
+    if (/^[0-9a-fA-F]{128}$/.test(h))
+        return hexToBytes(h);
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(t))
+        throw new Error("unrecognized Stellar signature encoding");
+    const once = base64ToBytes(t);
+    if (once.length === 64)
+        return once;
+    const inner = new TextDecoder().decode(once);
+    if (/^[A-Za-z0-9+/]+={0,2}$/.test(inner)) {
+        const twice = base64ToBytes(inner);
+        if (twice.length === 64)
+            return twice;
+    }
+    throw new Error("Stellar signature must be 64 bytes");
+}
+function u256Felts(b) {
+    const v = BigInt("0x" + bytesToHex(b));
+    return [v & U128_MASK, v >> 128n];
+}
+/** The pool's signature felts for a Stellar wallet:
+ *  [pk.low, pk.high, R.low, R.high, S.low, S.high], each 32 bytes big-endian. */
+export function stellarSignatureFelts(publicKey, signature) {
+    const key = typeof publicKey === "string" ? stellarPublicKeyBytes(publicKey) : publicKey;
+    const sig = stellarSignatureBytes(signature);
+    return [...u256Felts(key), ...u256Felts(sig.slice(0, 32)), ...u256Felts(sig.slice(32))].map(hex);
+}
+/** Checks a SEP-53 signature off-chain, as the pool does (strict Ed25519). */
+export function verifyStellarAuthorization(publicKey, hash, signature) {
+    try {
+        return ed25519.verify(stellarSignatureBytes(signature), sep53Digest(stellarAuthorizationMessage(hash)), stellarPublicKeyBytes(publicKey), { zip215: false });
+    }
+    catch {
+        return false;
+    }
+}
+/** Wraps any SEP-53 `signMessage`. */
+export function stellarAuthorizationSigner(publicKey, signMessage) {
+    return { kind: "stellar", publicKey, address: stellarHolderAddress(publicKey), signMessage };
+}
+/** Freighter (`@stellar/freighter-api`): pass its `signMessage`. Freighter
+ *  returns `{ signedMessage, signerAddress, error }`. */
+export function freighterAuthorizationSigner(freighterSignMessage, publicKey) {
+    return stellarAuthorizationSigner(publicKey, async (message) => {
+        const r = await freighterSignMessage(message, { address: publicKey });
+        if (r.error)
+            throw new Error(`Freighter signMessage failed: ${JSON.stringify(r.error)}`);
+        if (r.signerAddress && r.signerAddress !== publicKey)
+            throw new Error("Freighter signed with another account");
+        if (!r.signedMessage)
+            throw new Error("Freighter returned no signature");
+        return r.signedMessage;
+    });
+}
+/** Stellar Wallets Kit: pass the kit (its `signMessage(message, { address })`
+ *  returns `{ signedMessage, signerAddress }`). */
+export function stellarWalletsKitSigner(kit, publicKey) {
+    return stellarAuthorizationSigner(publicKey, async (message) => {
+        const r = await kit.signMessage(message, { address: publicKey });
+        if (r.signerAddress && r.signerAddress !== publicKey)
+            throw new Error("the wallet signed with another account");
+        return r.signedMessage;
+    });
+}
+/** A local Ed25519 seed (servers, scripts, tests): SEP-53 exactly as
+ *  js-stellar-sdk's `Keypair.signMessage`. */
+export function stellarKeypairSigner(seed) {
+    if (seed.length !== 32)
+        throw new Error("Ed25519 seed must be 32 bytes");
+    const publicKey = stellarStrKey(ed25519.getPublicKey(seed));
+    return stellarAuthorizationSigner(publicKey, async (message) => ed25519.sign(sep53Digest(message), seed));
 }
 const TWO_POW_160 = 1n << 160n;
 const SECP256K1_N = secp256k1.CURVE.n;
@@ -172,7 +365,8 @@ function signatureFelts(sig) {
  *  `chainId` defaults to a Starknet signer's own; an EVM signer needs it. */
 export async function authorizeDeriveCalldata(args) {
     const signer = args.signer;
-    const chainId = args.chainId ?? (isEvmSigner(signer) ? undefined : await signer.getChainId?.());
+    const chainId = args.chainId ??
+        (isEvmSigner(signer) || isStellarSigner(signer) ? undefined : await signer.getChainId?.());
     if (chainId === undefined) {
         throw new Error("authorizeDeriveCalldata: chainId is required (the signer does not expose it)");
     }
@@ -184,8 +378,16 @@ export async function authorizeDeriveCalldata(args) {
         deriveCalldata: args.deriveCalldata,
         nonce,
     };
-    const signature = isEvmSigner(signer)
-        ? evmSignatureFelts(await signer.signMessage(authorizationHashBytes(authorizationHash(input, signer.address))))
-        : signatureFelts(await signer.signMessage(authorizationTypedData(input)));
+    let signature;
+    if (isEvmSigner(signer)) {
+        signature = evmSignatureFelts(await signer.signMessage(authorizationHashBytes(authorizationHash(input, signer.address))));
+    }
+    else if (isStellarSigner(signer)) {
+        const message = stellarAuthorizationMessage(authorizationHash(input, signer.address));
+        signature = stellarSignatureFelts(signer.publicKey, await signer.signMessage(message));
+    }
+    else {
+        signature = signatureFelts(await signer.signMessage(authorizationTypedData(input)));
+    }
     return [...args.deriveCalldata, hex(nonce), hex(BigInt(signature.length)), ...signature];
 }

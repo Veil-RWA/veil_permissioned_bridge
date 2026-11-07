@@ -14,3 +14,5 @@ export * from "./vesu.js";
 export * from "./hyperveil.js";
 export * from "./viewingKey.js";
 export * from "./prover/index.js";
+export * from "./proofOfReserve.js";
+export * from "./bridge.js";

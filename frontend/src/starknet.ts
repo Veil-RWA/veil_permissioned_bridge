@@ -1,3 +1,4 @@
+import { quoteBridgeBackCalldata, gatewayHasU256Exit } from './bridgeCore';
 // The Starknet side, read-only: mirror and twin reads, note claims, and the
 // gateway facts the app needs.
 //
@@ -9,7 +10,7 @@
 // starknet.js v10 is required, not preferred. Live Sepolia serves RPC spec
 // 0.10.x and v6 speaks 0.7 -- a v6 client cannot talk to the network at all.
 
-import { RpcProvider, CallData, uint256 } from 'starknet';
+import { RpcProvider } from 'starknet';
 import { STARKNET_RPC, RELEASE_GAS_LIMIT, IS_DEMO } from './config';
 import type { Asset } from './assets';
 
@@ -194,13 +195,10 @@ export async function twinSupply(asset: Asset): Promise<bigint> {
 /// The LayerZero fee for a bridge back, in STRK. The gateway pays it from its
 /// own balance; the holder signs a cap on it (`max_fee`) as part of the action.
 export async function quoteBridgeBack(
-  asset: Asset, amount: bigint, evmRecipient: string
+  asset: Asset, amount: bigint, recipient: string
 ): Promise<bigint> {
-  const felts = await callFelts(asset.addresses.starknet!.gateway!, 'quote_bridge_back', [
-    ...CallData.compile([uint256.bnToUint256(amount)]),
-    BigInt(evmRecipient).toString(),
-    RELEASE_GAS_LIMIT.toString(),
-  ]);
+  const felts = await callFelts(asset.addresses.starknet!.gateway!, 'quote_bridge_back',
+    quoteBridgeBackCalldata(amount, recipient, RELEASE_GAS_LIMIT));
   return u256(felts);
 }
 
@@ -209,7 +207,7 @@ export async function quoteBridgeBack(
 /// its own identity, lets a wallet's own bridge-in claim its note, and burns on
 /// a proven pool invoke. One on an older class needs a Starknet account for all
 /// three, so the app cannot use it. Asked of the class itself, once per class,
-/// so any later gateway class that keeps the entrypoint keeps working.
+/// and require the u256-recipient ABI (old felt252 gateways are incompatible).
 /// Undefined when the gateway did not answer.
 const classAnswers = new Map<string, Promise<boolean | undefined>>();
 
@@ -222,7 +220,7 @@ export async function supportsEvmHolders(asset: Asset): Promise<boolean | undefi
   if (!classAnswers.has(key)) {
     classAnswers.set(key, snProvider.getClass(hash).then((cls: any) => {
       const abi = typeof cls.abi === 'string' ? JSON.parse(cls.abi) : cls.abi;
-      return JSON.stringify(abi).includes('"privacy_invoke"');
+      return gatewayHasU256Exit(abi);
     }).catch(() => undefined));
   }
   return classAnswers.get(key)!;

@@ -419,7 +419,7 @@ fn a_revoked_holder_cannot_bridge_out() {
         .gateway
         .bridge_back(
             amt(1000),
-            evm_mallory(),
+            evm_mallory().into(),
             MessagingFee { native_fee: 0, lz_token_fee: 0 },
             200000,
             mallory(),

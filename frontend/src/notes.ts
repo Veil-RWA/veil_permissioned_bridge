@@ -1,3 +1,4 @@
+import { exitRecipientWord } from './bridgeCore';
 // Open notes, derived rather than typed.
 //
 // A note id is not an arbitrary handle. It is
@@ -436,14 +437,14 @@ export async function privateBalances(
 //
 // A bridge back spends the holder's private notes directly: one proven pool
 // `invoke`, signed by the EVM wallet, pays the asset's gateway `amount + 1` of
-// the twin and calls its `privacy_invoke(open_note_id, amount, evm_recipient,
+// the twin and calls its `privacy_invoke(open_note_id, amount, recipient: u256,
 // max_fee, gas_limit)`. The gateway burns `amount`, asks the lockbox to release
 // it on the EVM chain, and hands the 1 unit back into the invoke's open note (a
 // pool invoke always returns something). It pays LayerZero from its own
 // balance, never more than `max_fee`, which the holder signs. The prover's
 // relayer submits the settle, so nothing here needs a Starknet account or STRK.
 
-import { planSameTokenInvoke } from 'veil-sdk';
+import { planBridgeExit, type BridgeAccountFormat } from 'veil-sdk';
 import { RELEASE_GAS_LIMIT } from './config';
 
 /// A note salt: 2 <= salt < 2^120 (0 and 1 are reserved).
@@ -464,11 +465,12 @@ async function firstFreeSlot(pool: string, ctx: NoteContext, token: bigint): Pro
   throw new Error('Could not find a free note slot.');
 }
 
-/// Bridge `amount` twin units back to `evmRecipient`, from the holder's private
+/// Bridge `amount` twin units back to `recipient`, from the holder's private
 /// notes. Returns the Starknet transaction hash of the settle.
 export async function bridgeBackPrivately(
-  asset: Asset, ctx: NoteContext, amount: bigint, evmRecipient: string, maxFee: bigint,
+  asset: Asset, ctx: NoteContext, amount: bigint, recipient: string, maxFee: bigint,
   onProgress?: (line: string) => void,
+  accountFormat: BridgeAccountFormat = 'evm',
 ): Promise<string> {
   const pool = asset.addresses.starknet?.pool;
   const token = asset.addresses.starknet?.token;
@@ -485,7 +487,7 @@ export async function bridgeBackPrivately(
     discovery.listOwnedNotes(ctx.owner, ctx.viewingKey),
     firstFreeSlot(pool, ctx, twin),
   ]);
-  const plan = planSameTokenInvoke({
+  const plan = planBridgeExit({
     owner: ctx.owner,
     ownerPrivateViewingKey: ctx.viewingKey,
     selfChannelKey: ctx.channelKey,
@@ -495,11 +497,13 @@ export async function bridgeBackPrivately(
     changeNoteSalt: randomNoteSalt(),
     subchannelSalt: randomFelt(),
     token: twin,
-    target: BigInt(gateway),
+    gateway: BigInt(gateway),
     amount,
-    // privacy_invoke(open_note_id, amount: u128, evm_recipient, max_fee: u256, gas_limit: u128)
-    tail: [hexOf(amount), hexOf(BigInt(evmRecipient)), ...u256Pair(maxFee), hexOf(RELEASE_GAS_LIMIT)],
-    what: 'Bridge back',
+    // Both limbs are hashed into the derive authorization and settle payload.
+    recipient: exitRecipientWord(recipient),
+    accountFormat,
+    maxFee,
+    gasLimit: RELEASE_GAS_LIMIT,
   });
   const prover = new VeilProver({
     veilAddress: pool,

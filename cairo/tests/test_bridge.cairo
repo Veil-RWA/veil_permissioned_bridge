@@ -347,7 +347,7 @@ fn identity_and_global_layouts_are_pinned() {
 
 #[test]
 fn unlock_message_layout_is_pinned() {
-    let message = encode_unlock(evm_bob(), amt(42));
+    let message = encode_unlock(evm_bob().into(), amt(42));
     assert(message.len() == 65, 'UNLOCK_LEN');
     assert(message.at(0).unwrap() == 4, 'KIND');
     assert(message.at(31).unwrap() == 0x0b, 'RECIP');
@@ -731,7 +731,7 @@ fn bridging_back_burns_and_emits_the_right_bytes() {
         .gateway
         .bridge_back(
             amt(400),
-            evm_alice(),
+            evm_alice().into(),
             MessagingFee { native_fee: 0, lz_token_fee: 0 },
             200000,
             alice(),
@@ -747,7 +747,7 @@ fn bridging_back_burns_and_emits_the_right_bytes() {
     assert(d.endpoint.last_dst_eid() == EVM_EID, 'DST_EID');
     assert(d.endpoint.last_receiver() == peer(), 'RECEIVER');
     let sent = d.endpoint.last_message();
-    assert(sent == encode_unlock(evm_alice(), amt(400)), 'WIRE_BYTES');
+    assert(sent == encode_unlock(evm_alice().into(), amt(400)), 'WIRE_BYTES');
     assert(sent.at(0).unwrap() == 4, 'KIND');
 }
 
@@ -765,7 +765,7 @@ fn a_revoked_holder_cannot_bridge_back_out() {
         .gateway
         .bridge_back(
             amt(400),
-            evm_alice(),
+            evm_alice().into(),
             MessagingFee { native_fee: 0, lz_token_fee: 0 },
             200000,
             alice(),
@@ -785,7 +785,7 @@ fn a_stale_mirror_blocks_the_exit_too() {
         .gateway
         .bridge_back(
             amt(1),
-            evm_alice(),
+            evm_alice().into(),
             MessagingFee { native_fee: 0, lz_token_fee: 0 },
             200000,
             alice(),
@@ -812,7 +812,7 @@ fn the_fee_is_collected_from_the_caller_and_approved_to_the_endpoint() {
         .gateway
         .bridge_back(
             amt(100),
-            evm_alice(),
+            evm_alice().into(),
             MessagingFee { native_fee: fee, lz_token_fee: 0 },
             200000,
             alice(),
@@ -842,7 +842,7 @@ fn bridging_back_without_approving_the_fee_fails_before_any_send() {
         .gateway
         .bridge_back(
             amt(100),
-            evm_alice(),
+            evm_alice().into(),
             MessagingFee { native_fee: amt(5000), lz_token_fee: 0 },
             200000,
             alice(),
@@ -878,7 +878,7 @@ fn supply_tracks_escrow_across_a_round_trip() {
         .gateway
         .bridge_back(
             amt(400),
-            evm_alice(),
+            evm_alice().into(),
             MessagingFee { native_fee: 0, lz_token_fee: 0 },
             200000,
             alice(),

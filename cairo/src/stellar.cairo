@@ -28,7 +28,6 @@ pub const ACCOUNT_FORMAT_STELLAR: u8 = 1;
 pub const TWO_POW_249: u256 = 0x200000000000000000000000000000000000000000000000000000000000000;
 const TWO_POW_249_NZ: NonZero<u256> = 0x200000000000000000000000000000000000000000000000000000000000000;
 const STELLAR_HOLDER_TAG: felt252 = 'VEIL_STELLAR_HOLDER';
-const STELLAR_RECIPIENT_TAG: felt252 = 'VEIL_STELLAR_RECIPIENT';
 
 /// The Veil holder for the Ed25519 key `pk` (its 32 bytes, big-endian).
 pub fn stellar_holder(pk: u256) -> ContractAddress {
@@ -49,11 +48,4 @@ pub fn is_stellar_wallet(account: ContractAddress) -> bool {
         return false;
     }
     get_class_hash_at_syscall(account).unwrap_syscall().is_zero()
-}
-
-/// The felt that names a Stellar exit recipient in a pool `invoke`'s calldata
-/// (a 32-byte key does not fit the felt the exit takes). Collision resistant,
-/// so the holder's signature over the calldata binds the key.
-pub fn recipient_handle(pk: u256) -> felt252 {
-    poseidon_hash_span(array![STELLAR_RECIPIENT_TAG, pk.high.into(), pk.low.into()].span())
 }

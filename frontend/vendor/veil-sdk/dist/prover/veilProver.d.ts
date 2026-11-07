@@ -63,6 +63,11 @@ export declare class VeilProver {
     /** ERC-3643 pool: agent clawback / recovery. The calldata ends with the
      *  agent's address, and the signer is the agent's account. */
     forcedTransfer(deriveCalldata: string[], opts?: VeilCallOptions): Promise<VeilProveAndSettleResult>;
+    /** ERC-3643 pool: private proof of reserve (see proofOfReserve.ts for the
+     *  calldata builder). The signer must be the holder. */
+    proveReserve(deriveCalldata: string[], opts?: VeilCallOptions): Promise<VeilProveAndSettleResult>;
+    /** ERC-3643 pool: the holder revokes one of their reserve proofs. */
+    revokeReserve(deriveCalldata: string[], opts?: VeilCallOptions): Promise<VeilProveAndSettleResult>;
     approvePrivateTransfer(deriveCalldata: string[], opts?: VeilCallOptions): Promise<VeilProveAndSettleResult>;
     privateTransferAsApproved(deriveCalldata: string[], opts?: VeilCallOptions): Promise<VeilProveAndSettleResult>;
     revokePrivateApproval(deriveCalldata: string[], opts?: VeilCallOptions): Promise<VeilProveAndSettleResult>;

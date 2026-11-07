@@ -2,7 +2,10 @@
 // Replace one asset's gateway with the current VeilBridgeGateway class: EVM
 // wallets as pool holders (self-binding, self-claimed notes,
 // `register_note_evm`) and the `privacy_invoke` exit a Veil pool calls to
-// bridge back to EVM.
+// bridge back to EVM (or a raw Stellar key). Exit/quote recipients are now u256:
+// callers MUST serialize recipient.low, recipient.high; old felt calldata is
+// incompatible. The app checks the ABI before enabling the exit, and
+// scripts/exit-calldata.mjs prints the new tail offline.
 //
 //   (cd ../cairo && scarb build)
 //   node --env-file=.env upgrade-gateway.js --asset gold [--float 20]

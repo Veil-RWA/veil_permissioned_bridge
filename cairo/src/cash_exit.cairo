@@ -31,7 +31,9 @@ pub trait IVeilCashExit<TContractState> {
     /// - `open_note_id`: the invoke's own open note (USDC), which gets the 1
     ///   unit of change.
     /// - `amount`: USDC (6 dp) to send.
-    /// - `recipient`: the EVM address that receives it.
+    /// - `recipient`: the EVM address that receives it, serialized as u256
+    ///   (low, high), the same layout as the permissioned bridge gateway.
+    ///   CCTP's EVM-only exit still rejects values >= 2^160.
     /// - `max_fee` / `min_finality`: CCTP parameters (Standard: 0 / 2000;
     ///   Fast: a fee / 1000).
     fn privacy_invoke(

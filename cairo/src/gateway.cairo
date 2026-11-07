@@ -38,10 +38,9 @@
 // (stellar.cairo), which the pool authorizes by the wallet's Ed25519 SEP-53
 // signature inside the proof. Everything above holds for it the same way:
 // bound to its own identity, its own bridge-out claims the note it names, or a
-// claim it signed (`register_note_stellar`). The way back pays a Stellar key,
-// which does not fit the felt `privacy_invoke` takes, so the exit names it by
-// `recipient_handle(key)` after anyone has registered the key
-// (`register_stellar_recipient`).
+// claim it signed (`register_note_stellar`). The way back takes the raw
+// 32-byte Stellar key as a u256 (low, high), directly, just as an EVM exit
+// takes its 20-byte address as a u256. Both limbs are proof-bound calldata.
 //
 // Replay is the endpoint's job: it executes each (src_eid, sender, nonce) at
 // most once, so this contract keeps no nonce bookkeeping of its own. Ordering
@@ -62,20 +61,20 @@ pub const EXIT_CHANGE: u128 = 1;
 pub trait IVeilBridgeGateway<TContractState> {
     // ── Outbound ────────────────────────────────────────────────────────────
     /// Burns `amount` from the caller and asks the lockbox to release the same
-    /// amount to `evm_recipient`. The caller must first approve this contract
+    /// amount to `recipient` (EVM address or raw Stellar key, low/high). The caller must first approve this contract
     /// for `fee.native_fee` of the native token, which is how LayerZero's own
     /// Starknet OApps collect fees (the endpoint is paid by this contract, not
     /// by the caller directly).
     fn bridge_back(
         ref self: TContractState,
         amount: u256,
-        evm_recipient: felt252,
+        recipient: u256,
         fee: MessagingFee,
         gas_limit: u128,
         refund_address: ContractAddress,
     );
     fn quote_bridge_back(
-        self: @TContractState, amount: u256, evm_recipient: felt252, gas_limit: u128,
+        self: @TContractState, amount: u256, recipient: u256, gas_limit: u128,
     ) -> MessagingFee;
 
     // ── Quarantine ──────────────────────────────────────────────────────────
@@ -131,7 +130,7 @@ pub trait IVeilBridgeGateway<TContractState> {
     /// The way back for a holder with no Starknet account. The pool only
     /// (invoke adapter, selector `privacy_invoke`): a proven `invoke` with
     /// in = out = this gateway's twin has just paid `amount + 1` here. Burns
-    /// `amount`, asks the lockbox to release it to `evm_recipient`, and hands 1
+    /// `amount`, asks the lockbox to release it to `recipient`, and hands 1
     /// unit back into the invoke's open note. The LayerZero fee is paid from
     /// this gateway's native balance, at most `max_fee`, which the holder signed
     /// as part of the invoke calldata.
@@ -139,7 +138,7 @@ pub trait IVeilBridgeGateway<TContractState> {
         ref self: TContractState,
         open_note_id: felt252,
         amount: u128,
-        evm_recipient: felt252,
+        recipient: u256,
         max_fee: u256,
         gas_limit: u128,
     ) -> Array<OpenNoteDeposit>;
@@ -172,12 +171,6 @@ pub trait IVeilBridgeGateway<TContractState> {
         owner: ContractAddress,
         signature: Array<felt252>,
     );
-    /// Records a Stellar key as an exit recipient and returns its handle, the
-    /// felt a pool `invoke` (or `bridge_back`) names it by. Permissionless and
-    /// idempotent: it is a lookup, not an authority.
-    fn register_stellar_recipient(ref self: TContractState, key: u256) -> felt252;
-    /// The key behind a handle; zero if none is registered.
-    fn stellar_recipient(self: @TContractState, handle: felt252) -> u256;
     /// Sends native token (the exit fee float) out. Owner only.
     fn sweep_native(ref self: TContractState, to: ContractAddress, amount: u256);
 
@@ -222,7 +215,7 @@ pub mod VeilBridgeGateway {
     use super::super::msg_codec::{
         KIND_GLOBAL, KIND_HOLDER_RULES, KIND_IDENTITY, KIND_MINT, KIND_TOKEN_RULES, decode_global,
         decode_holder_rules_as, decode_identity_as, decode_mint_as, decode_token_rules,
-        encode_unlock, encode_unlock_word, kind,
+        encode_unlock_word, kind,
     };
     // On the INBOUND path the pool and the factory are called through caught
     // syscalls, never dispatchers: a third-party contract that reverts must not
@@ -233,7 +226,7 @@ pub mod VeilBridgeGateway {
     // the caller what went wrong.
     use super::super::pool::{IVeilPoolDispatcher, IVeilPoolDispatcherTrait};
     use super::super::stellar::{
-        ACCOUNT_FORMAT_EVM, ACCOUNT_FORMAT_STELLAR, is_stellar_wallet, recipient_handle,
+        ACCOUNT_FORMAT_EVM, ACCOUNT_FORMAT_STELLAR, is_stellar_wallet,
     };
     use super::{EVM_ADDRESS_BOUND, EXIT_CHANGE, IVeilBridgeGateway, OpenNoteDeposit};
     use starknet::ClassHash;
@@ -385,8 +378,6 @@ pub mod VeilBridgeGateway {
         account_format: u8,
         account_format_set: bool,
         stellar_verifier: ClassHash,
-        /// recipient_handle(key) -> key, for Stellar exits.
-        stellar_recipients: Map<felt252, u256>,
     }
 
     #[constructor]
@@ -491,7 +482,7 @@ pub mod VeilBridgeGateway {
         fn bridge_back(
             ref self: ContractState,
             amount: u256,
-            evm_recipient: felt252,
+            recipient: u256,
             fee: MessagingFee,
             gas_limit: u128,
             refund_address: ContractAddress,
@@ -504,7 +495,7 @@ pub mod VeilBridgeGateway {
             // so an ineligible caller reverts here before any fee is taken.
             self.token_dispatcher().bridge_burn(caller, amount);
 
-            let message = self.unlock_message(evm_recipient, amount);
+            let message = self.unlock_message(recipient, amount);
             let options = build_lz_receive_options(gas_limit);
             let receipt = self.lz_send(caller, dst_eid, message, options, fee, refund_address);
 
@@ -512,13 +503,13 @@ pub mod VeilBridgeGateway {
         }
 
         fn quote_bridge_back(
-            self: @ContractState, amount: u256, evm_recipient: felt252, gas_limit: u128,
+            self: @ContractState, amount: u256, recipient: u256, gas_limit: u128,
         ) -> MessagingFee {
             let dst_eid = self.dst_eid.read();
             let params = MessagingParams {
                 dst_eid,
                 receiver: self.peer_or_revert(dst_eid),
-                message: self.unlock_message(evm_recipient, amount),
+                message: self.unlock_message(recipient, amount),
                 options: build_lz_receive_options(gas_limit),
                 pay_in_lz_token: false,
             };
@@ -660,7 +651,7 @@ pub mod VeilBridgeGateway {
             ref self: ContractState,
             open_note_id: felt252,
             amount: u128,
-            evm_recipient: felt252,
+            recipient: u256,
             max_fee: u256,
             gas_limit: u128,
         ) -> Array<OpenNoteDeposit> {
@@ -670,12 +661,7 @@ pub mod VeilBridgeGateway {
             let (trusted, reason) = self.resolve_pool(pool);
             assert(reason == 0 && trusted == pool, 'ONLY_POOL');
             assert(amount != 0, 'ZERO_AMOUNT');
-            if self.account_format.read() == ACCOUNT_FORMAT_EVM {
-                let recipient: u256 = evm_recipient.into();
-                assert(recipient != 0 && recipient < EVM_ADDRESS_BOUND, 'BAD_RECIPIENT');
-            } else {
-                assert(self.stellar_recipients.read(evm_recipient) != 0, 'BAD_RECIPIENT');
-            }
+            self.assert_recipient(recipient);
 
             let token = self.token_dispatcher();
             let this = get_contract_address();
@@ -689,7 +675,7 @@ pub mod VeilBridgeGateway {
             token.bridge_burn(this, amount.into());
 
             let dst_eid = self.dst_eid.read();
-            let message = self.unlock_message(evm_recipient, amount.into());
+            let message = self.unlock_message(recipient, amount.into());
             let options = build_lz_receive_options(gas_limit);
             let fee = IEndpointV2Dispatcher { contract_address: self.endpoint.read() }
                 .quote(
@@ -793,17 +779,6 @@ pub mod VeilBridgeGateway {
             self.emit(NoteRegistered { note_id, owner });
         }
 
-        fn register_stellar_recipient(ref self: ContractState, key: u256) -> felt252 {
-            assert(key != 0, 'ZERO_RECIPIENT');
-            let handle = recipient_handle(key);
-            self.stellar_recipients.write(handle, key);
-            handle
-        }
-
-        fn stellar_recipient(self: @ContractState, handle: felt252) -> u256 {
-            self.stellar_recipients.read(handle)
-        }
-
         fn sweep_native(ref self: ContractState, to: ContractAddress, amount: u256) {
             self.assert_owner();
             assert(!to.is_zero(), 'ZERO_RECIPIENT');
@@ -869,19 +844,18 @@ pub mod VeilBridgeGateway {
             peer
         }
 
-        /// Apply a bridge-in. Every branch ends with the amount either minted
-        /// or quarantined -- it must never revert, or the escrow on the source
-        /// chain is stranded behind a failed message.
-        /// UNLOCK for the lockbox's chain: an EVM address as itself, a Stellar
-        /// key by its registered handle.
-        fn unlock_message(self: @ContractState, recipient: felt252, amount: u256) -> ByteArray {
+        /// Both exit paths and quotes take the raw recipient word. The
+        /// immutable-after-setup account format determines its interpretation.
+        fn assert_recipient(self: @ContractState, recipient: u256) {
+            assert(recipient != 0, 'BAD_RECIPIENT');
             if self.account_format.read() == ACCOUNT_FORMAT_EVM {
-                encode_unlock(recipient, amount)
-            } else {
-                let key = self.stellar_recipients.read(recipient);
-                assert(key != 0, 'BAD_RECIPIENT');
-                encode_unlock_word(key, amount)
+                assert(recipient < EVM_ADDRESS_BOUND, 'BAD_RECIPIENT');
             }
+        }
+
+        fn unlock_message(self: @ContractState, recipient: u256, amount: u256) -> ByteArray {
+            self.assert_recipient(recipient);
+            encode_unlock_word(recipient, amount)
         }
 
         /// Whether `account` is a wallet of the lockbox chain's kind holding as

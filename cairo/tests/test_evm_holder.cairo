@@ -40,7 +40,7 @@ const AMOUNT: u128 = 1_000;
 const TWO_POW_128: felt252 = 0x100000000000000000000000000000000;
 const FEE: u256 = 5_000;
 /// Where the holder takes its tokens back to on Ethereum.
-const EVM_RECIPIENT: felt252 = 0x1111111111111111111111111111111111111111;
+const EVM_RECIPIENT: u256 = 0x1111111111111111111111111111111111111111;
 
 fn owner() -> ContractAddress {
     0x0A11.try_into().unwrap()
@@ -198,7 +198,7 @@ fn exit(env: Env, amount: u128, max_fee: u256) -> InvokeSwap {
     let token = env.token.contract_address;
     let open_note = note_id(self_channel_key(evm_holder(), KEY), token, free_slot(env) + 1);
     let calldata = array![
-        open_note, amount.into(), EVM_RECIPIENT, max_fee.low.into(), max_fee.high.into(), 200_000,
+        open_note, amount.into(), EVM_RECIPIENT.low.into(), EVM_RECIPIENT.high.into(), max_fee.low.into(), max_fee.high.into(), 200_000,
     ];
     invoke(env.pool, evm_holder(), KEY, token, amount + 1, token, env.gateway.contract_address, calldata)
 }
@@ -318,7 +318,7 @@ fn only_a_trusted_pool_invokes_the_exit() {
 fn the_exit_pays_only_an_evm_address() {
     let env = setup();
     start_cheat_caller_address(env.gateway.contract_address, env.pool.contract_address);
-    env.gateway.privacy_invoke(0xBEEF, 1, TWO_POW_128 * 0x100000000, FEE, 200_000);
+    env.gateway.privacy_invoke(0xBEEF, 1, 0x10000000000000000000000000000000000000000, FEE, 200_000);
 }
 
 #[test]
@@ -343,4 +343,29 @@ fn the_owner_sweeps_the_fee_float() {
 fn only_the_owner_sweeps() {
     let env = setup();
     env.gateway.sweep_native(stranger(), FEE);
+}
+
+#[test]
+#[should_panic(expected: 'BAD_RECIPIENT')]
+fn the_evm_exit_rejects_dirty_high_limb() {
+    let env = setup();
+    start_cheat_caller_address(env.gateway.contract_address, env.pool.contract_address);
+    // The low limb alone is a valid EVM address; dropping the high limb would
+    // silently change who receives the release.
+    env.gateway.privacy_invoke(0xBEEF, 1, u256 { low: 0x1234, high: 0x100000000 }, FEE, 200_000);
+}
+
+#[test]
+#[should_panic(expected: 'BAD_RECIPIENT')]
+fn the_evm_quote_rejects_2_pow_160() {
+    let env = setup();
+    env.gateway.quote_bridge_back(1, 0x10000000000000000000000000000000000000000, 200_000);
+}
+
+#[test]
+#[should_panic(expected: 'BAD_RECIPIENT')]
+fn the_evm_exit_rejects_zero() {
+    let env = setup();
+    start_cheat_caller_address(env.gateway.contract_address, env.pool.contract_address);
+    env.gateway.privacy_invoke(0xBEEF, 1, 0, FEE, 200_000);
 }

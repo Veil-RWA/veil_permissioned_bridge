@@ -86,6 +86,15 @@ export class VeilProver {
     forcedTransfer(deriveCalldata, opts) {
         return this.proveAndSettle("forced_transfer", deriveCalldata, opts);
     }
+    /** ERC-3643 pool: private proof of reserve (see proofOfReserve.ts for the
+     *  calldata builder). The signer must be the holder. */
+    proveReserve(deriveCalldata, opts) {
+        return this.proveAndSettle("prove_reserve", deriveCalldata, opts);
+    }
+    /** ERC-3643 pool: the holder revokes one of their reserve proofs. */
+    revokeReserve(deriveCalldata, opts) {
+        return this.proveAndSettle("revoke_reserve", deriveCalldata, opts);
+    }
     approvePrivateTransfer(deriveCalldata, opts) {
         return this.proveAndSettle("approve_private_transfer", deriveCalldata, opts);
     }
